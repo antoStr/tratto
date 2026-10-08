@@ -20,6 +20,12 @@ Il collegamento passa da un tunnel cifrato di Cloudflare. Il PC si collega solo 
 
 Tutte le scorciatoie sono nel menu, alla voce *Scorciatoie da tastiera* (`?`).
 
+## Aggiornamenti automatici
+
+Tratto controlla da solo se esiste una nuova versione (dopo l'avvio e poi ogni 4 ore), la scarica in background e, quando è pronta, compare in alto il pulsante **Riavvia per aggiornare**. Se preferisci, l'aggiornamento si installa comunque alla prossima chiusura. Le lavagne non si toccano. Da *Impostazioni ▸ Aggiornamenti* puoi vedere la versione e cercare aggiornamenti a mano.
+
+Chi sviluppa: `npm run release` (o `npm run release:patch`) alza la versione, crea il tag `vX.Y.Z` e lo carica su GitHub; l'Action `build-windows` costruisce l'installer e pubblica la release con `.exe`, `.blockmap` e `latest.yml`. I Tratto già installati si aggiornano da soli. La prima installazione di questa versione va fatta a mano da https://github.com/antoStr/tratto/releases/latest (le versioni precedenti non sanno aggiornarsi).
+
 ## Per chi la sviluppa
 
 Requisiti: Node 22.18 o superiore (TypeScript e SQLite integrati, nessuna compilazione nativa).

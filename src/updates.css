@@ -1,0 +1,44 @@
+/* Update UI: title-bar pill (dark bar) and Settings section. */
+.upd-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  font: 500 11px/1 'Inter Variable', Inter, sans-serif;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.1);
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+button.upd-pill {
+  cursor: pointer;
+  background: #0d99ff;
+  color: #fff;
+  transition: background-color 100ms;
+}
+button.upd-pill:hover {
+  background: #0b87e0;
+}
+button.upd-pill:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 1px;
+}
+.upd-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+.upd-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.upd-actions {
+  display: flex;
+  gap: 8px;
+}

@@ -24,8 +24,9 @@ import {
   union,
   type Pt,
 } from './geometry.ts'
-import { onRuler, outlineToPath, recognize, RULER_LENGTH, rulerSnapper, strokeOutline, thinPoints } from './ink.ts'
+import { nextPressure, OneEuro2D, onRuler, outlineToPath, recognize, RULER_LENGTH, rulerSnapper, SMOOTHING_CUTOFF, storedPressure, strokeOutline, thinPoints } from './ink.ts'
 import { drawBackground, drawElement, ImageStore, LINE_HEIGHT, resetTextCaches, layoutText, fontCss } from './render.ts'
+import { onStampLoaded } from './stamps.ts'
 import { useEditor, type Tool } from './store.ts'
 import type { Box, Camera, El, InkEl, LineEl, ShapeEl, StickyEl, TextEl } from './types.ts'
 
@@ -66,7 +67,21 @@ const r2 = (n: number) => Math.round(n * 100) / 100
 type Gesture =
   | { kind: 'pan'; sx: number; sy: number; cam: Camera }
   | { kind: 'pinch'; ids: [number, number]; d0: number; c0: Pt; cam: Camera; ruler: { x: number; y: number; angle: number; a0: number } | null }
-  | { kind: 'draw'; hl: boolean; color: string; size: number; pts: number[]; snap: ((x: number, y: number) => Pt) | null; pointerId: number }
+  | {
+      kind: 'draw'
+      hl: boolean
+      color: string
+      size: number
+      pts: number[]
+      snap: ((x: number, y: number) => Pt) | null
+      pointerId: number
+      filter: OneEuro2D
+      /** Smoothed pen pressure; null until the first sample, never used without real pressure. */
+      pressure: number | null
+      usePressure: boolean
+      /** Last raw position, added at release so the line ends exactly where the pen lifted. */
+      raw: Pt | null
+    }
   | { kind: 'erase'; last: Pt; pointerId: number }
   | { kind: 'lasso'; poly: number[] }
   | { kind: 'marquee'; start: Pt; cur: Pt; base: string[] }
@@ -95,7 +110,8 @@ export function createController(o: Options) {
   const st = useEditor.getState
   const set = useEditor.setState
   const sctx = scene.getContext('2d')!
-  const octx = overlay.getContext('2d', { desynchronized: true })!
+  // No `desynchronized`: low-latency canvases tear and flicker on some Windows GPUs.
+  const octx = overlay.getContext('2d')!
 
   let W = 0
   let H = 0
@@ -232,7 +248,7 @@ export function createController(o: Options) {
     ctx.setTransform(dpr * c.z, 0, 0, dpr * c.z, dpr * c.x, dpr * c.y)
     ctx.globalAlpha = hl ? 0.45 : 1
     ctx.fillStyle = color
-    ctx.fill(new Path2D(outlineToPath(strokeOutline(pts, size, hl, false))))
+    ctx.fill(new Path2D(outlineToPath(strokeOutline(pts, size, hl))))
     ctx.restore()
   }
 
@@ -565,12 +581,14 @@ export function createController(o: Options) {
 
   function commitDraw(g: Extract<Gesture, { kind: 'draw' }>) {
     aw('live', null, true)
+    // The filter trails the pen slightly: finish exactly where it was lifted.
+    if (g.raw && g.pts.length) pushDrawPoint(g, g.raw, g.pts[g.pts.length - 1])
     if (!g.pts.length || readOnly()) return
-    const pts = thinPoints(g.pts, 0.6 / cam().z)
+    const pts = thinPoints(g.pts, 0.4 / cam().z)
     const prefs = st().prefs
     let el: El = inkElement(pts, g.size, g.color, g.hl)
     if (!g.hl && prefs.inkToShape && !g.snap) {
-      const r = recognize(pts)
+      const r = recognize(pts, 48 / cam().z)
       if (r?.kind === 'line') {
         el = lineElement(r.x1, r.y1, r.x2, r.y2, { stroke: g.color, strokeWidth: g.size, arrowEnd: false })
       } else if (r) {
@@ -691,22 +709,45 @@ export function createController(o: Options) {
     const state = st()
     const pen = hl ? state.prefs.highlighter : state.prefs.pens[state.pen] ?? state.prefs.pens[0]
     const size = worldSize(pen.size)
-    gesture = { kind: 'draw', hl, color: pen.color, size, pts: [], snap: rulerSnapper(state.ruler, s.x, s.y, (size * cam().z) / 2), pointerId: e.pointerId }
+    gesture = {
+      kind: 'draw',
+      hl,
+      color: pen.color,
+      size,
+      pts: [],
+      snap: rulerSnapper(state.ruler, s.x, s.y, (size * cam().z) / 2),
+      pointerId: e.pointerId,
+      filter: new OneEuro2D(SMOOTHING_CUTOFF[state.prefs.inkSmoothing] ?? SMOOTHING_CUTOFF.medium),
+      pressure: null,
+      usePressure: e.pointerType === 'pen' && state.prefs.pressure && !hl,
+      raw: null,
+    }
     addDrawPoints(e)
+  }
+
+  function pushDrawPoint(g: Extract<Gesture, { kind: 'draw' }>, s: Pt, pressure: number, force = false) {
+    const c = cam()
+    if (g.snap) s = g.snap(s.x, s.y)
+    const w = toWorld(c, s.x, s.y)
+    const n = g.pts.length
+    if (!force && n && Math.hypot(g.pts[n - 3] - w.x, g.pts[n - 2] - w.y) < 0.5 / c.z) return
+    g.pts.push(w.x, w.y, pressure)
   }
 
   function addDrawPoints(e: PointerEvent) {
     const g = gesture
     if (g?.kind !== 'draw') return
-    const c = cam()
-    const evs = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [e]
+    const evs = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : []
     for (const ev of evs.length ? evs : [e]) {
-      let s = screenPt(ev)
-      if (g.snap) s = g.snap(s.x, s.y)
-      const w = toWorld(c, s.x, s.y)
-      const n = g.pts.length
-      if (n && Math.hypot(g.pts[n - 3] - w.x, g.pts[n - 2] - w.y) < 0.4 / c.z) continue
-      g.pts.push(w.x, w.y, ev.pointerType === 'pen' ? ev.pressure : -1)
+      const raw = screenPt(ev)
+      g.raw = raw
+      const s = g.filter.filter(raw.x, raw.y, ev.timeStamp)
+      let pressure = -1
+      if (g.usePressure) {
+        g.pressure = nextPressure(g.pressure, ev.pressure)
+        pressure = storedPressure(g.pressure)
+      }
+      pushDrawPoint(g, s, pressure)
     }
     aw('live', { pts: g.pts.slice(-3000).map(r2), color: g.color, size: g.size, hl: g.hl })
     invalidate(false)
@@ -1018,6 +1059,9 @@ export function createController(o: Options) {
     // Palm rejection: ignore the hand resting on the screen while the pen is in use.
     if (e.pointerType === 'touch' && now - lastPen < 1200) return
     if (e.pointerType === 'mouse' && e.button === 2) return // context menu
+    // Without this the browser's follow-up mousedown moves focus to <body>, which instantly
+    // closed a text box created by this very click.
+    e.preventDefault()
     const s = screenPt(e)
     pointers.set(e.pointerId, { x: s.x, y: s.y, type: e.pointerType })
     try {
@@ -1033,10 +1077,10 @@ export function createController(o: Options) {
       return
     }
     if (gesture) return
-    if (st().editingId) {
-      ;(document.activeElement as HTMLElement | null)?.blur()
-      set({ editingId: null })
-    }
+    // Leave any text field (inspector, layer name, text box) before acting on the canvas.
+    const active = document.activeElement as HTMLElement | null
+    if (active && active !== document.body) active.blur()
+    if (st().editingId) set({ editingId: null })
 
     const state = st()
     const p = toWorld(cam(), s.x, s.y)
@@ -1155,9 +1199,17 @@ export function createController(o: Options) {
       case 'sticky':
         startSticky(p)
         return
-      case 'stamp':
+      case 'stamp': {
+        // Clicking an existing element picks it up instead of stacking another stamp on it.
+        const hit = hitElement(p)
+        if (hit) {
+          set({ selection: [hit.id] })
+          if (!ro) startMove(p, s, e.altKey)
+          return
+        }
         placeStamp(p)
         return
+      }
       case 'laser':
         gesture = { kind: 'laser' }
         laser.push({ ...p, t: performance.now() })
@@ -1802,6 +1854,7 @@ export function createController(o: Options) {
     if (!gesture || gesture.kind !== 'move') prune()
     invalidate(true)
   })
+  const offStamps = onStampLoaded(() => invalidate(true))
   const onAwareness = () => {
     applyFollow()
     invalidate(false)
@@ -1860,6 +1913,7 @@ export function createController(o: Options) {
       ro.disconnect()
       unsubStore()
       unsubBoard()
+      offStamps()
       awareness?.off('change', onAwareness)
       document.fonts?.removeEventListener('loadingdone', onFonts)
       overlay.removeEventListener('pointerdown', onPointerDown)

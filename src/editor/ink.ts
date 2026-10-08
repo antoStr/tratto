@@ -1,8 +1,14 @@
 import { getStroke } from 'perfect-freehand'
 import { distToSegment, type Pt } from './geometry.ts'
 
-/** Outline polygon of a stroke. `pts` is flat [x, y, pressure, …]; pressure < 0 means "no real pressure" (mouse). */
-export function strokeOutline(pts: number[], size: number, highlighter: boolean, complete = true): number[][] {
+/**
+ * Outline polygon of a stroke. `pts` is flat [x, y, pressure, …]; pressure < 0 means the
+ * device had no pressure (mouse, finger) and the line keeps an even width.
+ *
+ * Jitter is already removed while drawing (see OneEuro2D), so streamline stays low: a high
+ * value cuts the corners of small loops and makes handwriting look squashed.
+ */
+export function strokeOutline(pts: number[], size: number, highlighter: boolean): number[][] {
   const input: number[][] = []
   let real = false
   for (let i = 0; i < pts.length; i += 3) {
@@ -11,15 +17,75 @@ export function strokeOutline(pts: number[], size: number, highlighter: boolean,
   }
   return getStroke(input, {
     size,
-    thinning: highlighter ? 0 : 0.55,
-    smoothing: 0.6,
-    streamline: highlighter ? 0.6 : 0.45,
-    simulatePressure: !real && !highlighter,
-    last: complete,
-    start: { cap: true },
-    end: { cap: true },
+    // Never derive width from speed: slow movements would swell into round blobs.
+    simulatePressure: false,
+    thinning: highlighter || !real ? 0 : 0.42,
+    smoothing: 0.5,
+    streamline: highlighter ? 0.3 : 0.18,
+    easing: (t) => t,
+    // Same shape while drawing and after release, so nothing jumps when the pen lifts.
+    last: true,
+    start: { cap: true, taper: 0 },
+    end: { cap: true, taper: 0 },
   })
 }
+
+/**
+ * The "1€ filter" (Casiez et al.): heavy smoothing when the pen moves slowly, where tremor is
+ * visible, and almost none when it moves fast, where lag would be. Works in screen pixels.
+ */
+export class OneEuro2D {
+  private x = 0
+  private y = 0
+  private dx = 0
+  private dy = 0
+  private t = -1
+  private readonly minCutoff: number
+  private readonly beta: number
+
+  constructor(minCutoff: number, beta = 0.012) {
+    this.minCutoff = minCutoff
+    this.beta = beta
+  }
+
+  private static alpha(cutoff: number, dt: number) {
+    const tau = 1 / (2 * Math.PI * cutoff)
+    return 1 / (1 + tau / dt)
+  }
+
+  filter(x: number, y: number, tMs: number): Pt {
+    if (this.t < 0) {
+      this.x = x
+      this.y = y
+      this.t = tMs
+      return { x, y }
+    }
+    const dt = Math.max((tMs - this.t) / 1000, 1 / 1000)
+    this.t = tMs
+    const ad = OneEuro2D.alpha(1, dt)
+    this.dx += ad * ((x - this.x) / dt - this.dx)
+    this.dy += ad * ((y - this.y) / dt - this.dy)
+    const a = OneEuro2D.alpha(this.minCutoff + this.beta * Math.hypot(this.dx, this.dy), dt)
+    this.x += a * (x - this.x)
+    this.y += a * (y - this.y)
+    return { x: this.x, y: this.y }
+  }
+}
+
+/** Minimum filter cut-off (Hz) for each "Levigatura del tratto" setting. */
+export const SMOOTHING_CUTOFF = { low: 7, medium: 3.5, high: 1.8 } as const
+
+/**
+ * Pen pressure as stored in a stroke: smoothed (pens report noisy values, which made the line
+ * swell and shrink) and lifted so a light touch still leaves a visible line.
+ */
+export function nextPressure(prev: number | null, raw: number) {
+  const p = Math.min(1, Math.max(0, raw))
+  const smoothed = prev === null ? Math.max(p, 0.35) : prev + (p - prev) * 0.3
+  return smoothed
+}
+
+export const storedPressure = (smoothed: number) => Math.round((0.2 + 0.8 * smoothed) * 1000) / 1000
 
 /** SVG path data for an outline polygon (quadratic curves through midpoints). */
 export function outlineToPath(outline: number[][]): string {
@@ -81,15 +147,16 @@ const area = (poly: Pt[]) => Math.abs(poly.reduce((s, p, i) => {
 
 /**
  * Guesses which simple shape a freehand stroke was meant to be. Returns null when the
- * stroke doesn't look like one, so the ink is kept as drawn.
+ * stroke doesn't look like one, so the ink is kept as drawn. Strokes smaller than `minSize`
+ * (world units; callers pass ~48 screen pixels) are handwriting, never shapes.
  */
-export function recognize(flat: number[]): Recognized | null {
+export function recognize(flat: number[], minSize = 0): Recognized | null {
   const pts: Pt[] = []
   for (let i = 0; i < flat.length; i += 3) pts.push({ x: flat[i], y: flat[i + 1] })
   if (pts.length < 4) return null
   let length = 0
   for (let i = 1; i < pts.length; i++) length += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y)
-  if (length < 24) return null
+  if (length < Math.max(24, minSize * 2)) return null
   const first = pts[0]
   const last = pts[pts.length - 1]
   const gap = Math.hypot(last.x - first.x, last.y - first.y)
@@ -107,7 +174,7 @@ export function recognize(flat: number[]): Recognized | null {
   const xs = pts.map((p) => p.x)
   const ys = pts.map((p) => p.y)
   const box = { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) }
-  if (box.w < 12 || box.h < 12 || !hullArea) return null
+  if (Math.max(box.w, box.h) < Math.max(12, minSize) || Math.min(box.w, box.h) < 12 || !hullArea) return null
   const fill = hullArea / (box.w * box.h)
 
   // Largest triangle inside the hull: close to the whole hull means it is a triangle.

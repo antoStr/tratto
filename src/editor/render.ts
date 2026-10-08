@@ -1,6 +1,7 @@
 import { safeColor } from './doc.ts'
 import { shapePolygon } from './geometry.ts'
 import { outlineToPath, strokeOutline } from './ink.ts'
+import { stampBitmap } from './stamps.ts'
 import { FONT_STACK, type BoardMeta, type Camera, type El, type FontKind, type InkEl, type LineEl, type ShapeEl, type StickyEl, type TextEl } from './types.ts'
 
 export const LINE_HEIGHT = 1.3
@@ -105,8 +106,8 @@ export function stickyLayout(el: StickyEl): { layout: TextLayout; size: number }
 
 const pathCache = new WeakMap<El, Path2D>()
 
-export function inkPathData(el: InkEl, complete = true) {
-  return outlineToPath(strokeOutline(el.points, el.size, el.type === 'highlighter', complete))
+export function inkPathData(el: InkEl) {
+  return outlineToPath(strokeOutline(el.points, el.size, el.type === 'highlighter'))
 }
 
 function inkPath(el: InkEl) {
@@ -196,6 +197,8 @@ export interface DrawEnv {
   editingId?: string | null
   /** Pre-resolved bitmaps for export. */
   bitmaps?: Map<string, ImageBitmap>
+  /** Current zoom; on screen, very thin strokes are drawn at least one pixel wide. */
+  zoom?: number
 }
 
 export function drawElement(ctx: Ctx, el: El, env: DrawEnv) {
@@ -212,6 +215,13 @@ export function drawElement(ctx: Ctx, el: El, env: DrawEnv) {
       if (el.type === 'highlighter') ctx.globalAlpha *= 0.45
       ctx.fillStyle = safeColor(el.color)
       ctx.fill(inkPath(el))
+      // Zoomed far out a stroke can shrink below a pixel and vanish: keep a hairline.
+      if (env.zoom && el.size * env.zoom < 1) {
+        ctx.strokeStyle = ctx.fillStyle
+        ctx.lineWidth = 1 / env.zoom
+        ctx.lineJoin = 'round'
+        ctx.stroke(inkPath(el))
+      }
       break
     case 'shape': {
       const path = shapePath(el)
@@ -298,6 +308,11 @@ export function drawElement(ctx: Ctx, el: El, env: DrawEnv) {
       break
     }
     case 'stamp': {
+      const bmp = stampBitmap(el.emoji)
+      if (bmp) {
+        ctx.drawImage(bmp, 0, 0, el.w, el.h)
+        break
+      }
       ctx.font = `${el.h * 0.86}px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
@@ -314,34 +329,72 @@ function drawLines(ctx: Ctx, lines: string[], align: string, width: number, top:
   lines.forEach((line, i) => ctx.fillText(line, x, top + size * LINE_HEIGHT * (i + 0.5)))
 }
 
-/** Board colour plus a dot/grid/line pattern that stays readable at any zoom. */
+/** Board colour plus a pattern (dots, grid, lines, graph paper, isometric) readable at any zoom. */
 export function drawBackground(ctx: Ctx, cam: Camera, width: number, height: number, meta: BoardMeta) {
   ctx.fillStyle = meta.background
   ctx.fillRect(0, 0, width, height)
   if (meta.pattern === 'none') return
-  let step = 24 * cam.z
-  while (step < 14) step *= 2
-  while (step > 96) step /= 2
+  // Pattern spacing on screen, kept between 14 and ~100 px by doubling/halving.
+  let k = 1
+  while (meta.gridSize * cam.z * k < 14) k *= 2
+  while (meta.gridSize * cam.z * k > 100) k /= 2
+  const step = meta.gridSize * cam.z * k
   const dark = isDark(meta.background)
+  const ink = (a: number) => (dark ? `rgba(255,255,255,${a})` : `rgba(0,0,0,${a})`)
   const ox = ((cam.x % step) + step) % step
   const oy = ((cam.y % step) + step) % step
-  if (meta.pattern === 'dots') {
-    ctx.fillStyle = dark ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.16)'
-    const r = 1.1
-    for (let x = ox; x < width; x += step) for (let y = oy; y < height; y += step) ctx.fillRect(x - r, y - r, r * 2, r * 2)
-    return
-  }
-  ctx.strokeStyle = dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.07)'
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  if (meta.pattern === 'grid')
-    for (let x = ox; x < width; x += step) {
-      ctx.moveTo(Math.round(x) + 0.5, 0)
-      ctx.lineTo(Math.round(x) + 0.5, height)
+  const lines = (s: number, x0: number, y0: number, vertical: boolean) => {
+    ctx.beginPath()
+    if (vertical)
+      for (let x = x0; x < width; x += s) {
+        ctx.moveTo(Math.round(x) + 0.5, 0)
+        ctx.lineTo(Math.round(x) + 0.5, height)
+      }
+    for (let y = y0; y < height; y += s) {
+      ctx.moveTo(0, Math.round(y) + 0.5)
+      ctx.lineTo(width, Math.round(y) + 0.5)
     }
-  for (let y = oy; y < height; y += step) {
-    ctx.moveTo(0, Math.round(y) + 0.5)
-    ctx.lineTo(width, Math.round(y) + 0.5)
+    ctx.stroke()
   }
-  ctx.stroke()
+  ctx.lineWidth = 1
+  switch (meta.pattern) {
+    case 'dots': {
+      ctx.fillStyle = ink(0.16)
+      const r = 1.1
+      for (let x = ox; x < width; x += step) for (let y = oy; y < height; y += step) ctx.fillRect(x - r, y - r, r * 2, r * 2)
+      return
+    }
+    case 'isometric': {
+      // Dots on a triangular lattice: every other row is shifted by half a step.
+      ctx.fillStyle = ink(0.18)
+      const r = 1.1
+      const rowH = step * 0.866
+      const wy = cam.y / rowH
+      const firstRow = Math.floor(-wy) - 1
+      for (let row = firstRow; row * rowH + cam.y < height + rowH; row++) {
+        const y = row * rowH + cam.y
+        const shift = (((row % 2) + 2) % 2) * (step / 2)
+        const x0 = ((((cam.x + shift) % step) + step) % step)
+        for (let x = x0; x < width; x += step) ctx.fillRect(x - r, y - r, r * 2, r * 2)
+      }
+      return
+    }
+    case 'graph': {
+      // Graph paper: fine lines plus a stronger line every five squares.
+      const major = step * 5
+      ctx.strokeStyle = ink(0.05)
+      lines(step, ox, oy, true)
+      ctx.strokeStyle = ink(0.11)
+      lines(major, ((cam.x % major) + major) % major, ((cam.y % major) + major) % major, true)
+      return
+    }
+    case 'grid':
+      ctx.strokeStyle = ink(0.07)
+      lines(step, ox, oy, true)
+      return
+    case 'lines':
+      ctx.strokeStyle = ink(0.08)
+      lines(step, ox, oy, false)
+      return
+  }
 }

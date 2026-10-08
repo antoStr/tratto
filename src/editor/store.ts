@@ -17,6 +17,10 @@ export interface Prefs {
   highlighter: Pen
   eraser: { mode: 'stroke' | 'precise'; size: number }
   inkToShape: boolean
+  /** How much tremor is smoothed out of freehand strokes. */
+  inkSmoothing: 'low' | 'medium' | 'high'
+  /** Use the pen's pressure for line width. */
+  pressure: boolean
   fingerDraw: boolean
   wheel: 'pan' | 'zoom'
   shapeStyle: { fill: string; stroke: string; strokeWidth: number }
@@ -38,6 +42,8 @@ const DEFAULT_PREFS: Prefs = {
   highlighter: { color: '#FFE066', size: 22 },
   eraser: { mode: 'stroke', size: 24 },
   inkToShape: false,
+  inkSmoothing: 'medium',
+  pressure: true,
   fingerDraw: false,
   wheel: 'pan',
   shapeStyle: { fill: 'transparent', stroke: '#1E1E1E', strokeWidth: 3 },

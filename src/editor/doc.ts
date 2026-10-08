@@ -1,5 +1,5 @@
 import * as Y from 'yjs'
-import { DEFAULT_META, type BoardMeta, type El } from './types.ts'
+import { DEFAULT_META, GRID_SIZES, PATTERNS, type BoardMeta, type El, type GroupInfo, type Pattern } from './types.ts'
 
 /** Transaction origin for this user's edits: the undo manager only tracks these. */
 export const LOCAL = { local: true }
@@ -14,6 +14,8 @@ export class Board {
   readonly doc: Y.Doc
   readonly elements: Y.Map<El>
   readonly meta: Y.Map<unknown>
+  /** Folder names; membership is the `groupId` field of each element. */
+  readonly groups: Y.Map<GroupInfo>
   readonly undo: Y.UndoManager
   private sorted: El[] | null = null
   private listeners = new Set<() => void>()
@@ -23,8 +25,9 @@ export class Board {
     this.doc = doc
     this.elements = doc.getMap<El>('elements')
     this.meta = doc.getMap('meta')
+    this.groups = doc.getMap<GroupInfo>('groups')
     // One undo step per gesture: callers invoke undo.stopCapturing() when a gesture starts.
-    this.undo = new Y.UndoManager([this.elements, this.meta], { trackedOrigins: new Set([LOCAL]), captureTimeout: 60_000 })
+    this.undo = new Y.UndoManager([this.elements, this.meta, this.groups], { trackedOrigins: new Set([LOCAL]), captureTimeout: 60_000 })
     const changed = () => {
       this.sorted = null
       this.version++
@@ -32,6 +35,7 @@ export class Board {
     }
     this.elements.observe(changed)
     this.meta.observe(changed)
+    this.groups.observe(changed)
   }
 
   subscribe = (fn: () => void) => {
@@ -54,11 +58,81 @@ export class Board {
 
   getMeta(): BoardMeta {
     const bg = this.meta.get('background')
-    const pattern = this.meta.get('pattern')
+    const pattern = this.meta.get('pattern') as Pattern
+    const grid = this.meta.get('gridSize') as number
     return {
       background: typeof bg === 'string' && /^#[0-9a-f]{6}$/i.test(bg) ? bg : DEFAULT_META.background,
-      pattern: pattern === 'none' || pattern === 'dots' || pattern === 'grid' || pattern === 'lines' ? pattern : DEFAULT_META.pattern,
+      pattern: PATTERNS.includes(pattern) ? pattern : DEFAULT_META.pattern,
+      gridSize: GRID_SIZES.includes(grid) ? grid : DEFAULT_META.gridSize,
     }
+  }
+
+  /* ---------- folders ---------- */
+
+  /** Elements of a folder, bottom to top. */
+  members(groupId: string): El[] {
+    return this.all().filter((el) => el.groupId === groupId)
+  }
+
+  /** Folders that still have elements, with a usable name. */
+  groupInfo(groupId: string): GroupInfo | null {
+    const g = this.groups.get(groupId)
+    if (!g || typeof g.name !== 'string') return { id: groupId, name: 'Cartella' }
+    return { id: groupId, name: g.name.slice(0, 80) || 'Cartella' }
+  }
+
+  groupList(): GroupInfo[] {
+    const ids = new Set<string>()
+    for (const el of this.all()) if (el.groupId) ids.add(el.groupId)
+    return [...ids].map((id) => this.groupInfo(id)!)
+  }
+
+  nextGroupName() {
+    const used = new Set(this.groupList().map((g) => g.name))
+    let n = this.groupList().length + 1
+    while (used.has(`Cartella ${n}`)) n++
+    return `Cartella ${n}`
+  }
+
+  /** Puts elements into a new folder and returns its id. */
+  createGroup(ids: string[], name = this.nextGroupName()): string {
+    const id = uid()
+    this.transact(() => {
+      this.groups.set(id, { id, name: name.slice(0, 80) })
+      for (const elId of ids) {
+        const el = this.elements.get(elId)
+        if (el) this.elements.set(elId, { ...el, groupId: id })
+      }
+      this.pruneGroups()
+    })
+    return id
+  }
+
+  /** Moves elements into an existing folder, or out of any folder with `null`. */
+  setGroup(ids: string[], groupId: string | null) {
+    this.transact(() => {
+      for (const elId of ids) {
+        const el = this.elements.get(elId)
+        if (!el) continue
+        const next = { ...el }
+        if (groupId) next.groupId = groupId
+        else delete next.groupId
+        this.elements.set(elId, next)
+      }
+      this.pruneGroups()
+    })
+  }
+
+  renameGroup(groupId: string, name: string) {
+    const clean = name.trim().slice(0, 80)
+    if (clean) this.transact(() => this.groups.set(groupId, { id: groupId, name: clean }))
+  }
+
+  /** Forgets folders that no element belongs to any more. */
+  private pruneGroups() {
+    const used = new Set<string>()
+    for (const el of this.elements.values()) if (el?.groupId) used.add(el.groupId)
+    for (const id of [...this.groups.keys()]) if (!used.has(id)) this.groups.delete(id)
   }
 
   private lastLocal = 0
@@ -123,6 +197,7 @@ const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v)
  */
 export function isValid(el: El): boolean {
   if (!el || typeof el !== 'object' || typeof el.id !== 'string') return false
+  if (el.groupId !== undefined && (typeof el.groupId !== 'string' || el.groupId.length > 64)) return false
   if (![el.x, el.y, el.w, el.h, el.rotation, el.z, el.opacity].every(num)) return false
   switch (el.type) {
     case 'ink':

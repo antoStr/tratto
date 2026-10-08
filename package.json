@@ -2,6 +2,8 @@
   "name": "tratto",
   "private": true,
   "version": "1.0.0",
+  "author": "antoStr",
+  "repository": "github:antoStr/tratto",
   "type": "module",
   "scripts": {
     "dev": "node --watch-path=server server/index.ts",
@@ -10,12 +12,15 @@
     "build": "tsc -p . && vite build",
     "test": "node --test src/editor/*.test.ts server/*.test.ts",
     "fetch:tunnel": "node scripts/fetch-cloudflared.ts",
+    "release": "npm version minor -m \"Tratto %s\" && git push --follow-tags",
+    "release:patch": "npm version patch -m \"Tratto %s\" && git push --follow-tags",
     "dist:win": "npm run build && node scripts/fetch-cloudflared.ts win && electron-builder --win --x64",
     "app:dev": "TRATTO_DEV=1 electron .",
     "dist:linux": "npm run build && node scripts/fetch-cloudflared.ts linux && electron-builder --linux dir"
   },
   "dependencies": {
     "@hocuspocus/server": "^4.7.0",
+    "electron-updater": "6.8.9",
     "express": "^5.2.1",
     "ws": "^8.22.0",
     "y-protocols": "^1.0.7",

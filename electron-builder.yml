@@ -4,6 +4,11 @@ directories:
   output: release
   buildResources: build
 asar: true
+publish:
+  - provider: github
+    owner: antoStr
+    repo: tratto
+    releaseType: release
 files:
   - dist/**
   - server/**/*.ts

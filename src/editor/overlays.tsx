@@ -25,15 +25,23 @@ export function TextEditor({ board }: { board: Board }) {
   useEffect(() => {
     if (!editingId) return
     board.undo.stopCapturing()
-    const t = ref.current
-    if (t) {
+    const focus = () => {
+      const t = ref.current
+      if (!t || document.activeElement === t) return
       t.focus({ preventScroll: true })
       t.setSelectionRange(t.value.length, t.value.length)
     }
+    focus()
+    const raf = requestAnimationFrame(focus) // after the click that created the box has settled
     return () => {
+      cancelAnimationFrame(raf)
       board.undo.stopCapturing()
-      const done = board.get(editingId)
-      if (done?.type === 'text' && !done.text.trim()) board.remove([editingId])
+      // Deferred: in development React remounts effects once, and the box must survive that.
+      setTimeout(() => {
+        if (useEditor.getState().editingId === editingId) return
+        const done = board.get(editingId)
+        if (done?.type === 'text' && !done.text.trim()) board.remove([editingId])
+      })
     }
   }, [editingId, board])
 

@@ -27,7 +27,8 @@ import {
 import { IconButton, Menu, MenuContent, MenuItem, MenuTrigger, Segmented, Swatches, Tip } from '../ui.tsx'
 import { outlineToPath, strokeOutline } from './ink.ts'
 import { ERASER_SIZES, HIGHLIGHTER_SIZES, PEN_SIZES, useEditor, type Pen as PenPreset, type Tool } from './store.ts'
-import { FONT_STACK, HIGHLIGHT_COLORS, INK_COLORS, STAMPS, STICKY_COLORS, type FontKind, type ShapeKind } from './types.ts'
+import { FONT_STACK, HIGHLIGHT_COLORS, INK_COLORS, STICKY_COLORS, type FontKind, type ShapeKind } from './types.ts'
+import { STAMP_SET } from './stamps.ts'
 
 const SHAPES: { kind: ShapeKind; label: string; icon: ReactNode; kbd?: string }[] = [
   { kind: 'rect', label: 'Rettangolo', icon: <Square size={18} />, kbd: 'R' },
@@ -240,21 +241,28 @@ function Tray() {
       content = <Swatches label="Colore nota" colors={STICKY_COLORS} value={prefs.stickyColor} onChange={(stickyColor) => setPrefs({ stickyColor })} />
       break
     case 'stamp':
-      content = (
-        <div className="stamps" role="radiogroup" aria-label="Reazione">
-          {STAMPS.map((s) => (
-            <button key={s} type="button" role="radio" aria-checked={prefs.stamp === s} className="stamp-btn" onClick={() => setPrefs({ stamp: s })}>
-              {s}
-            </button>
-          ))}
-        </div>
-      )
+      content = <StampPicker value={prefs.stamp} onChange={(stamp) => setPrefs({ stamp })} />
       break
   }
   if (!content) return null
   return (
     <div className="tray" key={tool}>
       {content}
+    </div>
+  )
+}
+
+/** Grid of reactions, drawn with the same pictures used on the board. */
+export function StampPicker({ value, onChange }: { value: string | null; onChange: (emoji: string) => void }) {
+  return (
+    <div className="stamps" role="radiogroup" aria-label="Reazione">
+      {STAMP_SET.map((s) => (
+        <Tip key={s.emoji} label={s.name}>
+          <button type="button" role="radio" aria-checked={value === s.emoji} aria-label={s.name} className="stamp-btn" onClick={() => onChange(s.emoji)}>
+            <img src={s.url} alt="" width={22} height={22} draggable={false} />
+          </button>
+        </Tip>
+      ))}
     </div>
   )
 }

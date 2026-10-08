@@ -2,6 +2,7 @@ import type { Board } from './doc.ts'
 import { safeColor } from './doc.ts'
 import { aabb, shapePolygon, union } from './geometry.ts'
 import { arrowHead, drawElement, inkPathData, isDark, LINE_HEIGHT, lineEnds, STICKY_PAD, stickyLayout, textLayout, type DrawEnv } from './render.ts'
+import { preloadStamps, stampDataUrl } from './stamps.ts'
 import { FONT_STACK, type Box, type El, type ImageEl, type TextEl } from './types.ts'
 
 export interface ExportOptions {
@@ -89,6 +90,7 @@ export async function exportPNG(board: Board, o: ExportOptions): Promise<Blob> {
   const w = Math.max(1, Math.round(box.w * k))
   const h = Math.max(1, Math.round(box.h * k))
   await fontsReady()
+  if (els.some((e) => e.type === 'stamp')) await preloadStamps()
   const bitmaps = await loadBitmaps(els, o.fetchFile)
   const { ctx, toBlob } = makeCanvas(w, h)
   paint(ctx, els, { images: null, bitmaps }, o.background === false ? null : board.getMeta().background, w, h, w / box.w, (-box.x * w) / box.w, (-box.y * h) / box.h)
@@ -107,6 +109,7 @@ export async function thumbnail(board: Board, fetchFile: ExportOptions['fetchFil
   }
   const k = Math.min((W - 48) / Math.max(1, c.box.w), (H - 48) / Math.max(1, c.box.h), 1.5)
   await fontsReady()
+  if (c.els.some((e) => e.type === 'stamp')) await preloadStamps()
   const bitmaps = await loadBitmaps(c.els, fetchFile)
   const { ctx, toBlob } = makeCanvas(W, H)
   paint(ctx, c.els, { images: null, bitmaps }, board.getMeta().background, W, H, k, W / 2 - (c.box.x + c.box.w / 2) * k, H / 2 - (c.box.y + c.box.h / 2) * k)
@@ -193,6 +196,7 @@ function svgBody(el: El, image: string | null): string {
     case 'image':
       return image ? `<image width="${f(el.w)}" height="${f(el.h)}" preserveAspectRatio="none" href="${esc(image)}"/>` : ''
     case 'stamp':
+      if (image) return `<image width="${f(el.w)}" height="${f(el.h)}" href="${esc(image)}"/>`
       return `<text font-family="'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif" font-size="${f(el.h * 0.86)}" text-anchor="middle" dominant-baseline="central" x="${f(el.w / 2)}" y="${f(el.h / 2 + el.h * 0.04)}">${esc(el.emoji)}</text>`
   }
 }
@@ -211,9 +215,11 @@ export async function exportSVG(board: Board, o: ExportOptions): Promise<string>
       }
     }),
   )
+  const stampUrls = new Map<string, string | null>()
+  for (const e of els) if (e.type === 'stamp' && !stampUrls.has(e.emoji)) stampUrls.set(e.emoji, await stampDataUrl(e.emoji).catch(() => null))
   const parts: string[] = []
   for (const el of els) {
-    const body = svgBody(el, el.type === 'image' ? (images.get(el.fileId) ?? null) : null)
+    const body = svgBody(el, el.type === 'image' ? (images.get(el.fileId) ?? null) : el.type === 'stamp' ? (stampUrls.get(el.emoji) ?? null) : null)
     if (!body) continue
     const rot = el.rotation ? ` rotate(${f((el.rotation * 180) / Math.PI)})` : ''
     const op = el.opacity < 1 ? ` opacity="${f(Math.max(0, el.opacity))}"` : ''

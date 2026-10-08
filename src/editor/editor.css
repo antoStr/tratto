@@ -408,6 +408,8 @@
 }
 .text-edit textarea {
   display: block;
+  user-select: text;
+  -webkit-user-select: text;
   height: 100%;
   margin: 0;
   padding: 0;
@@ -664,9 +666,11 @@
   gap: 2px;
 }
 .tray .stamps {
-  grid-template-columns: repeat(12, 32px);
+  grid-template-columns: repeat(16, 32px);
 }
 .stamp-btn {
+  display: grid;
+  place-items: center;
   width: 32px;
   height: 32px;
   padding: 0;
@@ -676,6 +680,13 @@
   font-size: 18px;
   line-height: 32px;
   font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif;
+}
+.stamp-btn img {
+  pointer-events: none;
+  transition: transform 120ms var(--ease);
+}
+.stamp-btn:hover img {
+  transform: scale(1.12);
 }
 .stamp-btn:hover {
   background: var(--hover);

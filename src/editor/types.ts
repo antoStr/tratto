@@ -14,6 +14,14 @@ interface Base {
   locked?: boolean
   hidden?: boolean
   name?: string
+  /** Folder (Figma-style group) the element belongs to. */
+  groupId?: string
+}
+
+/** A folder in the layers panel. Membership lives on the elements (`groupId`). */
+export interface GroupInfo {
+  id: string
+  name: string
 }
 
 /** Freehand stroke. `points` is flat [x, y, pressure, …] relative to (x, y); w/h is the points' bounding box. */
@@ -81,8 +89,11 @@ export interface StampEl extends Base {
 export type El = InkEl | ShapeEl | LineEl | TextEl | StickyEl | ImageEl | StampEl
 export type ElType = El['type']
 
-export type Pattern = 'none' | 'dots' | 'grid' | 'lines'
+export type Pattern = 'none' | 'dots' | 'grid' | 'lines' | 'graph' | 'isometric'
+export const PATTERNS: Pattern[] = ['none', 'dots', 'grid', 'lines', 'graph', 'isometric']
 export interface BoardMeta {
+  /** Spacing of the background pattern in board units. */
+  gridSize: number
   background: string
   pattern: Pattern
 }
@@ -104,7 +115,6 @@ export interface Camera {
 export const INK_COLORS = ['#1E1E1E', '#757575', '#FFFFFF', '#E03131', '#F76707', '#F5B700', '#2F9E44', '#0C8599', '#1971C2', '#6741D9', '#C2255C', '#8B5A2B']
 export const HIGHLIGHT_COLORS = ['#FFE066', '#8CE99A', '#74C0FC', '#FCC2D7', '#FFC078', '#D0BFFF']
 export const STICKY_COLORS = ['#FFF3A3', '#C9F2C7', '#C7E5FF', '#FFD1E3', '#E2D4FF', '#FFDDB8', '#E9E9E9']
-export const STAMPS = ['👍', '❤️', '⭐', '✅', '❌', '❓', '❗', '💡', '🎉', '🔥', '👀', '😂']
 export const BACKGROUNDS = [
   { name: 'Grigio chiaro', value: '#F5F5F5' },
   { name: 'Bianco', value: '#FFFFFF' },
@@ -121,4 +131,5 @@ export const FONT_STACK: Record<FontKind, string> = {
   hand: '"Caveat Variable", "Segoe Print", "Comic Sans MS", cursive',
 }
 
-export const DEFAULT_META: BoardMeta = { background: '#F5F5F5', pattern: 'dots' }
+export const DEFAULT_META: BoardMeta = { background: '#F5F5F5', pattern: 'dots', gridSize: 24 }
+export const GRID_SIZES = [12, 24, 48]

@@ -6,7 +6,7 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: read
+  contents: write # needed only to publish the release on tag pushes
 
 jobs:
   build:
@@ -21,7 +21,13 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: node scripts/fetch-cloudflared.ts win
-      - run: npx electron-builder --win --x64 --publish never
+      # Manual run: artifact only. Tag push (v*): publish .exe + .blockmap + latest.yml to a GitHub Release.
+      - if: github.ref_type != 'tag'
+        run: npx electron-builder --win --x64 --publish never
+      - if: github.ref_type == 'tag'
+        run: npx electron-builder --win --x64 --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/upload-artifact@v4
         with:
           name: Tratto-Windows

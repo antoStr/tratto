@@ -33,7 +33,9 @@ import { center, frameBox, scaleElement, union } from './geometry.ts'
 import { fontCss, layoutText } from './render.ts'
 import { peerColor, peerName, useBoardVersion, usePeers } from './overlays.tsx'
 import { useEditor } from './store.ts'
-import { BACKGROUNDS, FONT_STACK, INK_COLORS, STAMPS, STICKY_COLORS, type Align, type El, type FontKind, type Pattern, type ShapeKind, type TextEl } from './types.ts'
+import { StampPicker } from './Toolbar.tsx'
+import { stampInfo } from './stamps.ts'
+import { BACKGROUNDS, FONT_STACK, INK_COLORS, STICKY_COLORS, type Align, type El, type FontKind, type Pattern, type ShapeKind, type TextEl } from './types.ts'
 import { Avatar, IconButton, Menu, MenuContent, MenuItem, MenuSep, MenuTrigger, NumberField, Segmented, Swatches, Tip } from '../ui.tsx'
 
 const TYPE_LABEL: Record<El['type'], string> = {
@@ -52,7 +54,7 @@ export function elementLabel(el: El) {
   if (el.type === 'text' || el.type === 'sticky') return el.text.trim().split('\n')[0].slice(0, 40) || TYPE_LABEL[el.type]
   if (el.type === 'line') return el.arrowEnd || el.arrowStart ? 'Freccia' : 'Linea'
   if (el.type === 'shape') return { rect: 'Rettangolo', ellipse: 'Ellisse', triangle: 'Triangolo', diamond: 'Rombo', star: 'Stella', hexagon: 'Esagono', polygon: 'Poligono' }[el.shape]
-  if (el.type === 'stamp') return `Reazione ${el.emoji}`
+  if (el.type === 'stamp') return stampInfo(el.emoji)?.name ?? `Reazione ${el.emoji}`
   return TYPE_LABEL[el.type]
 }
 
@@ -411,13 +413,7 @@ function SelectionProps({ board, els }: { board: Board; els: El[] }) {
 
       {only('stamp') && (
         <Section title="Reazione">
-          <div className="stamps" role="radiogroup" aria-label="Reazione">
-            {STAMPS.map((s) => (
-              <button key={s} type="button" role="radio" aria-checked={same((e) => (e.type === 'stamp' ? e.emoji : undefined)) === s} className="stamp-btn" onClick={() => apply(() => ({ emoji: s }) as Partial<El>)}>
-                {s}
-              </button>
-            ))}
-          </div>
+          <StampPicker value={same((e) => (e.type === 'stamp' ? e.emoji : undefined))} onChange={(emoji) => apply(() => ({ emoji }) as Partial<El>)} />
         </Section>
       )}
 

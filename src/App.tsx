@@ -2,24 +2,19 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { Tooltip } from 'radix-ui'
 import { Home as HomeIcon, ShieldCheck } from 'lucide-react'
 import { api, ApiError, setGuestCode } from './api.ts'
+import { bridge, isDesktop } from './desktop.ts'
 import { Editor, type GuestSession } from './editor/Editor.tsx'
 import { useShare } from './editor/ShareDialog.tsx'
 import { useEditor } from './editor/store.ts'
 import { Home } from './home/Home.tsx'
 import { Logo, Toaster, toast } from './ui.tsx'
 
-declare global {
-  interface Window {
-    tratto?: { desktop: boolean; platform: string; setTheme: (t: 'system' | 'light' | 'dark') => void }
-  }
-}
-
-if (window.tratto?.desktop) document.documentElement.classList.add('desktop')
+if (isDesktop) document.documentElement.classList.add('desktop')
 
 function useTheme() {
   const theme = useEditor((s) => s.prefs.theme)
   useEffect(() => {
-    window.tratto?.setTheme(theme)
+    bridge?.setTheme(theme)
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
     const apply = () => {
       document.documentElement.dataset.theme = theme === 'system' ? (mq.matches ? 'dark' : 'light') : theme
