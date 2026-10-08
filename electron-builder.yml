@@ -1,0 +1,36 @@
+appId: app.tratto.desktop
+productName: Tratto
+directories:
+  output: release
+  buildResources: build
+asar: true
+files:
+  - dist/**
+  - server/**/*.ts
+  - "!server/**/*.test.ts"
+  - electron/**
+  - package.json
+win:
+  target:
+    - target: nsis
+      arch: x64
+  icon: build/icon.png
+  extraResources:
+    - from: bin/cloudflared.exe
+      to: cloudflared.exe
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: Tratto
+  artifactName: Tratto-Setup-${version}.${ext}
+  installerLanguages: [it_IT]
+  language: '1040'
+  # Boards live in %APPDATA%\Tratto and survive reinstalls and uninstalls.
+  deleteAppDataOnUninstall: false
+linux:
+  target: dir
+  extraResources:
+    - from: bin/cloudflared
+      to: cloudflared
