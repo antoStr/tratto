@@ -111,6 +111,18 @@ export function MenuSub({ label, icon, children }: { label: string; icon?: React
   )
 }
 
+/** A menu that opens at a point on screen (client coordinates), for right clicks. */
+export function MenuAt({ at, onClose, children }: { at: { x: number; y: number } | null; onClose: () => void; children: ReactNode }) {
+  return (
+    <DropdownMenu.Root open={!!at} onOpenChange={(o) => !o && onClose()} modal={false}>
+      <DropdownMenu.Trigger asChild>
+        <span className="menu-anchor" aria-hidden="true" style={{ left: at?.x ?? 0, top: at?.y ?? 0 }} />
+      </DropdownMenu.Trigger>
+      {at && children}
+    </DropdownMenu.Root>
+  )
+}
+
 export const MenuSep = () => <DropdownMenu.Separator className="menu-sep" />
 export const MenuLabel = ({ children }: { children: ReactNode }) => <DropdownMenu.Label className="menu-label">{children}</DropdownMenu.Label>
 
@@ -209,7 +221,7 @@ export function Swatches({ colors, value, onChange, label, allowTransparent, all
         <button key={c} type="button" role="radio" aria-checked={c.toLowerCase() === value.toLowerCase()} aria-label={c} title={c} className="swatch" style={{ background: c }} onClick={() => onChange(c)} />
       ))}
       {allowCustom && (
-        <label className="swatch custom" aria-checked={custom} role="radio" title="Colore personalizzato">
+        <label className="swatch custom" data-checked={custom} title="Colore personalizzato">
           <span className="sr-only">Colore personalizzato</span>
           <input type="color" value={/^#[0-9a-f]{6}$/i.test(value) ? value : '#000000'} onChange={(e) => onChange(e.target.value.toUpperCase())} />
         </label>

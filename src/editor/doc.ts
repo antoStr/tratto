@@ -46,7 +46,7 @@ export class Board {
   /** Elements bottom to top. */
   all(): El[] {
     if (!this.sorted) {
-      this.sorted = [...this.elements.values()].filter(isValid).sort((a, b) => a.z - b.z || (a.id < b.id ? -1 : 1))
+      this.sorted = [...this.elements.values()].filter(isValid).sort(byZ)
     }
     return this.sorted
   }
@@ -103,6 +103,7 @@ export class Board {
         const el = this.elements.get(elId)
         if (el) this.elements.set(elId, { ...el, groupId: id })
       }
+      this.restack(id)
       this.pruneGroups()
     })
     return id
@@ -119,6 +120,7 @@ export class Board {
         else delete next.groupId
         this.elements.set(elId, next)
       }
+      if (groupId) this.restack(groupId)
       this.pruneGroups()
     })
   }
@@ -126,6 +128,24 @@ export class Board {
   renameGroup(groupId: string, name: string) {
     const clean = name.trim().slice(0, 80)
     if (clean) this.transact(() => this.groups.set(groupId, { id: groupId, name: clean }))
+  }
+
+  /**
+   * Like a Figma group, a folder's elements sit next to each other in the stack, right under
+   * its top element. Elements that were in between end up below the folder.
+   */
+  private restack(groupId: string) {
+    const all = [...this.elements.values()].filter(isValid).sort(byZ)
+    const members = all.filter((el) => el.groupId === groupId)
+    if (members.length < 2) return
+    const top = members[members.length - 1]
+    const below = all.slice(0, all.indexOf(top)).filter((el) => el.groupId !== groupId).pop()
+    const lo = below ? below.z : top.z - 1
+    const step = (top.z - lo) / members.length
+    members.slice(0, -1).forEach((el, k) => {
+      const z = lo + step * (k + 1)
+      if (el.z !== z) this.elements.set(el.id, { ...el, z })
+    })
   }
 
   /** Forgets folders that no element belongs to any more. */
@@ -187,6 +207,8 @@ export class Board {
     })
   }
 }
+
+const byZ = (a: El, b: El) => a.z - b.z || (a.id < b.id ? -1 : 1)
 
 const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v)
 

@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
-import { Download } from 'lucide-react'
+import { Copy, Download } from 'lucide-react'
 import { api } from '../api.ts'
 import { Dialog, Segmented, Switch, toast } from '../ui.tsx'
 import type { Board } from './doc.ts'
 import { download, exportPDF, exportPNG, exportSVG, safeFilename, thumbnail } from './export.ts'
 import { useEditor } from './store.ts'
 
-type Format = 'png' | 'svg' | 'pdf' | 'tratto'
+type Format = 'png' | 'jpg' | 'svg' | 'pdf' | 'tratto'
 
 interface Props {
   open: boolean
@@ -26,6 +26,7 @@ export function ExportDialog({ open, onOpenChange, board, boardId, title, host, 
   const [scale, setScale] = useState('2')
   const [background, setBackground] = useState(true)
   const [onlySelection, setOnlySelection] = useState(false)
+  const [page, setPage] = useState<'fit' | 'a4'>('fit')
   const [busy, setBusy] = useState(false)
   const [preview, setPreview] = useState<string | null>(null)
 
@@ -38,7 +39,7 @@ export function ExportDialog({ open, onOpenChange, board, boardId, title, host, 
     if (!open) return
     let url: string | null = null
     let cancelled = false
-    thumbnail(board, fetchFile)
+    thumbnail(board, fetchFile, onlySelection ? selection : null)
       .then((b) => {
         if (b && !cancelled) setPreview((url = URL.createObjectURL(b)))
       })
@@ -48,14 +49,16 @@ export function ExportDialog({ open, onOpenChange, board, boardId, title, host, 
       if (url) URL.revokeObjectURL(url)
       setPreview(null)
     }
-  }, [open, board, fetchFile])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, board, fetchFile, onlySelection])
 
   const name = safeFilename(title)
   const run = async () => {
     setBusy(true)
     try {
-      const o = { ids: onlySelection ? selection : null, scale: Number(scale), background, fetchFile }
+      const o = { ids: onlySelection ? selection : null, scale: Number(scale), background, fetchFile, page }
       if (format === 'png') download(await exportPNG(board, o), `${name}.png`)
+      else if (format === 'jpg') download(await exportPNG(board, { ...o, type: 'image/jpeg' }), `${name}.jpg`)
       else if (format === 'svg') download(await exportSVG(board, o), `${name}.svg`, 'image/svg+xml')
       else if (format === 'pdf') download(await exportPDF(board, o), `${name}.pdf`)
       else {
@@ -71,8 +74,24 @@ export function ExportDialog({ open, onOpenChange, board, boardId, title, host, 
     }
   }
 
+  // Image on the clipboard, to paste straight into chats, documents and slides.
+  const copy = async () => {
+    setBusy(true)
+    try {
+      const png = await exportPNG(board, { ids: onlySelection ? selection : null, scale: Number(scale), background, fetchFile })
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })])
+      toast('Immagine copiata: incollala dove vuoi con Ctrl+V.')
+      onOpenChange(false)
+    } catch (e) {
+      toast(e instanceof Error && e.message.includes('vuota') ? e.message : 'Non riesco a copiare l’immagine: usa Esporta.', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const formats: { value: Format; label: string; title: string }[] = [
-    { value: 'png', label: 'PNG', title: 'Immagine' },
+    { value: 'png', label: 'PNG', title: 'Immagine di alta qualità, anche con sfondo trasparente' },
+    { value: 'jpg', label: 'JPG', title: 'Immagine leggera, la più facile da mandare in chat o per e-mail' },
     { value: 'svg', label: 'SVG', title: 'Vettoriale, modificabile in altri programmi' },
     { value: 'pdf', label: 'PDF', title: 'Documento da stampare o inviare' },
   ]
@@ -88,6 +107,11 @@ export function ExportDialog({ open, onOpenChange, board, boardId, title, host, 
           <button type="button" className="btn btn-secondary" onClick={() => onOpenChange(false)}>
             Annulla
           </button>
+          {format !== 'tratto' && 'ClipboardItem' in window && (
+            <button type="button" className="btn btn-secondary" onClick={copy} disabled={busy}>
+              <Copy size={12} /> Copia
+            </button>
+          )}
           <button type="button" className="btn btn-primary" onClick={run} disabled={busy}>
             {busy ? <span className="spinner" aria-hidden="true" /> : <Download size={12} />}
             Esporta
@@ -103,6 +127,20 @@ export function ExportDialog({ open, onOpenChange, board, boardId, title, host, 
       </div>
       {format !== 'tratto' && (
         <>
+          {format === 'pdf' && (
+            <div className="form-row">
+              <span className="label">Pagina</span>
+              <Segmented
+                label="Pagina"
+                value={page}
+                onChange={setPage}
+                options={[
+                  { value: 'fit', label: 'Come il contenuto' },
+                  { value: 'a4', label: 'A4 da stampare' },
+                ]}
+              />
+            </div>
+          )}
           {format !== 'svg' && (
             <div className="form-row">
               <span className="label">Risoluzione</span>
@@ -119,7 +157,7 @@ export function ExportDialog({ open, onOpenChange, board, boardId, title, host, 
               />
             </div>
           )}
-          <Switch id="exp-bg" label="Includi lo sfondo" checked={background} onChange={setBackground} />
+          {format !== 'jpg' && <Switch id="exp-bg" label="Includi lo sfondo" checked={background} onChange={setBackground} />}
           <Switch id="exp-sel" label={`Solo la selezione${selection.length ? ` (${selection.length})` : ''}`} checked={onlySelection && selection.length > 0} onChange={(v) => setOnlySelection(v && selection.length > 0)} />
         </>
       )}

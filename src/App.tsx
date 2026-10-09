@@ -5,14 +5,41 @@ import { api, ApiError, setGuestCode } from './api.ts'
 import { bridge, isDesktop } from './desktop.ts'
 import { Editor, type GuestSession } from './editor/Editor.tsx'
 import { useShare } from './editor/ShareDialog.tsx'
-import { useEditor } from './editor/store.ts'
+import { DEFAULT_ACCENT, useEditor } from './editor/store.ts'
 import { Home } from './home/Home.tsx'
+import { SettingsDialog } from './Settings.tsx'
+import { UpdateIndicator } from './updates.tsx'
 import { Logo, Toaster, toast } from './ui.tsx'
 
 if (isDesktop) document.documentElement.classList.add('desktop')
 
-function useTheme() {
-  const theme = useEditor((s) => s.prefs.theme)
+/** Base sizes of the text tokens in styles.css, scaled by Settings › Dimensione del testo. */
+const TEXT_TOKENS = { '--fs': 11, '--lh': 16, '--fs-md': 12, '--fs-lg': 13, '--fs-xl': 15 }
+
+/** Theme, contrast, accent colour, text and interface size from Settings. */
+function useAppearance() {
+  const { theme, highContrast, accent, uiScale, textScale } = useEditor((s) => s.prefs)
+  useEffect(() => {
+    const root = document.documentElement
+    if (highContrast) root.dataset.contrast = 'high'
+    else delete root.dataset.contrast
+    if (/^#[0-9a-f]{6}$/i.test(accent) && accent.toUpperCase() !== DEFAULT_ACCENT) {
+      root.dataset.accent = ''
+      root.style.setProperty('--accent', accent)
+    } else {
+      delete root.dataset.accent
+      root.style.removeProperty('--accent')
+    }
+  }, [highContrast, accent])
+  useEffect(() => {
+    const root = document.documentElement
+    for (const [token, px] of Object.entries(TEXT_TOKENS))
+      if (textScale === 1) root.style.removeProperty(token)
+      else root.style.setProperty(token, `${Math.round(px * textScale)}px`)
+  }, [textScale])
+  useEffect(() => {
+    if (uiScale >= 0.75 && uiScale <= 2) bridge?.setZoom(uiScale)
+  }, [uiScale])
   useEffect(() => {
     bridge?.setTheme(theme)
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
@@ -29,10 +56,11 @@ function useTheme() {
 const guestCode = /^#[A-Za-z0-9_-]{16,64}$/.test(location.hash) ? location.hash.slice(1) : null
 
 export function App() {
-  useTheme()
+  useAppearance()
   return (
     <Tooltip.Provider delayDuration={600} skipDelayDuration={250}>
       {guestCode ? <GuestApp code={guestCode} /> : <HostApp />}
+      <SettingsDialog host={!guestCode} />
       <Toaster />
     </Tooltip.Provider>
   )
@@ -94,6 +122,7 @@ function HostApp() {
           </button>
         )}
         <div className="grow" />
+        <UpdateIndicator />
         {live && <span className="live-pill">In condivisione</span>}
       </header>
       {route ? (

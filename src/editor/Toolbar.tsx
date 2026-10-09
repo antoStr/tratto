@@ -1,5 +1,6 @@
 import { useMemo, type ReactNode } from 'react'
 import { Popover } from 'radix-ui'
+import { BackToContent } from './Minimap.tsx'
 import {
   ArrowUpRight,
   ChevronDown,
@@ -47,6 +48,7 @@ export function Toolbar({ onImage }: { onImage: () => void }) {
   const ruler = useEditor((s) => s.ruler.visible)
   const lastShape = useEditor((s) => s.prefs.lastShape)
   const setTool = useEditor((s) => s.setTool)
+  const pos = useEditor((s) => s.prefs.toolbarPos)
 
   const btn = (t: Tool, label: string, icon: ReactNode, kbd?: string) => (
     <IconButton label={label} kbd={kbd} active={tool === t} onClick={() => setTool(t)} className="tool">
@@ -56,7 +58,8 @@ export function Toolbar({ onImage }: { onImage: () => void }) {
   const shape = SHAPES.find((s) => s.kind === lastShape) ?? SHAPES[0]
 
   return (
-    <div className="toolbar-wrap">
+    <div className="toolbar-wrap" data-pos={pos}>
+      <BackToContent />
       {!readOnly && <Tray />}
       <div className="toolbar" role="toolbar" aria-label="Strumenti">
         {btn('select', 'Seleziona', <MousePointer2 size={ICON} />, 'V')}
@@ -141,7 +144,7 @@ function Tray() {
     case 'pen':
       content = (
         <>
-          <div className="pen-set" role="radiogroup" aria-label="Penne">
+          <div className="pen-set" role="group" aria-label="Penne">
             {prefs.pens.map((p, i) => (
               <PenSlot key={i} index={i} pen={p} active={i === pen} />
             ))}
@@ -288,7 +291,7 @@ function PenSlot({ index, pen, active }: { index: number; pen: PenPreset; active
   if (!active)
     return (
       <Tip label={`Penna ${index + 1}`} kbd={String(index + 1)}>
-        <button type="button" role="radio" aria-checked={false} aria-label={`Penna ${index + 1}`} className="pen-slot" onClick={() => useEditor.setState({ pen: index })}>
+        <button type="button" aria-pressed={false} aria-label={`Penna ${index + 1}`} className="pen-slot" onClick={() => useEditor.setState({ pen: index })}>
           {svg}
         </button>
       </Tip>
@@ -297,7 +300,7 @@ function PenSlot({ index, pen, active }: { index: number; pen: PenPreset; active
     <Popover.Root>
       <Tip label="Modifica penna" kbd={String(index + 1)}>
         <Popover.Trigger asChild>
-          <button type="button" role="radio" aria-checked={true} aria-label={`Penna ${index + 1}, tocca per modificarla`} className="pen-slot active">
+          <button type="button" aria-pressed={true} aria-label={`Penna ${index + 1}, tocca per modificarla`} className="pen-slot active">
             {svg}
           </button>
         </Popover.Trigger>

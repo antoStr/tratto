@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { DropdownMenu } from 'radix-ui'
-import { ArrowDownToLine, ArrowUpToLine, ClipboardPaste, Copy, CopyPlus, EyeOff, Lock, Maximize, MousePointerSquareDashed, Ruler, Scissors, Trash2, Unlock } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpToLine, ClipboardPaste, Copy, CopyPlus, EyeOff, Folder, FolderInput, FolderOutput, FolderPlus, Lock, Maximize, MousePointerSquareDashed, Ruler, Scissors, Trash2, Unlock } from 'lucide-react'
 import type { Board } from './doc.ts'
 import { commands, createController, type Awareness } from './controller.ts'
 import { Cursors, RulerView, TextEditor } from './overlays.tsx'
 import type { ImageStore } from './render.ts'
 import { useEditor } from './store.ts'
 import type { Pt } from './geometry.ts'
-import { MenuContent, MenuItem, MenuSep } from '../ui.tsx'
+import { MenuAt, MenuContent, MenuItem, MenuSep, MenuSub } from '../ui.tsx'
 
 interface Props {
   board: Board
@@ -22,11 +21,11 @@ export function Canvas({ board, awareness, images, boardKey, onImageFiles, onRea
   const root = useRef<HTMLDivElement>(null)
   const scene = useRef<HTMLCanvasElement>(null)
   const overlay = useRef<HTMLCanvasElement>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const filesRef = useRef(onImageFiles)
   filesRef.current = onImageFiles
   const readyRef = useRef(onReady)
   readyRef.current = onReady
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
 
   useEffect(() => {
     const c = createController({
@@ -38,6 +37,7 @@ export function Canvas({ board, awareness, images, boardKey, onImageFiles, onRea
       images,
       boardKey,
       onImageFiles: (f, at) => filesRef.current(f, at),
+      onMenu: (x, y) => setMenu({ x, y }),
     })
     readyRef.current?.({ hadSavedCamera: c.hadSavedCamera, invalidate: () => c.invalidate(true) })
     return () => c.destroy()
@@ -50,9 +50,9 @@ export function Canvas({ board, awareness, images, boardKey, onImageFiles, onRea
       onContextMenu={(e) => {
         e.preventDefault()
         // Only a real right click opens the menu: a pen held still must keep drawing.
+        // The pen's barrel button and long presses open it from the controller instead.
         if ((e.nativeEvent as PointerEvent).pointerType && (e.nativeEvent as PointerEvent).pointerType !== 'mouse') return
-        const r = root.current!.getBoundingClientRect()
-        setMenu({ x: e.clientX - r.left, y: e.clientY - r.top })
+        setMenu({ x: e.clientX, y: e.clientY })
       }}
     >
       <canvas ref={scene} className="canvas-layer" aria-hidden="true" />
@@ -60,31 +60,29 @@ export function Canvas({ board, awareness, images, boardKey, onImageFiles, onRea
       <RulerView />
       <Cursors awareness={awareness} />
       <TextEditor board={board} />
-      <DropdownMenu.Root open={!!menu} onOpenChange={(o) => !o && setMenu(null)} modal={false}>
-        <DropdownMenu.Trigger asChild>
-          <span className="menu-anchor" style={{ left: menu?.x ?? 0, top: menu?.y ?? 0 }} />
-        </DropdownMenu.Trigger>
-        {menu && <CanvasMenu board={board} />}
-      </DropdownMenu.Root>
+      <MenuAt at={menu} onClose={() => setMenu(null)}>
+        <SelectionMenu board={board} />
+      </MenuAt>
     </div>
   )
 }
 
-function CanvasMenu({ board }: { board: Board }) {
+/** Right-click menu of the canvas and of the layers panel: acts on the selection. */
+export function SelectionMenu({ board }: { board: Board }) {
   const selection = useEditor((s) => s.selection)
   const readOnly = useEditor((s) => s.readOnly)
   const ruler = useEditor((s) => s.ruler.visible)
   const has = selection.length > 0
   if (readOnly)
     return (
-      <MenuContent>
+      <MenuContent side="right" align="start">
         <MenuItem icon={<Maximize size={14} />} kbd="Maiusc+1" onSelect={() => commands.fit()}>
           Adatta alla lavagna
         </MenuItem>
       </MenuContent>
     )
   return (
-    <MenuContent>
+    <MenuContent side="right" align="start">
       {has ? (
         <>
           <MenuItem icon={<Copy size={14} />} kbd="Ctrl+C" onSelect={() => commands.copy()}>
@@ -112,6 +110,8 @@ function CanvasMenu({ board }: { board: Board }) {
           <MenuItem icon={<ArrowDownToLine size={14} />} kbd="Ctrl+Maiusc+[" onSelect={() => commands.order('back')}>
             Porta in fondo
           </MenuItem>
+          <MenuSep />
+          <FolderItems board={board} />
           <MenuSep />
           <MenuItem icon={<Lock size={14} />} kbd="Ctrl+Maiusc+L" onSelect={() => commands.toggleLock()}>
             Blocca
@@ -149,6 +149,40 @@ function CanvasMenu({ board }: { board: Board }) {
         </>
       )}
     </MenuContent>
+  )
+}
+
+function FolderItems({ board }: { board: Board }) {
+  const selection = useEditor((s) => s.selection)
+  const els = selection.map((id) => board.get(id)).filter((el) => !!el)
+  const inFolder = [...new Set(els.map((el) => el.groupId).filter((g) => g !== undefined))]
+  const others = board.groupList().filter((g) => !(inFolder.length === 1 && inFolder[0] === g.id && els.every((el) => el.groupId === g.id)))
+  const whole = inFolder.length === 1 ? board.members(inFolder[0]) : []
+  return (
+    <>
+      <MenuItem icon={<FolderPlus size={14} />} kbd="Ctrl+G" onSelect={() => commands.group()}>
+        Metti in una nuova cartella
+      </MenuItem>
+      {others.length > 0 && (
+        <MenuSub label="Sposta nella cartella" icon={<FolderInput size={14} />}>
+          {others.map((g) => (
+            <MenuItem key={g.id} icon={<Folder size={14} />} onSelect={() => (board.undo.stopCapturing(), board.setGroup(selection, g.id))}>
+              {g.name}
+            </MenuItem>
+          ))}
+        </MenuSub>
+      )}
+      {whole.length > els.length && (
+        <MenuItem icon={<MousePointerSquareDashed size={14} />} onSelect={() => useEditor.setState({ selection: whole.map((el) => el.id) })}>
+          Seleziona tutta la cartella
+        </MenuItem>
+      )}
+      {inFolder.length > 0 && (
+        <MenuItem icon={<FolderOutput size={14} />} kbd="Ctrl+Maiusc+G" onSelect={() => commands.ungroup()}>
+          Togli dalla cartella
+        </MenuItem>
+      )}
+    </>
   )
 }
 

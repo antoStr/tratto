@@ -1,0 +1,80 @@
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows
+            cloudflared: node scripts/fetch-cloudflared.ts win
+            target: --win --x64
+          - os: macos-latest
+            name: Mac
+            cloudflared: node scripts/fetch-cloudflared.ts mac-x64 && node scripts/fetch-cloudflared.ts mac-arm64
+            target: --mac
+          - os: ubuntu-latest
+            name: Linux
+            cloudflared: node scripts/fetch-cloudflared.ts linux
+            target: --linux
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - if: matrix.os == 'ubuntu-latest'
+        run: npm test
+      - run: npm run build
+      - run: ${{ matrix.cloudflared }}
+      # Always build without publishing: the release job below uploads every platform at once.
+      - run: npx electron-builder ${{ matrix.target }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tratto-${{ matrix.name }}
+          # Installers plus what electron-updater reads (latest*.yml, .blockmap).
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.AppImage
+            release/*.deb
+            release/*.blockmap
+            release/latest*.yml
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: files
+          merge-multiple: true
+      - run: ls -la files
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" files/* --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" files/* --title "Tratto ${TAG#v}" --generate-notes -R "$GITHUB_REPOSITORY"
+          fi

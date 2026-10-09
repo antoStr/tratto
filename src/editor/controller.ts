@@ -55,6 +55,13 @@ export const commands = {
   distribute: (_axis: 'x' | 'y') => {},
   insert: (_els: El[], _at?: Pt, _opts?: { avoidOverlap?: boolean; focus?: boolean }) => {},
   viewportCenter: (): Pt => ({ x: 0, y: 0 }),
+  /** Visible part of the board, in board units. */
+  viewport: (): Box => ({ x: 0, y: 0, w: 0, h: 0 }),
+  centerOn: (_p: Pt) => {},
+  /** Brings elements into view without changing the zoom unless they don't fit. */
+  reveal: (_ids: string[]) => {},
+  group: () => {},
+  ungroup: () => {},
   follow: (_clientId: number | null) => {},
 }
 
@@ -83,7 +90,8 @@ type Gesture =
       raw: Pt | null
     }
   | { kind: 'erase'; last: Pt; pointerId: number }
-  | { kind: 'lasso'; poly: number[] }
+  /** `tap`: started with the pen's barrel button, which opens the menu when not dragged. */
+  | { kind: 'lasso'; poly: number[]; tap?: { clientX: number; clientY: number } }
   | { kind: 'marquee'; start: Pt; cur: Pt; base: string[] }
   | { kind: 'move'; start: Pt; orig: Map<string, El>; box: Box; cands: Box[]; moved: boolean; sx: number; sy: number }
   | { kind: 'resize'; handle: Handle; start: Pt; orig: Map<string, El>; frame: Box; rotation: number }
@@ -103,6 +111,8 @@ interface Options {
   images: ImageStore
   boardKey: string
   onImageFiles: (files: File[], at: Pt) => void
+  /** Opens the context menu at a client position (pen barrel button, long press). */
+  onMenu: (clientX: number, clientY: number) => void
 }
 
 export function createController(o: Options) {
@@ -182,7 +192,11 @@ export function createController(o: Options) {
     if (now) {
       clearTimeout(awTimer)
       flushAw()
-    } else if (!awTimer) awTimer = window.setTimeout(flushAw, 50)
+    } else if (!awTimer) {
+      // The host relays every update to everyone: with many people, send less often to spare its upload.
+      const people = awareness?.getStates().size ?? 1
+      awTimer = window.setTimeout(flushAw, people > 10 ? 50 * (people / 10) : 50)
+    }
   }
 
   /* ---------- camera ---------- */
@@ -233,14 +247,23 @@ export function createController(o: Options) {
     sctx.setTransform(dpr * c.z, 0, 0, dpr * c.z, dpr * c.x, dpr * c.y)
     const v = view()
     const env = { images, editingId: st().editingId }
+    let anyVisible = false
+    let anyOnScreen = false
     for (const base of board.all()) {
       const el = preview.get(base.id) ?? base
-      if (intersects(box(el), v)) drawElement(sctx, el, env)
+      if (!el.hidden) anyVisible = true
+      if (intersects(box(el), v)) {
+        drawElement(sctx, el, env)
+        if (!el.hidden) anyOnScreen = true
+      }
     }
+    const lost = anyVisible && !anyOnScreen
+    if (lost !== st().lost) set({ lost })
     if (gesture?.kind === 'create') drawElement(sctx, gesture.el, env)
   }
 
-  const ACCENT = '#0D99FF'
+  let ACCENT = st().prefs.accent
+  const handleScale = () => (st().prefs.bigHandles ? 1.6 : 1)
 
   function strokeWorldPath(ctx: CanvasRenderingContext2D, pts: number[], size: number, hl: boolean, color: string) {
     const c = cam()
@@ -281,6 +304,7 @@ export function createController(o: Options) {
   function drawOverlay() {
     const ctx = octx
     const c = cam()
+    ACCENT = /^#[0-9a-f]{6}$/i.test(st().prefs.accent) ? st().prefs.accent : '#0D99FF'
     ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.clearRect(0, 0, overlay.width, overlay.height)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -334,12 +358,13 @@ export function createController(o: Options) {
       if (sel.length === 1 && sel[0].type === 'line') outlineEl(ctx, sel[0], ACCENT, 1)
       if (!g || g.kind === 'resize' || g.kind === 'rotate' || g.kind === 'endpoint')
         for (const h of handles) {
+          const k = handleScale()
           ctx.fillStyle = '#FFFFFF'
           ctx.strokeStyle = ACCENT
-          ctx.lineWidth = 1
+          ctx.lineWidth = k > 1 ? 1.5 : 1
           ctx.beginPath()
-          if (h.h === 'rot' || h.h === 'p0' || h.h === 'p1') ctx.arc(h.x, h.y, 4.5, 0, Math.PI * 2)
-          else ctx.rect(Math.round(h.x) - 3.5, Math.round(h.y) - 3.5, 7, 7)
+          if (h.h === 'rot' || h.h === 'p0' || h.h === 'p1') ctx.arc(h.x, h.y, 4.5 * k, 0, Math.PI * 2)
+          else ctx.rect(Math.round(h.x) - 3.5 * k, Math.round(h.y) - 3.5 * k, 7 * k, 7 * k)
           ctx.fill()
           ctx.stroke()
         }
@@ -366,7 +391,7 @@ export function createController(o: Options) {
       const a = toScreen(c, g.start.x, g.start.y)
       const b = toScreen(c, g.cur.x, g.cur.y)
       const r = normalizeBox(a.x, a.y, b.x, b.y)
-      ctx.fillStyle = 'rgba(13,153,255,0.08)'
+      ctx.fillStyle = ACCENT + '14'
       ctx.strokeStyle = ACCENT
       ctx.lineWidth = 1
       ctx.fillRect(r.x, r.y, r.w, r.h)
@@ -377,7 +402,7 @@ export function createController(o: Options) {
       ctx.save()
       ctx.setLineDash([5, 4])
       ctx.strokeStyle = ACCENT
-      ctx.fillStyle = 'rgba(13,153,255,0.06)'
+      ctx.fillStyle = ACCENT + '0F'
       ctx.lineWidth = 1.5
       ctx.beginPath()
       for (let i = 0; i < g.poly.length; i += 2) {
@@ -504,13 +529,14 @@ export function createController(o: Options) {
     if (!(els.length === 1 && els[0].type === 'stamp' && sw < 16)) {
       const top = rotate(cx, b.y, cx, cy, f.rotation)
       const s = toScreen(c, top.x, top.y)
-      list.push({ h: 'rot', x: s.x + Math.sin(f.rotation) * 22, y: s.y - Math.cos(f.rotation) * 22 })
+      const d = 22 * handleScale()
+      list.push({ h: 'rot', x: s.x + Math.sin(f.rotation) * d, y: s.y - Math.cos(f.rotation) * d })
     }
     return list
   }
 
   function hitHandle(s: Pt, touch: boolean): Handle | null {
-    const r = touch ? 18 : 9
+    const r = (touch ? 18 : 9) * handleScale()
     let best: Handle | null = null
     let bestD = r
     for (const h of handlePositions()) {
@@ -1097,7 +1123,7 @@ export function createController(o: Options) {
       return
     }
     if (!ro && e.pointerType === 'pen' && e.button === 2) {
-      gesture = { kind: 'lasso', poly: [p.x, p.y] }
+      gesture = { kind: 'lasso', poly: [p.x, p.y], tap: { clientX: e.clientX, clientY: e.clientY } }
       return
     }
 
@@ -1219,6 +1245,7 @@ export function createController(o: Options) {
   }
 
   function onPointerMove(e: PointerEvent) {
+    if (press && (e.pointerId !== press.id || Math.hypot(e.clientX - press.x, e.clientY - press.y) > 8)) cancelPress()
     const s = screenPt(e)
     if (e.pointerType === 'pen') lastPen = performance.now()
     const tracked = pointers.get(e.pointerId)
@@ -1351,6 +1378,7 @@ export function createController(o: Options) {
 
   function onPointerUp(e: PointerEvent) {
     pointers.delete(e.pointerId)
+    cancelPress()
     const g = gesture
     if (!g) return
     if (g.kind === 'pinch') {
@@ -1367,6 +1395,10 @@ export function createController(o: Options) {
         break
       case 'lasso': {
         const poly = g.poly
+        if (g.tap && poly.every((v, i) => Math.abs(v - poly[i % 2]) * cam().z < 8)) {
+          openMenu(g.tap)
+          return
+        }
         if (poly.length >= 6) {
           const ids = board
             .all()
@@ -1473,8 +1505,9 @@ export function createController(o: Options) {
         '0': () => commands.zoomTo(1),
         ']': () => commands.order(e.shiftKey ? 'front' : 'forward'),
         '[': () => commands.order(e.shiftKey ? 'back' : 'backward'),
-        '\\': () => set({ ui: !state.ui }),
+        '\\': () => state.setPrefs({ focus: !state.prefs.focus }),
       }
+      actions.g = () => (e.shiftKey ? commands.ungroup() : commands.group())
       if (e.shiftKey && key === 'l') actions.l = () => commands.toggleLock()
       if (e.shiftKey && key === 'h') actions.h = () => commands.toggleHide()
       const fn = actions[key]
@@ -1631,11 +1664,44 @@ export function createController(o: Options) {
   }
   const onDragOver = (e: DragEvent) => e.preventDefault()
 
-  function onContextMenu(e: MouseEvent) {
-    const hit = hitElement(worldPt(e))
+  /** Right click acts on what is under the pointer, or on the selection if it's inside it. */
+  function selectForMenu(e: { clientX: number; clientY: number }) {
+    const p = worldPt(e)
+    const hit = hitElement(p)
     const sel = st().selection
     if (hit && !sel.includes(hit.id)) set({ selection: [hit.id] })
-    if (!hit && !insideSelection(worldPt(e))) set({ selection: [] })
+    if (!hit && !insideSelection(p)) set({ selection: [] })
+  }
+  const onContextMenu = (e: MouseEvent) => selectForMenu(e)
+
+  function openMenu(e: { clientX: number; clientY: number }) {
+    gesture = null
+    finishGesture()
+    selectForMenu(e)
+    o.onMenu(e.clientX, e.clientY)
+  }
+
+  // Pen or finger held still opens the menu, like a right click in Windows.
+  let press: { id: number; x: number; y: number; timer: number } | null = null
+  const cancelPress = () => {
+    if (press) clearTimeout(press.timer)
+    press = null
+  }
+  function startPress(e: PointerEvent) {
+    cancelPress()
+    const g = gesture
+    // Not for the mouse (it has a right button), nor for a resting palm that palm rejection ignored.
+    if (e.pointerType === 'mouse' || !pointers.has(e.pointerId) || !g || !['move', 'marquee', 'pan', 'lasso'].includes(g.kind)) return
+    const { clientX, clientY, pointerId } = e
+    press = {
+      id: pointerId,
+      x: clientX,
+      y: clientY,
+      timer: window.setTimeout(() => {
+        press = null
+        if (gesture === g && pointers.size === 1) openMenu({ clientX, clientY })
+      }, 550),
+    }
   }
 
   /* ---------- commands ---------- */
@@ -1789,6 +1855,34 @@ export function createController(o: Options) {
       if (opts.focus) fitBox(union(placed.map(frameBox)), 1)
     },
     viewportCenter: () => toWorld(cam(), W / 2, H / 2),
+    viewport: view,
+    centerOn: (p: Pt) => {
+      stopFollowing()
+      const z = cam().z
+      setCam({ x: W / 2 - p.x * z, y: H / 2 - p.y * z, z })
+    },
+    reveal: (ids: string[]) => {
+      const b = union(ids.map((id) => board.get(id)).filter((el): el is El => !!el).map(box))
+      if (!b) return
+      const v = expand(view(), -40 / cam().z)
+      if (b.x >= v.x && b.y >= v.y && b.x + b.w <= v.x + v.w && b.y + b.h <= v.y + v.h) return
+      stopFollowing()
+      if (b.w <= v.w && b.h <= v.h) commands.centerOn(center(b))
+      else fitBox(b, cam().z)
+    },
+    group: () => {
+      const ids = st().selection.filter((id) => board.get(id))
+      if (readOnly() || !ids.length) return
+      board.undo.stopCapturing()
+      const id = board.createGroup(ids)
+      window.dispatchEvent(new CustomEvent('tratto:folder-created', { detail: id }))
+    },
+    ungroup: () => {
+      const ids = selected().filter((el) => el.groupId).map((el) => el.id)
+      if (readOnly() || !ids.length) return
+      board.undo.stopCapturing()
+      board.setGroup(ids, null)
+    },
     follow: (id: number | null) => {
       following = id
       set({ following: id })
@@ -1842,6 +1936,7 @@ export function createController(o: Options) {
       invalidate(false)
     }
     if (s.editingId !== prev.editingId || s.readOnly !== prev.readOnly) invalidate(true)
+    if (s.prefs.accent !== prev.prefs.accent || s.prefs.bigHandles !== prev.prefs.bigHandles) invalidate(false)
     if (s.tool !== prev.tool) {
       eraserAt = null
       hoverHandle = null
@@ -1880,7 +1975,11 @@ export function createController(o: Options) {
   document.fonts?.addEventListener('loadingdone', onFonts)
   document.fonts?.ready.then(onFonts)
 
-  overlay.addEventListener('pointerdown', onPointerDown)
+  const onDown = (e: PointerEvent) => {
+    onPointerDown(e)
+    startPress(e)
+  }
+  overlay.addEventListener('pointerdown', onDown)
   overlay.addEventListener('pointermove', onPointerMove)
   overlay.addEventListener('pointerup', onPointerUp)
   overlay.addEventListener('pointercancel', onPointerUp)
@@ -1916,7 +2015,8 @@ export function createController(o: Options) {
       offStamps()
       awareness?.off('change', onAwareness)
       document.fonts?.removeEventListener('loadingdone', onFonts)
-      overlay.removeEventListener('pointerdown', onPointerDown)
+      overlay.removeEventListener('pointerdown', onDown)
+      cancelPress()
       overlay.removeEventListener('pointermove', onPointerMove)
       overlay.removeEventListener('pointerup', onPointerUp)
       overlay.removeEventListener('pointercancel', onPointerUp)

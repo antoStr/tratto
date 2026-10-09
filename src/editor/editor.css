@@ -6,6 +6,20 @@
   grid-template-columns: 240px minmax(0, 1fr) 240px;
   background: var(--canvas);
 }
+/* Panels hidden one at a time from Settings; the panels toggle (Ctrl+\) still hides both. */
+.editor[data-left='false'] {
+  grid-template-columns: 0 minmax(0, 1fr) 240px;
+}
+.editor[data-right='false'] {
+  grid-template-columns: 240px minmax(0, 1fr) 0;
+}
+.editor[data-left='false'][data-right='false'] {
+  grid-template-columns: 0 minmax(0, 1fr) 0;
+}
+.editor[data-left='false'] .panel-left,
+.editor[data-right='false'] .panel-right {
+  visibility: hidden;
+}
 .editor[data-ui='false'] {
   grid-template-columns: 0 minmax(0, 1fr) 0;
 }
@@ -130,7 +144,8 @@
 .tab-text:hover {
   color: var(--text);
 }
-.tab-text[aria-selected='true'] {
+.tab-text[aria-selected='true'],
+.tab-text[data-current] {
   background: var(--bg-2);
   color: var(--text);
 }
@@ -148,18 +163,56 @@
   align-items: center;
   gap: 8px;
   height: 32px;
-  padding: 0 4px 0 8px;
+  /* Room for a folder's chevron, so every icon lines up as in Figma. */
+  padding: 0 4px 0 24px;
   border-radius: var(--r);
   user-select: none;
 }
 .layer-row:hover {
   background: var(--hover);
 }
-.layer-row[aria-selected='true'] {
+.layer-row[data-selected='true'] {
   background: var(--selected);
 }
 .layer-row[data-dim='true'] .layer-name,
-.layer-row[data-dim='true'] .layer-icon {
+.layer-row[data-dim='true'] .layer-row[data-folder='true'] {
+  padding-left: 4px;
+}
+.layer-row[data-depth='1'] {
+  padding-left: 44px;
+}
+.layer-chevron {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-right: -4px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--icon-2);
+}
+.layer-chevron:hover {
+  color: var(--icon);
+}
+.layer-chevron svg {
+  transition: transform 120ms var(--ease);
+}
+.layer-chevron[aria-expanded='true'] svg {
+  transform: rotate(90deg);
+}
+.layer-row[data-folder='true'] .layer-name {
+  font-weight: var(--w-medium);
+}
+.layer-count {
+  margin-left: 6px;
+  color: var(--text-2);
+  font-weight: var(--w-regular);
+  font-variant-numeric: tabular-nums;
+}
+.layer-icon {
   opacity: 0.45;
 }
 .layer-icon {
@@ -178,6 +231,13 @@
 .layer-name {
   flex: 1;
   min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -379,6 +439,62 @@
   opacity: 0;
 }
 
+/* Background picker (Design panel and Settings) */
+.bg-fields {
+  display: grid;
+  gap: 12px;
+}
+.pattern-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+}
+.pattern-tile {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px 2px 6px;
+  border: 0;
+  border-radius: var(--r);
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+}
+.pattern-tile:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.pattern-tile[aria-checked='true'] {
+  background: var(--selected);
+  color: var(--text);
+}
+.pattern-tile span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pattern-art {
+  width: 60px;
+  height: 32px;
+  border-radius: 3px;
+  outline: 1px solid rgba(0, 0, 0, 0.12);
+  outline-offset: -1px;
+}
+.pattern-tile[aria-checked='true'] .pattern-art {
+  outline: 2px solid var(--brand);
+}
+.field-row {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+.field-row .field-label {
+  color: var(--text-2);
+}
+
 /* ============ Canvas ============ */
 .canvas-root {
   position: absolute;
@@ -396,7 +512,7 @@
   height: 100%;
 }
 .menu-anchor {
-  position: absolute;
+  position: fixed;
   width: 1px;
   height: 1px;
   pointer-events: none;
@@ -571,7 +687,8 @@
 .split-chevron {
   display: grid;
   place-items: center;
-  width: 14px;
+  /* 24 px: the smallest touch target WCAG 2.2 allows. */
+  width: 24px;
   height: 32px;
   padding: 0;
   border: 0;
@@ -657,7 +774,8 @@
   height: 24px;
   border-radius: 50%;
 }
-.tray .swatch[aria-checked='true']::after {
+.tray .swatch[aria-checked='true']::after,
+.tray .swatch[data-checked='true']::after {
   border-radius: 50%;
 }
 .stamps {
@@ -763,6 +881,83 @@
   padding: 8px 8px 8px 12px;
   border-radius: var(--r);
   background: var(--selected);
+}
+
+/* Toolbar at the top (Settings): trays and the "back to content" pill go below it. */
+.toolbar-wrap[data-pos='top'] {
+  top: 12px;
+  bottom: auto;
+  flex-direction: column-reverse;
+}
+
+/* Focus mode: only the toolbar and this pill stay on the board. */
+.focus-pill {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: calc(100% - 24px);
+  padding: 4px;
+  border-radius: var(--r-lg);
+  background: var(--bg);
+  box-shadow: var(--shadow-float);
+  animation: tray-in 160ms var(--ease);
+}
+.focus-title {
+  min-width: 0;
+  max-width: 220px;
+  padding: 0 6px;
+  overflow: hidden;
+  font-weight: var(--w-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ============ Navigation ============ */
+.back-to-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--menu);
+  color: var(--menu-text);
+  font: inherit;
+  font-weight: var(--w-medium);
+  box-shadow: var(--shadow-float);
+  pointer-events: auto;
+  animation: tray-in 160ms var(--ease);
+}
+.back-to-content:hover {
+  background: var(--brand-fill);
+  color: var(--on-brand);
+}
+
+/* Minimap: top right, or bottom right when the toolbar is at the top. */
+.minimap {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 6;
+  padding: 4px;
+  border-radius: var(--r-lg);
+  background: var(--bg);
+  box-shadow: var(--shadow-float);
+}
+.stage[data-toolbar='top'] .minimap {
+  top: auto;
+  bottom: 12px;
+}
+.minimap canvas {
+  display: block;
+  border-radius: 9px;
+  cursor: pointer;
+  touch-action: none;
 }
 
 /* Join requests popping over the canvas (host) */

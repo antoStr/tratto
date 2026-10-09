@@ -35,7 +35,9 @@ export function UpdateIndicator() {
 function statusText(s: UpdateState): string {
   switch (s.state) {
     case 'unsupported':
-      return "Gli aggiornamenti automatici funzionano nell'app installata."
+      return bridge?.platform === 'darwin'
+        ? 'Su Mac le nuove versioni si scaricano a mano da github.com/antoStr/tratto/releases.'
+        : "Gli aggiornamenti automatici funzionano nell'app installata."
     case 'idle':
       return 'Nessun controllo ancora eseguito.'
     case 'checking':

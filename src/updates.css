@@ -7,7 +7,7 @@
   padding: 0 10px;
   border: 0;
   border-radius: 999px;
-  font: 500 11px/1 'Inter Variable', Inter, sans-serif;
+  font: 500 var(--fs) / 1 var(--font);
   white-space: nowrap;
   color: rgba(255, 255, 255, 0.9);
   background: rgba(255, 255, 255, 0.1);
@@ -16,12 +16,12 @@
 }
 button.upd-pill {
   cursor: pointer;
-  background: #0d99ff;
+  background: var(--brand-fill);
   color: #fff;
   transition: background-color 100ms;
 }
 button.upd-pill:hover {
-  background: #0b87e0;
+  background: var(--brand-fill-hover);
 }
 button.upd-pill:focus-visible {
   outline: 2px solid #fff;

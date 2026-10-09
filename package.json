@@ -49,5 +49,6 @@
     "zustand": "^5.0.15"
   },
   "main": "electron/main.ts",
-  "description": "Tratto: lavagna infinita con penna, righello e condivisione sicura"
+  "description": "Tratto: lavagna infinita con penna, righello e condivisione sicura",
+  "desktopName": "tratto.desktop"
 }

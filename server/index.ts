@@ -44,7 +44,8 @@ interface Ctx {
   guestId?: string
 }
 
-const MAX_GUESTS = 20
+/** People who can be in a shared board at once, besides the host. */
+export const MAX_GUESTS = 30
 const MAX_PENDING = 30
 const MAX_GUEST_UPLOAD_BYTES = 300 * 1024 * 1024
 const MAX_GUEST_MESSAGE = 4 * 1024 * 1024
@@ -142,6 +143,7 @@ export async function startServers(opts: ServerOptions) {
   const limiter = createLimiter()
   /** Open guest sockets, with the guest id learned once Hocuspocus authenticates them. */
   const guests = new Map<WebSocket, { socketId: string; guestId: string | null; since: number }>()
+  const onlineGuests = () => new Set([...guests.values()].map((g) => g.guestId).filter(Boolean)).size
 
   /** Close codes the guest UI understands: 4001 sharing ended, 4003 access removed, 4100 reconnect (permission changed). */
   const closeGuests = (match: (guestId: string | null) => boolean = () => true, code = 4001) => {
@@ -519,6 +521,7 @@ export async function startServers(opts: ServerOptions) {
     if (!name) return res.status(400).json({ error: 'Scrivi il tuo nome per entrare.' })
     const waiting = [...s.tickets.values()].filter((t) => t.status === 'pending' && Date.now() - t.seen < 15_000).length
     if (waiting >= MAX_PENDING || s.tickets.size >= 500) return res.status(429).json({ error: 'Troppe persone in attesa. Riprova tra poco.' })
+    if (onlineGuests() >= MAX_GUESTS) return res.status(429).json({ error: `La lavagna è al completo: possono esserci al massimo ${MAX_GUESTS} persone. Riprova più tardi.` })
     const ticket = newId(16)
     const status = s.autoAdmit ? 'approved' : 'pending'
     s.tickets.set(ticket, { name, status, seen: Date.now() })
@@ -597,7 +600,8 @@ export async function startServers(opts: ServerOptions) {
     if (!req.url?.startsWith('/collab') || !s || s.status !== 'live') return reject(socket, '403 Forbidden')
     if (!dev && origin !== s.tunnel?.url) return reject(socket, '403 Forbidden')
     if (limiter.blocked(clientIp(req))) return reject(socket, '429 Too Many Requests')
-    if (guests.size >= MAX_GUESTS) return reject(socket, '503 Service Unavailable')
+    // A few spare sockets for guests who are reconnecting while their old socket closes.
+    if (guests.size >= MAX_GUESTS + 5) return reject(socket, '503 Service Unavailable')
     accept(req, socket, head, { kind: 'guest' })
   })
 

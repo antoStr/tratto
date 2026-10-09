@@ -92,7 +92,7 @@ export function ShareDialog({ open, onOpenChange, boardId, title }: { open: bool
     >
       {!here && (
         <>
-          <p className="dialog-desc">Invita qualcuno a lavorare con te su questa lavagna. Riceverà un link da aprire nel browser, senza installare niente.</p>
+          <p className="dialog-desc">Invita qualcuno a lavorare con te su questa lavagna. Riceverà un link da aprire nel browser (Windows, Mac, Linux, tablet), senza installare niente. Possono esserci fino a 30 persone insieme.</p>
           {elsewhere && <p className="share-status">Stai già condividendo un'altra lavagna. Se condividi questa, l'altra condivisione si chiude.</p>}
           <div className="form-row">
             <label className="label" htmlFor="share-name">

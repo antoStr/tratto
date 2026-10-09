@@ -50,14 +50,16 @@ async function main() {
   })
 
   // ---- Auto update (GitHub Releases). Only meaningful in the installed app. ----
-  let update: UpdateState = app.isPackaged ? { state: 'idle' } : { state: 'unsupported' }
+  // macOS only updates apps signed with a paid Apple Developer ID: Mac users download new versions by hand.
+  const autoUpdates = app.isPackaged && process.platform !== 'darwin'
+  let update: UpdateState = autoUpdates ? { state: 'idle' } : { state: 'unsupported' }
   const setUpdate = (s: UpdateState) => {
     update = s
     if (win && !win.isDestroyed()) win.webContents.send('tratto:update', s)
   }
   const busy = () => update.state === 'checking' || update.state === 'downloading' || update.state === 'ready'
   async function checkForUpdates(): Promise<UpdateState> {
-    if (!app.isPackaged || busy()) return update
+    if (!autoUpdates || busy()) return update
     try {
       await autoUpdater.checkForUpdates() // events below drive the state
     } catch {
@@ -65,7 +67,7 @@ async function main() {
     }
     return update
   }
-  if (app.isPackaged) {
+  if (autoUpdates) {
     autoUpdater.autoDownload = true
     autoUpdater.autoInstallOnAppQuit = true // installs on a normal quit, after before-quit flushed the boards
     autoUpdater.on('checking-for-update', () => setUpdate({ state: 'checking' }))
@@ -82,7 +84,8 @@ async function main() {
   }
 
   await app.whenReady()
-  Menu.setApplicationMenu(null)
+  // macOS needs an Edit menu for Cmd+C/V/X/A in text fields, and the app menu for Cmd+Q.
+  Menu.setApplicationMenu(process.platform === 'darwin' ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }]) : null)
 
   servers = await startServers({
     dataDir: app.getPath('userData'),
@@ -99,7 +102,7 @@ async function main() {
   const applyTheme = () => {
     if (!win || win.isDestroyed()) return
     win.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#1E1E1E' : '#F5F5F5')
-    win.setTitleBarOverlay(overlay())
+    if (process.platform !== 'darwin') win.setTitleBarOverlay(overlay()) // macOS draws its own traffic lights
   }
   ipcMain.on('tratto:theme', (e, theme) => {
     if (e.senderFrame?.url.startsWith(hostOrigin) && THEMES.includes(theme)) nativeTheme.themeSource = theme
@@ -143,6 +146,7 @@ async function main() {
     title: 'Tratto',
     titleBarStyle: 'hidden',
     titleBarOverlay: overlay(),
+    trafficLightPosition: { x: 14, y: 13 }, // macOS: centred in the 40 px tab bar
     webPreferences: {
       contextIsolation: true,
       sandbox: true,
@@ -154,7 +158,7 @@ async function main() {
   })
   win.once('ready-to-show', () => {
     win?.show()
-    if (app.isPackaged) {
+    if (autoUpdates) {
       setTimeout(() => void checkForUpdates(), 10_000)
       setInterval(() => void checkForUpdates(), 4 * 3600_000)
     }

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { Ruler } from './ink.ts'
-import type { Camera, FontKind, ShapeKind } from './types.ts'
+import { DEFAULT_META, type BoardMeta, type Camera, type FontKind, type ShapeKind } from './types.ts'
 
 export type Tool = 'select' | 'hand' | 'pen' | 'highlighter' | 'eraser' | 'lasso' | 'shape' | 'line' | 'arrow' | 'text' | 'sticky' | 'stamp' | 'laser'
 
@@ -28,7 +28,26 @@ export interface Prefs {
   stickyColor: string
   stamp: string
   lastShape: ShapeKind
+  /* Settings dialog */
+  /** Whole-window zoom of the desktop app, 1 = 100%. */
+  uiScale: number
+  highContrast: boolean
+  bigHandles: boolean
+  /** Brand colour used for selection, buttons and focus. */
+  accent: string
+  toolbarPos: 'bottom' | 'top'
+  leftPanel: boolean
+  rightPanel: boolean
+  minimap: boolean
+  /** Focus mode: both side panels hidden, only the toolbar on the board (Ctrl+\). */
+  focus: boolean
+  /** Interface text size, 1 = Figma's 11 px. */
+  textScale: number
+  /** Background of new boards. */
+  newBoard: BoardMeta
 }
+
+export const DEFAULT_ACCENT = '#0D99FF'
 
 const DEFAULT_PREFS: Prefs = {
   name: '',
@@ -51,6 +70,17 @@ const DEFAULT_PREFS: Prefs = {
   stickyColor: '#FFF3A3',
   stamp: '👍',
   lastShape: 'rect',
+  uiScale: 1,
+  highContrast: false,
+  bigHandles: false,
+  accent: DEFAULT_ACCENT,
+  toolbarPos: 'bottom',
+  leftPanel: true,
+  rightPanel: true,
+  minimap: true,
+  focus: false,
+  textScale: 1,
+  newBoard: DEFAULT_META,
 }
 
 const PREFS_KEY = 'tratto.prefs.v1'
@@ -72,10 +102,11 @@ export interface EditorState {
   camera: Camera
   ruler: Ruler
   editingId: string | null
-  ui: boolean
   readOnly: boolean
   /** Awareness client id whose view we follow, if any. */
   following: number | null
+  /** The board has visible content but none of it is on screen. */
+  lost: boolean
   setTool: (tool: Tool) => void
   setPrefs: (patch: Partial<Prefs>) => void
   select: (ids: string[]) => void
@@ -91,9 +122,9 @@ export const useEditor = create<EditorState>((set, get) => ({
   camera: { x: 0, y: 0, z: 1 },
   ruler: { visible: false, x: 600, y: 400, angle: 0 },
   editingId: null,
-  ui: true,
   readOnly: false,
   following: null,
+  lost: false,
   setTool: (tool) => set({ tool, editingId: null, ...(tool !== 'select' && tool !== 'lasso' ? { selection: [] } : {}) }),
   setPrefs: (patch) => {
     const prefs = { ...get().prefs, ...patch }
@@ -108,6 +139,11 @@ export const useEditor = create<EditorState>((set, get) => ({
   setCamera: (camera) => set({ camera }),
   setRuler: (patch) => set({ ruler: { ...get().ruler, ...patch } }),
 }))
+
+export const toggleFocus = () => {
+  const s = useEditor.getState()
+  s.setPrefs({ focus: !s.prefs.focus })
+}
 
 export const PEN_SIZES = [2, 4, 8, 14]
 export const HIGHLIGHTER_SIZES = [14, 22, 32]

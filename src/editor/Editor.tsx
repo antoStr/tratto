@@ -10,7 +10,8 @@ import { ExportDialog } from './ExportDialog.tsx'
 import { thumbnail } from './export.ts'
 import type { Pt } from './geometry.ts'
 import { RightPanel } from './Inspector.tsx'
-import { LeftPanel, type Status } from './Layers.tsx'
+import { FocusPill, LeftPanel, type Status } from './Layers.tsx'
+import { Minimap } from './Minimap.tsx'
 import { ImageStore } from './render.ts'
 import { JoinRequests, ShareDialog, useShare, useSharePolling } from './ShareDialog.tsx'
 import { useEditor } from './store.ts'
@@ -55,7 +56,8 @@ export function Editor({ boardId, title, guest, template, onTitle, onHome, onNew
   const [shareOpen, setShareOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState<false | 'all' | 'selection'>(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
-  const ui = useEditor((s) => s.ui)
+  const prefs = useEditor((s) => s.prefs)
+  const ui = !prefs.focus
   const following = useEditor((s) => s.following)
   const name = useEditor((s) => s.prefs.name)
   const sharing = useShare((s) => s.state.active && s.state.boardId === boardId)
@@ -115,6 +117,11 @@ export function Editor({ boardId, title, guest, template, onTitle, onHome, onNew
   useEffect(() => {
     if (!session || status !== 'synced') return
     const { board } = session
+    // A brand-new board gets the background chosen in Settings (not an undoable edit).
+    if (host && !board.all().length && !board.meta.size)
+      board.doc.transact(() => {
+        for (const [k, v] of Object.entries(useEditor.getState().prefs.newBoard)) board.meta.set(k, v)
+      })
     const tpl = template && TEMPLATES.find((t) => t.id === template)
     if (tpl && !board.all().length) {
       commands.insert(tpl.build(), { x: 0, y: 0 })
@@ -229,7 +236,7 @@ export function Editor({ boardId, title, guest, template, onTitle, onHome, onNew
 
   return (
     <>
-      <div className="editor" data-ui={ui}>
+      <div className="editor" data-ui={ui} data-left={prefs.leftPanel} data-right={prefs.rightPanel}>
         <LeftPanel
           board={board}
           title={title}
@@ -242,7 +249,7 @@ export function Editor({ boardId, title, guest, template, onTitle, onHome, onNew
           onShortcuts={() => setShortcutsOpen(true)}
           onInsertImage={() => fileInput.current?.click()}
         />
-        <main className="stage">
+        <main className="stage" data-toolbar={prefs.toolbarPos}>
           <Canvas
             board={board}
             awareness={provider.awareness}
@@ -255,6 +262,20 @@ export function Editor({ boardId, title, guest, template, onTitle, onHome, onNew
             }}
           />
           <Toolbar onImage={() => fileInput.current?.click()} />
+          {ui && prefs.minimap && <Minimap board={board} images={images} />}
+          {!ui && (
+            <FocusPill
+              board={board}
+              title={title}
+              host={host}
+              status={status}
+              onHome={onHome}
+              onNewBoard={onNewBoard}
+              onExport={() => setExportOpen('all')}
+              onShortcuts={() => setShortcutsOpen(true)}
+              onInsertImage={() => fileInput.current?.click()}
+            />
+          )}
           {host && !shareOpen && <JoinRequests />}
         </main>
         <RightPanel board={board} awareness={provider.awareness} host={host} access={guest?.access ?? 'edit'} following={following} sharing={sharing} onShare={() => setShareOpen(true)} onExport={() => setExportOpen('all')} />
@@ -310,6 +331,8 @@ const SHORTCUTS: [string, [string, string][]][] = [
       ['Duplica', 'Ctrl+D'],
       ['Elimina', 'Canc'],
       ['Seleziona tutto', 'Ctrl+A'],
+      ['Metti in una cartella', 'Ctrl+G'],
+      ['Togli dalla cartella', 'Ctrl+Maiusc+G'],
       ['Sposta di 1 / 10', 'Frecce / Maiusc+Frecce'],
       ['Porta avanti / indietro', 'Ctrl+] / Ctrl+['],
       ['Blocca', 'Ctrl+Maiusc+L'],
@@ -326,8 +349,9 @@ const SHORTCUTS: [string, [string, string][]][] = [
       ['Adatta alla lavagna', 'Maiusc+1'],
       ['Adatta alla selezione', 'Maiusc+2'],
       ['Zoom 100%', 'Maiusc+0'],
-      ['Mostra o nascondi pannelli', 'Ctrl+\\'],
+      ['Nascondi o mostra i pannelli', 'Ctrl+\\'],
       ['Esporta', 'Ctrl+Maiusc+E'],
+      ['Impostazioni', 'Ctrl+,'],
     ],
   ],
 ]
@@ -349,7 +373,7 @@ function ShortcutsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: 
         ))}
       </div>
       <p className="hint" style={{ marginTop: 16 }}>
-        Con la penna: il tasto laterale seleziona col lazo, la parte superiore cancella. Con due dita sposti e ingrandisci la lavagna.
+        Con la penna: il tasto laterale seleziona col lazo (un tocco apre il menu), la parte superiore cancella. Tieni premuto per aprire il menu. Con due dita sposti e ingrandisci la lavagna.
       </p>
     </Dialog>
   )

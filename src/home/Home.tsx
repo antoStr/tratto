@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Clock, Copy, Download, FileUp, LayoutTemplate, MoreHorizontal, PenLine, Pencil, Plus, Search, Trash2 } from 'lucide-react'
+import { Clock, Copy, Download, FileUp, LayoutTemplate, MoreHorizontal, PenLine, Pencil, Plus, Search, Settings2, Trash2 } from 'lucide-react'
 import { api, timeAgo, type BoardInfo } from '../api.ts'
 import { download, safeFilename } from '../editor/export.ts'
 import { TemplateArt } from '../editor/Layers.tsx'
 import { useShare, useSharePolling } from '../editor/ShareDialog.tsx'
 import { TEMPLATES } from '../editor/templates.ts'
+import { openSettings } from '../Settings.tsx'
 import { Dialog, IconButton, Logo, Menu, MenuContent, MenuItem, MenuSep, MenuTrigger, toast, useTick } from '../ui.tsx'
 
 type Sort = 'updated' | 'created' | 'title'
@@ -87,6 +88,9 @@ export function Home({ onOpen }: { onOpen: (id: string, template?: string) => vo
         <div className="side-foot">
           <button type="button" className="side-item" style={{ width: '100%' }} onClick={() => importInput.current?.click()}>
             <FileUp size={16} /> Importa una lavagna
+          </button>
+          <button type="button" className="side-item" style={{ width: '100%' }} onClick={openSettings}>
+            <Settings2 size={16} /> Impostazioni
           </button>
         </div>
       </nav>

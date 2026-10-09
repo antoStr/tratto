@@ -18,7 +18,15 @@
   --brand-hover: #007be5;
   --brand-press: #006ccc;
   --on-brand: #ffffff;
+  /* Filled surfaces with white text or icons (buttons, switches, menu highlight): the brand colour
+     darkened until it passes WCAG AA (4.5:1 with white). Follows a custom accent too. */
+  --brand-fill: color-mix(in srgb, var(--brand) 76%, black);
+  --brand-fill-hover: color-mix(in srgb, var(--brand) 68%, black);
+  --brand-fill-press: color-mix(in srgb, var(--brand) 62%, black);
   --danger: #f24822;
+  /* Red text and red fills with white text, dark enough for WCAG AA (4.5:1). */
+  --danger-text: #c8331a;
+  --danger-fill: #c8331a;
   --success: #14ae5c;
   --warning: #ffcd29;
 
@@ -33,7 +41,8 @@
   --border: #e6e6e6;
   --border-strong: #d9d9d9;
   --text: rgba(0, 0, 0, 0.9);
-  --text-2: rgba(0, 0, 0, 0.5);
+  /* 0.58 instead of Figma's 0.5: secondary text needs 4.5:1 (WCAG AA) also on the grey surfaces. */
+  --text-2: rgba(0, 0, 0, 0.58);
   --text-3: rgba(0, 0, 0, 0.3);
   --icon: rgba(0, 0, 0, 0.9);
   --icon-2: rgba(0, 0, 0, 0.5);
@@ -42,7 +51,7 @@
   --menu: #1e1e1e;
   --menu-text: #ffffff;
   --menu-text-2: rgba(255, 255, 255, 0.5);
-  --menu-hover: #0d99ff;
+  --menu-hover: var(--brand-fill);
   --menu-sep: #383838;
   --chrome: #2c2c2c;
   --chrome-2: #383838;
@@ -78,8 +87,46 @@
   --text-3: rgba(255, 255, 255, 0.4);
   --icon: #ffffff;
   --icon-2: rgba(255, 255, 255, 0.7);
+  --danger-text: #ff7a5e;
   --shadow-float: 0 0 0.5px rgba(0, 0, 0, 0.5), 0 5px 12px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.3);
   color-scheme: dark;
+}
+
+/* Settings › Colore principale: buttons, selection, focus and menu highlight follow it. */
+:root[data-accent] {
+  --brand: var(--accent);
+  --brand-hover: color-mix(in srgb, var(--accent) 88%, black);
+  --brand-press: color-mix(in srgb, var(--accent) 76%, black);
+  --selected: color-mix(in srgb, var(--accent) 12%, white);
+  --selected-strong: color-mix(in srgb, var(--accent) 30%, white);
+}
+:root[data-accent][data-theme='dark'] {
+  --selected: color-mix(in srgb, var(--accent) 35%, #2c2c2c);
+  --selected-strong: color-mix(in srgb, var(--accent) 50%, #2c2c2c);
+}
+
+/* Settings › Contrasto elevato: darker secondary text, visible borders, thicker focus ring. */
+:root[data-contrast='high'] {
+  --text-2: rgba(0, 0, 0, 0.8);
+  --text-3: rgba(0, 0, 0, 0.62);
+  --icon-2: rgba(0, 0, 0, 0.8);
+  --border: #8c8c8c;
+  --border-strong: #595959;
+  --hover: #e0e0e0;
+  --menu-text-2: rgba(255, 255, 255, 0.8);
+  --chrome-text-2: rgba(255, 255, 255, 0.8);
+}
+:root[data-contrast='high'][data-theme='dark'] {
+  --text-2: rgba(255, 255, 255, 0.9);
+  --text-3: rgba(255, 255, 255, 0.72);
+  --icon-2: rgba(255, 255, 255, 0.9);
+  --border: #8a8a8a;
+  --border-strong: #b3b3b3;
+  --hover: #4d4d4d;
+}
+:root[data-contrast='high'] :focus-visible {
+  outline-width: 3px;
+  outline-offset: 1px;
 }
 
 /* Desktop app: our own 40px tab bar replaces the window title. */
@@ -135,7 +182,7 @@ img {
   display: block;
 }
 :focus-visible {
-  outline: 2px solid var(--brand);
+  outline: 2px solid var(--brand-fill);
   outline-offset: -1px;
 }
 ::selection {
@@ -187,14 +234,14 @@ img {
   flex: none;
 }
 .btn-primary {
-  background: var(--brand);
+  background: var(--brand-fill);
   color: var(--on-brand);
 }
 .btn-primary:hover:not(:disabled) {
-  background: var(--brand-hover);
+  background: var(--brand-fill-hover);
 }
 .btn-primary:active:not(:disabled) {
-  background: var(--brand-press);
+  background: var(--brand-fill-press);
 }
 .btn-secondary {
   border-color: var(--border);
@@ -207,14 +254,14 @@ img {
   background: var(--hover);
 }
 .btn-danger {
-  background: var(--danger);
+  background: var(--danger-fill);
   color: #fff;
 }
 .btn-danger:hover:not(:disabled) {
-  background: #dc3412;
+  background: color-mix(in srgb, var(--danger-fill) 88%, black);
 }
 .danger-text {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .btn-lg {
   height: 32px;
@@ -247,7 +294,7 @@ img {
   background: var(--press);
 }
 .icon-btn[data-active='true'] {
-  background: var(--brand);
+  background: var(--brand-fill);
   color: var(--on-brand);
 }
 .icon-btn[data-on='true'] {
@@ -319,7 +366,7 @@ img {
   text-wrap: pretty;
 }
 .error-text {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 
 /* Segmented control */
@@ -370,7 +417,7 @@ img {
   transition: background-color 120ms var(--ease);
 }
 .switch[data-state='checked'] {
-  background: var(--brand);
+  background: var(--brand-fill);
 }
 .switch-thumb {
   display: block;
@@ -408,7 +455,8 @@ img {
   border-radius: var(--r-sm);
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.1);
 }
-.swatch[aria-checked='true']::after {
+.swatch[aria-checked='true']::after,
+.swatch[data-checked='true']::after {
   content: '';
   position: absolute;
   inset: -3px;
@@ -442,6 +490,9 @@ img {
   box-shadow: var(--shadow-menu);
   transform-origin: var(--radix-dropdown-menu-content-transform-origin);
   animation: pop-in 100ms var(--ease);
+  max-height: var(--radix-dropdown-menu-content-available-height);
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 .menu-item {
   display: flex;
@@ -476,7 +527,7 @@ img {
   color: var(--menu-text);
 }
 .menu-item.danger[data-highlighted] {
-  background: var(--danger);
+  background: var(--danger-fill);
 }
 .menu-sep {
   height: 1px;
@@ -694,7 +745,8 @@ img {
   align-items: center;
   gap: 2px;
   height: 40px;
-  padding: 0 calc(100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px) + 8px) 0 6px;
+  /* Window buttons: on the right in Windows and Linux, on the left (traffic lights) in macOS. */
+  padding: 0 calc(100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px) + 8px) 0 calc(env(titlebar-area-x, 0px) + 6px);
   background: var(--chrome);
   color: var(--chrome-text);
   -webkit-app-region: drag;
@@ -1078,4 +1130,76 @@ img {
 .privacy-note svg {
   flex: none;
   margin-top: 1px;
+}
+
+/* ============ Settings dialog ============ */
+.settings {
+  display: grid;
+  align-content: start;
+  min-height: 400px;
+}
+.set-tabs {
+  position: sticky;
+  top: -16px;
+  z-index: 1;
+  margin: -16px -16px 8px;
+  padding: 0 12px;
+  background: var(--bg);
+}
+.set-panel {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  outline: none;
+}
+.set-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 0;
+}
+.set-label {
+  font-weight: var(--w-medium);
+}
+.set-control .segmented {
+  min-width: 200px;
+}
+.set-switch {
+  padding: 4px 0;
+}
+.set-switch .switch-row label {
+  font-weight: var(--w-medium);
+}
+.set-switch .hint {
+  margin-top: -4px;
+  padding-right: 48px;
+}
+.set-heading {
+  margin: 16px 0 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: var(--fs);
+  font-weight: var(--w-bold);
+}
+.set-panel .bg-swatches {
+  grid-template-columns: repeat(7, 28px);
+}
+.set-panel .pattern-grid {
+  grid-template-columns: repeat(6, 1fr);
+}
+.set-panel .field-row {
+  max-width: 320px;
+}
+.accent-swatches {
+  display: flex;
+  gap: 8px;
+}
+.accent-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+}
+.accent-swatch[aria-checked='true']::after {
+  border-radius: 50%;
 }

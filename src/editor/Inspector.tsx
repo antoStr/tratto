@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 import {
   AlignCenterHorizontal,
   AlignCenterVertical,
@@ -30,12 +30,12 @@ import {
 import type { Board } from './doc.ts'
 import { commands, type Awareness } from './controller.ts'
 import { center, frameBox, scaleElement, union } from './geometry.ts'
-import { fontCss, layoutText } from './render.ts'
+import { drawBackground, fontCss, layoutText } from './render.ts'
 import { peerColor, peerName, useBoardVersion, usePeers } from './overlays.tsx'
 import { useEditor } from './store.ts'
 import { StampPicker } from './Toolbar.tsx'
 import { stampInfo } from './stamps.ts'
-import { BACKGROUNDS, FONT_STACK, INK_COLORS, STICKY_COLORS, type Align, type El, type FontKind, type Pattern, type ShapeKind, type TextEl } from './types.ts'
+import { BACKGROUNDS, FONT_STACK, GRID_SIZES, INK_COLORS, PATTERNS, STICKY_COLORS, type Align, type BoardMeta, type El, type FontKind, type Pattern, type ShapeKind, type TextEl } from './types.ts'
 import { Avatar, IconButton, Menu, MenuContent, MenuItem, MenuSep, MenuTrigger, NumberField, Segmented, Swatches, Tip } from '../ui.tsx'
 
 const TYPE_LABEL: Record<El['type'], string> = {
@@ -109,7 +109,7 @@ export function RightPanel(p: PanelProps) {
         )}
       </div>
       <div className="panel-sub">
-        <span className="tab-text" aria-selected="true">
+        <span className="tab-text" data-current="">
           Design
         </span>
         <ZoomMenu />
@@ -202,28 +202,7 @@ function BoardProps({ board, onExport }: { board: Board; onExport: () => void })
   return (
     <>
       <Section title="Sfondo">
-        <div className="bg-swatches" role="radiogroup" aria-label="Colore dello sfondo">
-          {BACKGROUNDS.map((b) => (
-            <Tip key={b.value} label={b.name}>
-              <button type="button" role="radio" aria-checked={meta.background.toUpperCase() === b.value} aria-label={b.name} className="bg-swatch" style={{ background: b.value }} onClick={() => board.setMeta({ background: b.value })} />
-            </Tip>
-          ))}
-          <label className="bg-swatch custom" title="Colore personalizzato">
-            <span className="sr-only">Colore personalizzato</span>
-            <input type="color" value={meta.background} onChange={(e) => board.setMeta({ background: e.target.value.toUpperCase() })} />
-          </label>
-        </div>
-        <Segmented<Pattern>
-          label="Motivo dello sfondo"
-          value={meta.pattern}
-          onChange={(pattern) => board.setMeta({ pattern })}
-          options={[
-            { value: 'none', label: 'Nessuno' },
-            { value: 'dots', label: 'Puntini' },
-            { value: 'grid', label: 'Griglia' },
-            { value: 'lines', label: 'Righe' },
-          ]}
-        />
+        <BackgroundFields value={meta} onChange={(patch) => board.setMeta(patch)} />
       </Section>
       <Section title="Esporta">
         <button type="button" className="btn btn-secondary btn-block" onClick={onExport}>
@@ -235,6 +214,62 @@ function BoardProps({ board, onExport }: { board: Board; onExport: () => void })
       </Section>
     </>
   )
+}
+
+const PATTERN_LABEL: Record<Pattern, string> = { none: 'Nessuno', dots: 'Puntini', grid: 'Griglia', lines: 'Righe', graph: 'Millimetrata', isometric: 'Isometrica' }
+
+/** Board colour, pattern and pattern spacing. Also used for the default of new boards in Settings. */
+export function BackgroundFields({ value, onChange }: { value: BoardMeta; onChange: (patch: Partial<BoardMeta>) => void }) {
+  return (
+    <div className="bg-fields">
+      <div className="bg-swatches" role="radiogroup" aria-label="Colore dello sfondo">
+        {BACKGROUNDS.map((b) => (
+          <Tip key={b.value} label={b.name}>
+            <button type="button" role="radio" aria-checked={value.background.toUpperCase() === b.value} aria-label={b.name} className="bg-swatch" style={{ background: b.value }} onClick={() => onChange({ background: b.value })} />
+          </Tip>
+        ))}
+        <label className="bg-swatch custom" title="Colore personalizzato">
+          <span className="sr-only">Colore personalizzato</span>
+          <input type="color" value={value.background} onChange={(e) => onChange({ background: e.target.value.toUpperCase() })} />
+        </label>
+      </div>
+      <div className="pattern-grid" role="radiogroup" aria-label="Motivo dello sfondo">
+        {PATTERNS.map((p) => (
+          <button key={p} type="button" role="radio" aria-checked={value.pattern === p} className="pattern-tile" title={PATTERN_LABEL[p]} onClick={() => onChange({ pattern: p })}>
+            <PatternArt meta={{ ...value, pattern: p }} />
+            <span>{PATTERN_LABEL[p]}</span>
+          </button>
+        ))}
+      </div>
+      {value.pattern !== 'none' && (
+        <div className="field-row">
+          <span className="field-label">Passo</span>
+          <Segmented<string>
+            label="Passo del motivo"
+            value={String(value.gridSize)}
+            onChange={(v) => onChange({ gridSize: Number(v) })}
+            options={GRID_SIZES.map((g, i) => ({ value: String(g), label: ['Fitto', 'Medio', 'Ampio'][i] ?? `${g}` }))}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** The pattern drawn by the real board renderer, so the tile matches the board. */
+function PatternArt({ meta }: { meta: BoardMeta }) {
+  const ref = useRef<HTMLCanvasElement>(null)
+  useEffect(() => {
+    const c = ref.current!
+    const dpr = window.devicePixelRatio || 1
+    c.width = 60 * dpr
+    c.height = 32 * dpr
+    const ctx = c.getContext('2d')!
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    // Fixed 14 px spacing (the smallest the board draws) so a few repeats fit in the tile.
+    drawBackground(ctx, { x: 7, y: 9, z: 1 }, 60, 32, { ...meta, gridSize: 14 })
+  }, [meta.background, meta.pattern, meta.gridSize])
+  return <canvas ref={ref} className="pattern-art" aria-hidden="true" />
 }
 
 /* ---------- selection ---------- */

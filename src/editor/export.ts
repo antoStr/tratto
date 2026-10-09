@@ -16,6 +16,10 @@ export interface ExportOptions {
   padding?: number
   /** Image bytes for ImageEl.fileId. */
   fetchFile: (fileId: string) => Promise<Blob>
+  /** Raster format, default PNG. JPEG always has the background (it has no transparency). */
+  type?: 'image/png' | 'image/jpeg'
+  /** PDF only: 'fit' = one page the size of the content, 'a4' = A4 page for printing. */
+  page?: 'fit' | 'a4'
 }
 
 const MAX_SIDE = 16384
@@ -93,17 +97,18 @@ export async function exportPNG(board: Board, o: ExportOptions): Promise<Blob> {
   if (els.some((e) => e.type === 'stamp')) await preloadStamps()
   const bitmaps = await loadBitmaps(els, o.fetchFile)
   const { ctx, toBlob } = makeCanvas(w, h)
-  paint(ctx, els, { images: null, bitmaps }, o.background === false ? null : board.getMeta().background, w, h, w / box.w, (-box.x * w) / box.w, (-box.y * h) / box.h)
+  const jpeg = o.type === 'image/jpeg'
+  paint(ctx, els, { images: null, bitmaps }, o.background === false && !jpeg ? null : board.getMeta().background, w, h, w / box.w, (-box.x * w) / box.w, (-box.y * h) / box.h)
   bitmaps.forEach((b) => b.close())
-  return toBlob('image/png')
+  return jpeg ? toBlob('image/jpeg', 0.92) : toBlob('image/png')
 }
 
-export async function thumbnail(board: Board, fetchFile: ExportOptions['fetchFile']): Promise<Blob | null> {
+export async function thumbnail(board: Board, fetchFile: ExportOptions['fetchFile'], ids?: string[] | null): Promise<Blob | null> {
   const W = 480
   const H = 300
   let c
   try {
-    c = collect(board, { padding: 0 })
+    c = collect(board, { padding: 0, ids })
   } catch {
     return null
   }
@@ -124,7 +129,17 @@ export async function exportPDF(board: Board, o: ExportOptions): Promise<Blob> {
   const { jsPDF } = await import('jspdf')
   const wpt = box.w * 0.75
   const hpt = box.h * 0.75
-  const pdf = new jsPDF({ unit: 'pt', format: [wpt, hpt], orientation: wpt >= hpt ? 'landscape' : 'portrait', compress: true })
+  const orientation = wpt >= hpt ? 'landscape' : 'portrait'
+  if (o.page === 'a4') {
+    // Content scaled to fit an A4 sheet with 1.5 cm margins, centred.
+    const pdf = new jsPDF({ unit: 'pt', format: 'a4', orientation, compress: true })
+    const pw = pdf.internal.pageSize.getWidth()
+    const ph = pdf.internal.pageSize.getHeight()
+    const k = Math.min((pw - 85) / wpt, (ph - 85) / hpt)
+    pdf.addImage(new Uint8Array(await png.arrayBuffer()), 'PNG', (pw - wpt * k) / 2, (ph - hpt * k) / 2, wpt * k, hpt * k)
+    return pdf.output('blob')
+  }
+  const pdf = new jsPDF({ unit: 'pt', format: [wpt, hpt], orientation, compress: true })
   pdf.addImage(new Uint8Array(await png.arrayBuffer()), 'PNG', 0, 0, wpt, hpt)
   return pdf.output('blob')
 }
