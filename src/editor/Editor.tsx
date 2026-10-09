@@ -9,9 +9,10 @@ import { commands } from './controller.ts'
 import { ExportDialog } from './ExportDialog.tsx'
 import { thumbnail } from './export.ts'
 import type { Pt } from './geometry.ts'
-import { RightPanel } from './Inspector.tsx'
+import { RightPanel, RightPill } from './Inspector.tsx'
 import { FocusPill, LeftPanel, type Status } from './Layers.tsx'
-import { Minimap } from './Minimap.tsx'
+import { CommentThread, CursorChat, SpotlightBar, TimerBar, VoteBar } from './Live.tsx'
+import { Minimap, ViewControls } from './Minimap.tsx'
 import { ImageStore } from './render.ts'
 import { JoinRequests, ShareDialog, useShare, useSharePolling } from './ShareDialog.tsx'
 import { useEditor } from './store.ts'
@@ -58,6 +59,8 @@ export function Editor({ boardId, title, guest, template, onTitle, onHome, onNew
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const prefs = useEditor((s) => s.prefs)
   const ui = !prefs.focus
+  const leftShown = ui && prefs.leftPanel
+  const rightShown = ui && prefs.rightPanel
   const following = useEditor((s) => s.following)
   const name = useEditor((s) => s.prefs.name)
   const sharing = useShare((s) => s.state.active && s.state.boardId === boardId)
@@ -262,8 +265,19 @@ export function Editor({ boardId, title, guest, template, onTitle, onHome, onNew
             }}
           />
           <Toolbar onImage={() => fileInput.current?.click()} />
+          {ui && <ViewControls />}
           {ui && prefs.minimap && <Minimap board={board} images={images} />}
-          {!ui && (
+          <div className="live-top">
+            <TimerBar board={board} />
+            <VoteBar board={board} />
+            <SpotlightBar awareness={provider.awareness} />
+          </div>
+          <CommentThread board={board} awareness={provider.awareness} />
+          <CursorChat awareness={provider.awareness} />
+          {ui && !prefs.rightPanel && (
+            <RightPill board={board} awareness={provider.awareness} host={host} access={guest?.access ?? 'edit'} following={following} sharing={sharing} onShare={() => setShareOpen(true)} onExport={() => setExportOpen('all')} />
+          )}
+          {!leftShown && (
             <FocusPill
               board={board}
               title={title}
@@ -278,7 +292,7 @@ export function Editor({ boardId, title, guest, template, onTitle, onHome, onNew
           )}
           {host && !shareOpen && <JoinRequests />}
         </main>
-        <RightPanel board={board} awareness={provider.awareness} host={host} access={guest?.access ?? 'edit'} following={following} sharing={sharing} onShare={() => setShareOpen(true)} onExport={() => setExportOpen('all')} />
+        {rightShown && <RightPanel board={board} awareness={provider.awareness} host={host} access={guest?.access ?? 'edit'} following={following} sharing={sharing} onShare={() => setShareOpen(true)} onExport={() => setExportOpen('all')} />}
       </div>
 
       <input
@@ -315,9 +329,14 @@ const SHORTCUTS: [string, [string, string][]][] = [
       ['Lazo', 'Q'],
       ['Righello', 'U'],
       ['Rettangolo / Ellisse', 'R / O'],
-      ['Linea / Freccia', 'L / Maiusc+L'],
+      ['Connettore / Freccia', 'X  ·  Maiusc+L'],
+      ['Linea', 'L'],
       ['Testo', 'T'],
       ['Nota adesiva', 'S'],
+      ['Sezione', 'Maiusc+S'],
+      ['Nastro adesivo', 'W'],
+      ['Commento', 'C'],
+      ['Chat vicino al cursore', '/'],
       ['Immagine', 'I'],
       ['Puntatore laser', 'K'],
     ],
@@ -330,6 +349,7 @@ const SHORTCUTS: [string, [string, string][]][] = [
       ['Copia / Incolla', 'Ctrl+C / Ctrl+V'],
       ['Duplica', 'Ctrl+D'],
       ['Elimina', 'Canc'],
+      ['Scrivi nella forma o nota', 'Invio  ·  doppio clic'],
       ['Seleziona tutto', 'Ctrl+A'],
       ['Metti in una cartella', 'Ctrl+G'],
       ['Togli dalla cartella', 'Ctrl+Maiusc+G'],

@@ -13,12 +13,15 @@ import {
   Bold,
   ChevronDown,
   CopyPlus,
+  Eraser,
   Eye,
   EyeOff,
   Italic,
   Lock,
   MoveLeft,
   MoveRight,
+  PanelRightClose,
+  PanelRightOpen,
   RotateCw,
   Share2,
   TextAlignCenter,
@@ -33,10 +36,12 @@ import { center, frameBox, scaleElement, union } from './geometry.ts'
 import { drawBackground, fitText } from './render.ts'
 import { peerColor, peerName, useBoardVersion, usePeers } from './overlays.tsx'
 import { useEditor } from './store.ts'
-import { StampPicker } from './Toolbar.tsx'
+import { SHAPES, StampPicker } from './Toolbar.tsx'
 import { stampInfo } from './stamps.ts'
-import { BACKGROUNDS, GRID_SIZES, INK_COLORS, PATTERNS, STICKY_COLORS, type Align, type BoardMeta, type El, type FontKind, type Pattern, type ShapeKind, type TextEl } from './types.ts'
-import { Avatar, FontPicker, IconButton, Menu, MenuContent, MenuItem, MenuSep, MenuTrigger, NumberField, Segmented, Swatches, Tip } from '../ui.tsx'
+import { BACKGROUNDS, GRID_SIZES, INK_COLORS, PATTERNS, SECTION_COLORS, STICKY_COLORS, type Align, type BoardMeta, type El, type FontKind, type Pattern, type ShapeKind, type TextEl } from './types.ts'
+import { Avatar, FontPicker, IconButton, Menu, MenuTrigger, NumberField, Segmented, Swatches, Switch, Tip } from '../ui.tsx'
+import { ZoomItems } from './Minimap.tsx'
+import { SpotlightButton, TimerButton, VoteButton } from './Live.tsx'
 
 const TYPE_LABEL: Record<El['type'], string> = {
   ink: 'Tratto',
@@ -47,13 +52,34 @@ const TYPE_LABEL: Record<El['type'], string> = {
   sticky: 'Nota adesiva',
   image: 'Immagine',
   stamp: 'Reazione',
+  section: 'Sezione',
+  comment: 'Commento',
+}
+
+const SHAPE_NAME: Record<ShapeKind, string> = {
+  rect: 'Rettangolo',
+  ellipse: 'Ellisse',
+  triangle: 'Triangolo',
+  triangleDown: 'Triangolo capovolto',
+  diamond: 'Rombo',
+  parallelogram: 'Parallelogramma',
+  pentagon: 'Pentagono',
+  hexagon: 'Esagono',
+  octagon: 'Ottagono',
+  star: 'Stella',
+  plus: 'Croce',
+  arrowRight: 'Freccia a destra',
+  arrowLeft: 'Freccia a sinistra',
+  polygon: 'Poligono',
 }
 
 export function elementLabel(el: El) {
   if (el.name) return el.name
   if (el.type === 'text' || el.type === 'sticky') return el.text.trim().split('\n')[0].slice(0, 40) || TYPE_LABEL[el.type]
-  if (el.type === 'line') return el.arrowEnd || el.arrowStart ? 'Freccia' : 'Linea'
-  if (el.type === 'shape') return { rect: 'Rettangolo', ellipse: 'Ellisse', triangle: 'Triangolo', diamond: 'Rombo', star: 'Stella', hexagon: 'Esagono', polygon: 'Poligono' }[el.shape]
+  if (el.type === 'comment') return el.thread[0]?.text.split('\n')[0].slice(0, 40) || 'Commento'
+  if (el.type === 'line') return el.tape ? 'Nastro adesivo' : el.from || el.to ? 'Connettore' : el.arrowEnd || el.arrowStart ? 'Freccia' : 'Linea'
+  if (el.type === 'shape') return el.text?.trim().split('\n')[0].slice(0, 40) || SHAPE_NAME[el.shape] || 'Forma'
+  if (el.type === 'section') return 'Sezione'
   if (el.type === 'stamp') return stampInfo(el.emoji)?.name ?? `Reazione ${el.emoji}`
   return TYPE_LABEL[el.type]
 }
@@ -112,12 +138,42 @@ export function RightPanel(p: PanelProps) {
         <span className="tab-text" data-current="">
           Design
         </span>
+        <div className="grow" />
+        <TimerButton board={p.board} />
+        <VoteButton board={p.board} />
+        <SpotlightButton awareness={p.awareness} />
         <ZoomMenu />
+        <IconButton label="Nascondi il pannello" tipSide="bottom" onClick={() => useEditor.getState().setPrefs({ rightPanel: false })}>
+          <PanelRightClose size={16} />
+        </IconButton>
       </div>
       <div className="panel-scroll">
         {useEditor.getState().readOnly ? <ViewerInfo /> : els.length ? <SelectionProps board={p.board} els={els} /> : <BoardProps board={p.board} onExport={p.onExport} />}
       </div>
     </aside>
+  )
+}
+
+/** Right panel closed: people, share and the way back, floating at the top right (FigJam). */
+export function RightPill(p: PanelProps) {
+  return (
+    <div className="right-pill">
+      <Participants awareness={p.awareness} following={p.following} />
+      <TimerButton board={p.board} />
+      <VoteButton board={p.board} />
+      <SpotlightButton awareness={p.awareness} />
+      {p.host ? (
+        <button type="button" className={`btn ${p.sharing ? 'btn-secondary' : 'btn-primary'} share-btn`} onClick={p.onShare}>
+          <Share2 size={14} />
+          {p.sharing ? 'Condivisa' : 'Condividi'}
+        </button>
+      ) : (
+        <span className="guest-badge">{p.access === 'edit' ? 'Puoi modificare' : 'Solo visione'}</span>
+      )}
+      <IconButton label="Mostra il pannello" tipSide="bottom" onClick={() => useEditor.getState().setPrefs({ rightPanel: true, focus: false })}>
+        <PanelRightOpen size={16} />
+      </IconButton>
+    </div>
   )
 }
 
@@ -171,26 +227,7 @@ function ZoomMenu() {
           <ChevronDown size={12} />
         </button>
       </MenuTrigger>
-      <MenuContent align="end">
-        <MenuItem kbd="Ctrl++" onSelect={() => commands.zoomBy(1.25)}>
-          Ingrandisci
-        </MenuItem>
-        <MenuItem kbd="Ctrl+−" onSelect={() => commands.zoomBy(0.8)}>
-          Riduci
-        </MenuItem>
-        <MenuItem kbd="Maiusc+1" onSelect={() => commands.fit()}>
-          Adatta alla lavagna
-        </MenuItem>
-        <MenuItem kbd="Maiusc+2" onSelect={() => commands.fitSelection()}>
-          Adatta alla selezione
-        </MenuItem>
-        <MenuSep />
-        <MenuItem onSelect={() => commands.zoomTo(0.5)}>50%</MenuItem>
-        <MenuItem kbd="Maiusc+0" onSelect={() => commands.zoomTo(1)}>
-          100%
-        </MenuItem>
-        <MenuItem onSelect={() => commands.zoomTo(2)}>200%</MenuItem>
-      </MenuContent>
+      <ZoomItems />
     </Menu>
   )
 }
@@ -381,7 +418,32 @@ function SelectionProps({ board, els }: { board: Board; els: El[] }) {
         </div>
       </Section>
 
+      {only('section') && (
+        <Section title="Sezione">
+          {single?.type === 'section' && (
+            <div className="field">
+              <input aria-label="Nome della sezione" className="text-field" value={single.name ?? ''} placeholder="Sezione" maxLength={80} onChange={(e) => apply(() => ({ name: e.target.value }))} />
+            </div>
+          )}
+          <Swatches label="Colore della sezione" colors={SECTION_COLORS} value={same((e) => (e.type === 'section' ? e.fill : undefined)) ?? ''} onChange={(fill) => apply(() => ({ fill }) as Partial<El>)} />
+          <p className="hint">Quello che metti dentro la sezione si sposta, si copia e si duplica insieme a lei.</p>
+        </Section>
+      )}
+
       {only('text') || only('sticky') ? <TextProps els={els as (TextEl | Extract<El, { type: 'sticky' }>)[]} apply={apply} same={same} /> : null}
+
+      {only('shape') && (
+        <Section title="Testo nella forma">
+          <FontPicker value={(same((e) => (e.type === 'shape' ? (e.font ?? 'sans') : undefined)) ?? null) as FontKind | null} onChange={(font) => apply(() => ({ font }) as Partial<El>)} />
+          <p className="hint">Doppio clic sulla forma, o Invio, per scriverci dentro.</p>
+        </Section>
+      )}
+
+      {only('sticky') && els.some((e) => e.type === 'sticky' && e.author) && (
+        <Section>
+          <Switch id="sticky-author" label="Mostra chi l'ha scritta" checked={els.every((e) => e.type !== 'sticky' || !e.hideAuthor)} onChange={(v) => apply(() => ({ hideAuthor: !v }) as Partial<El>)} />
+        </Section>
+      )}
 
       {only('sticky') && (
         <Section title="Colore della nota">
@@ -395,7 +457,7 @@ function SelectionProps({ board, els }: { board: Board; els: El[] }) {
         </Section>
       )}
 
-      {mainColor !== undefined && !only('sticky') && types.size > 0 && [...types].every((t) => t !== 'image' && t !== 'stamp') && (
+      {mainColor !== undefined && !only('sticky') && types.size > 0 && [...types].every((t) => t !== 'image' && t !== 'stamp' && t !== 'section') && (
         <Section title={only('shape') || only('line') ? 'Contorno' : 'Colore'}>
           <Swatches
             label="Colore"
@@ -409,31 +471,53 @@ function SelectionProps({ board, els }: { board: Board; els: El[] }) {
             }
           />
           <StrokeWidth els={els} apply={apply} />
+          {[...types].every((t) => t === 'shape' || t === 'line') && (
+            <Segmented<string>
+              label="Stile del contorno"
+              value={same((e) => (e.type === 'shape' || e.type === 'line' ? String(e.dash) : undefined)) ?? ''}
+              onChange={(v) => apply(() => ({ dash: v === 'true' }) as Partial<El>)}
+              options={[
+                { value: 'false', label: 'Continuo' },
+                { value: 'true', label: 'Tratteggiato' },
+              ]}
+            />
+          )}
         </Section>
       )}
 
       {only('shape') && (
         <Section title="Forma">
-          <Segmented<ShapeKind>
-            label="Tipo di forma"
-            value={(same((e) => (e.type === 'shape' ? e.shape : undefined)) ?? 'rect') as ShapeKind}
-            onChange={(shape) => apply(() => ({ shape }) as Partial<El>)}
-            options={[
-              { value: 'rect', label: '▭', title: 'Rettangolo' },
-              { value: 'ellipse', label: '◯', title: 'Ellisse' },
-              { value: 'triangle', label: '△', title: 'Triangolo' },
-              { value: 'diamond', label: '◇', title: 'Rombo' },
-              { value: 'hexagon', label: '⬡', title: 'Esagono' },
-              { value: 'star', label: '☆', title: 'Stella' },
-            ]}
-          />
+          <div className="shape-grid insp" role="radiogroup" aria-label="Tipo di forma">
+            {SHAPES.filter((k) => k.kind !== 'roundRect').map((k) => (
+              <Tip key={k.kind} label={k.label}>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={same((e) => (e.type === 'shape' ? e.shape : undefined)) === k.kind}
+                  aria-label={k.label}
+                  className="shape-btn"
+                  onClick={() => apply(() => ({ shape: k.kind as ShapeKind }) as Partial<El>)}
+                >
+                  {k.icon(16)}
+                </button>
+              </Tip>
+            ))}
+          </div>
           {same((e) => (e.type === 'shape' ? e.shape : undefined)) === 'rect' && (
             <NumberField label="◜" title="Raggio degli angoli" min={0} value={same((e) => (e.type === 'shape' ? e.radius : undefined))} onChange={(radius) => apply(() => ({ radius }) as Partial<El>)} />
           )}
         </Section>
       )}
 
-      {only('line') && (
+      {only('comment') && (
+        <Section title="Commento">
+          <button type="button" className="btn btn-secondary btn-block" onClick={() => useEditor.setState({ commentId: els[0].id })}>
+            Apri la discussione
+          </button>
+        </Section>
+      )}
+
+      {only('line') && els.every((e) => e.type === 'line' && !e.tape) && (
         <Section title="Frecce">
           <div className="btn-row">
             <IconButton label="Freccia all'inizio" on={!!same((e) => (e.type === 'line' ? e.arrowStart : undefined))} onClick={() => apply((e) => (e.type === 'line' ? { arrowStart: !e.arrowStart } : null) as Partial<El>)}>
@@ -449,6 +533,14 @@ function SelectionProps({ board, els }: { board: Board; els: El[] }) {
       {only('stamp') && (
         <Section title="Reazione">
           <StampPicker value={same((e) => (e.type === 'stamp' ? e.emoji : undefined))} onChange={(emoji) => apply(() => ({ emoji }) as Partial<El>)} />
+        </Section>
+      )}
+
+      {els.some((e) => e.erase?.length) && (
+        <Section>
+          <button type="button" className="btn btn-secondary btn-block" onClick={() => apply(() => ({ erase: undefined }))}>
+            <Eraser size={14} /> Ripristina le parti cancellate
+          </button>
         </Section>
       )}
 

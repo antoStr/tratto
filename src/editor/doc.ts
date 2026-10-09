@@ -1,5 +1,6 @@
 import * as Y from 'yjs'
-import { DEFAULT_META, GRID_SIZES, PATTERNS, type BoardMeta, type El, type GroupInfo, type Pattern } from './types.ts'
+import { routeConnector } from './geometry.ts'
+import { DEFAULT_META, GRID_SIZES, PATTERNS, type BoardMeta, type El, type GroupInfo, type LineEl, type Pattern } from './types.ts'
 
 /** Transaction origin for this user's edits: the undo manager only tracks these. */
 export const LOCAL = { local: true }
@@ -16,8 +17,16 @@ export class Board {
   readonly meta: Y.Map<unknown>
   /** Folder names; membership is the `groupId` field of each element. */
   readonly groups: Y.Map<GroupInfo>
+  /** Shared countdown (FigJam timer). Not undoable. */
+  readonly timer: Y.Map<unknown>
+  /**
+   * Voting session (FigJam): 'per' votes each, 'ended' once closed, and one key per voter and
+   * element (`v:<voter>:<element>` → count), so people voting at once never overwrite each other.
+   */
+  readonly votes: Y.Map<unknown>
   readonly undo: Y.UndoManager
   private sorted: El[] | null = null
+  private painted: El[] | null = null
   private listeners = new Set<() => void>()
   version = 0
 
@@ -26,16 +35,83 @@ export class Board {
     this.elements = doc.getMap<El>('elements')
     this.meta = doc.getMap('meta')
     this.groups = doc.getMap<GroupInfo>('groups')
+    this.timer = doc.getMap('timer')
+    this.votes = doc.getMap('votes')
     // One undo step per gesture: callers invoke undo.stopCapturing() when a gesture starts.
     this.undo = new Y.UndoManager([this.elements, this.meta, this.groups], { trackedOrigins: new Set([LOCAL]), captureTimeout: 60_000 })
     const changed = () => {
       this.sorted = null
+      this.painted = null
       this.version++
       for (const l of this.listeners) l()
     }
-    this.elements.observe(changed)
+    this.elements.observe((e) => {
+      changed()
+      // Only the person who moved something re-attaches its connectors, in their own undo step.
+      if (e.transaction.origin === LOCAL) this.rerouteConnectors(e.keysChanged)
+    })
     this.meta.observe(changed)
     this.groups.observe(changed)
+    this.timer.observe(changed)
+    this.votes.observe(changed)
+  }
+
+  /* ---------- voting ---------- */
+
+  voting(): { per: number; ended: boolean } | null {
+    const per = this.votes.get('per')
+    return typeof per === 'number' && per > 0 ? { per: Math.min(per, 50), ended: this.votes.get('ended') === true } : null
+  }
+
+  startVoting(per: number) {
+    this.doc.transact(() => {
+      this.votes.clear()
+      this.votes.set('per', per)
+    })
+  }
+
+  endVoting() {
+    this.votes.set('ended', true)
+  }
+
+  clearVoting() {
+    this.doc.transact(() => this.votes.clear())
+  }
+
+  /** Votes per element: everyone's, or one voter's. */
+  tally(voter?: string): Map<string, number> {
+    const out = new Map<string, number>()
+    for (const [k, v] of this.votes.entries()) {
+      if (!k.startsWith('v:') || typeof v !== 'number' || v <= 0) continue
+      const [, who, id] = k.split(':')
+      if ((voter === undefined || who === voter) && this.get(id)) out.set(id, (out.get(id) ?? 0) + Math.min(v, 50))
+    }
+    return out
+  }
+
+  /** Adds (or with -1 takes back) one of `voter`'s votes on an element, within their allowance. */
+  castVote(voter: string, id: string, delta: 1 | -1) {
+    const v = this.voting()
+    if (!v || v.ended || voter.includes(':')) return
+    const key = `v:${voter}:${id}`
+    const mine = (this.votes.get(key) as number) || 0
+    const used = [...this.tally(voter).values()].reduce((a, b) => a + b, 0)
+    if (delta > 0 && used >= v.per) return
+    const next = Math.max(0, mine + delta)
+    if (next) this.votes.set(key, next)
+    else this.votes.delete(key)
+  }
+
+  /** Connectors attached to any of `ids` (or being one of them) follow the elements they join. */
+  private rerouteConnectors(ids: Set<string>) {
+    const fixes: LineEl[] = []
+    for (const el of this.all()) {
+      if (el.type !== 'line' || !(el.from || el.to)) continue
+      if (!ids.has(el.id) && !(el.from && ids.has(el.from)) && !(el.to && ids.has(el.to))) continue
+      const next = routeConnector(el, (id) => this.get(id))
+      if (next && !sameLine(next, el)) fixes.push(next)
+    }
+    if (fixes.length) this.doc.transact(() => fixes.forEach((l) => this.elements.set(l.id, l)), LOCAL)
   }
 
   subscribe = (fn: () => void) => {
@@ -49,6 +125,16 @@ export class Board {
       this.sorted = [...this.elements.values()].filter(isValid).sort(byZ)
     }
     return this.sorted
+  }
+
+  /** Paint order: sections at the back (largest first), then everything else by z. */
+  paintOrder(): El[] {
+    if (!this.painted) {
+      const all = this.all()
+      const sections = all.filter((el) => el.type === 'section').sort((a, b) => b.w * b.h - a.w * a.h)
+      this.painted = sections.length ? [...sections, ...all.filter((el) => el.type !== 'section')] : all
+    }
+    return this.painted
   }
 
   get(id: string): El | undefined {
@@ -210,6 +296,10 @@ export class Board {
 
 const byZ = (a: El, b: El) => a.z - b.z || (a.id < b.id ? -1 : 1)
 
+const near = (a: number, b: number) => Math.abs(a - b) < 1e-6
+const sameLine = (a: LineEl, b: LineEl) => near(a.x, b.x) && near(a.y, b.y) && a.points.every((v, i) => near(v, b.points[i]))
+const optId = (v: unknown) => v === undefined || (typeof v === 'string' && v.length <= 64)
+
 const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v)
 
 /**
@@ -219,19 +309,26 @@ const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v)
  */
 export function isValid(el: El): boolean {
   if (!el || typeof el !== 'object' || typeof el.id !== 'string') return false
-  if (el.groupId !== undefined && (typeof el.groupId !== 'string' || el.groupId.length > 64)) return false
+  if (!optId(el.groupId)) return false
   if (![el.x, el.y, el.w, el.h, el.rotation, el.z, el.opacity].every(num)) return false
+  if (el.erase !== undefined && !(Array.isArray(el.erase) && el.erase.length <= 4000 && el.erase.every((m) => m && Array.isArray(m.p) && m.p.length >= 2 && m.p.length <= 20_000 && num(m.s) && num(m.a))))
+    return false
   switch (el.type) {
     case 'ink':
     case 'highlighter':
       return Array.isArray(el.points) && el.points.length >= 3 && el.points.length < 200_000 && num(el.size) && typeof el.color === 'string'
     case 'line':
-      return Array.isArray(el.points) && el.points.length === 4 && el.points.every(num)
+      return Array.isArray(el.points) && el.points.length === 4 && el.points.every(num) && optId(el.from) && optId(el.to)
+    case 'comment':
+      return Array.isArray(el.thread) && el.thread.length <= 500 && el.thread.every((m) => m && typeof m.text === 'string' && m.text.length <= 4000 && typeof m.author === 'string' && m.author.length <= 64 && typeof m.color === 'string' && num(m.t))
     case 'shape':
-      return typeof el.shape === 'string' && typeof el.fill === 'string' && typeof el.stroke === 'string'
+      return typeof el.shape === 'string' && typeof el.fill === 'string' && typeof el.stroke === 'string' && (el.text === undefined || (typeof el.text === 'string' && el.text.length < 10_000))
     case 'text':
-    case 'sticky':
       return typeof el.text === 'string' && el.text.length < 100_000
+    case 'sticky':
+      return typeof el.text === 'string' && el.text.length < 100_000 && (el.author === undefined || (typeof el.author === 'string' && el.author.length <= 64))
+    case 'section':
+      return typeof el.fill === 'string'
     case 'image':
       return typeof el.fileId === 'string' && /^[A-Za-z0-9_-]{6,64}$/.test(el.fileId)
     case 'stamp':

@@ -2,11 +2,26 @@ import { create } from 'zustand'
 import type { Ruler } from './ink.ts'
 import { DEFAULT_META, type BoardMeta, type Camera, type FontKind, type ShapeKind } from './types.ts'
 
-export type Tool = 'select' | 'hand' | 'pen' | 'highlighter' | 'eraser' | 'lasso' | 'shape' | 'line' | 'arrow' | 'text' | 'sticky' | 'stamp' | 'laser'
+export type Tool = 'select' | 'hand' | 'pen' | 'highlighter' | 'eraser' | 'lasso' | 'shape' | 'line' | 'arrow' | 'text' | 'sticky' | 'stamp' | 'laser' | 'section' | 'tape' | 'comment'
+
+/** Shape tool choices: every ShapeKind plus the rounded rectangle (a rect with radius). */
+export type ShapeTool = ShapeKind | 'roundRect'
 
 export interface Pen {
   color: string
+  /** Width on screen, in px. */
   size: number
+  /** 0.1–1: how strong the ink is (Paint's opacity). */
+  opacity?: number
+}
+
+/** 'stroke' removes whole strokes and shapes; 'pixel' erases only where it passes, like Paint. */
+export interface EraserPrefs {
+  mode: 'stroke' | 'pixel'
+  /** Diameter on screen, in px. */
+  size: number
+  /** 0.1–1: how much one pass removes (pixel mode). */
+  strength: number
 }
 
 /** Preferences kept on this device. */
@@ -15,7 +30,9 @@ export interface Prefs {
   theme: 'system' | 'light' | 'dark'
   pens: Pen[]
   highlighter: Pen
-  eraser: { mode: 'stroke' | 'precise'; size: number }
+  /** Washi tape colour and width on screen. */
+  tape: Pen
+  eraser: EraserPrefs
   inkToShape: boolean
   /** How much tremor is smoothed out of freehand strokes. */
   inkSmoothing: 'low' | 'medium' | 'high'
@@ -27,7 +44,7 @@ export interface Prefs {
   text: { color: string; fontSize: number; font: FontKind }
   stickyColor: string
   stamp: string
-  lastShape: ShapeKind
+  lastShape: ShapeTool
   /* Settings dialog */
   /** Whole-window zoom of the desktop app, 1 = 100%. */
   uiScale: number
@@ -53,13 +70,14 @@ const DEFAULT_PREFS: Prefs = {
   name: '',
   theme: 'system',
   pens: [
-    { color: '#1E1E1E', size: 4 },
-    { color: '#1971C2', size: 4 },
-    { color: '#E03131', size: 4 },
-    { color: '#2F9E44', size: 8 },
+    { color: '#1E1E1E', size: 4, opacity: 1 },
+    { color: '#1971C2', size: 4, opacity: 1 },
+    { color: '#E03131', size: 4, opacity: 1 },
+    { color: '#2F9E44', size: 8, opacity: 1 },
   ],
   highlighter: { color: '#FFE066', size: 22 },
-  eraser: { mode: 'stroke', size: 24 },
+  tape: { color: '#FFB3C7', size: 28 },
+  eraser: { mode: 'pixel', size: 24, strength: 1 },
   inkToShape: false,
   inkSmoothing: 'medium',
   pressure: true,
@@ -88,7 +106,11 @@ const PREFS_KEY = 'tratto.prefs.v1'
 function loadPrefs(): Prefs {
   try {
     const saved = JSON.parse(localStorage.getItem(PREFS_KEY) ?? '{}')
-    return { ...DEFAULT_PREFS, ...saved }
+    const prefs: Prefs = { ...DEFAULT_PREFS, ...saved }
+    // Older versions: 'precise' eraser, no strength.
+    const eraser = { ...DEFAULT_PREFS.eraser, ...saved.eraser }
+    if (eraser.mode !== 'stroke') eraser.mode = 'pixel'
+    return { ...prefs, eraser }
   } catch {
     return DEFAULT_PREFS
   }
@@ -102,6 +124,8 @@ export interface EditorState {
   camera: Camera
   ruler: Ruler
   editingId: string | null
+  /** Comment whose thread is open. */
+  commentId: string | null
   readOnly: boolean
   /** Awareness client id whose view we follow, if any. */
   following: number | null
@@ -122,6 +146,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   camera: { x: 0, y: 0, z: 1 },
   ruler: { visible: false, x: 600, y: 400, angle: 0 },
   editingId: null,
+  commentId: null,
   readOnly: false,
   following: null,
   lost: false,
@@ -140,11 +165,32 @@ export const useEditor = create<EditorState>((set, get) => ({
   setRuler: (patch) => set({ ruler: { ...get().ruler, ...patch } }),
 }))
 
+/** Ctrl+\: hides both panels, or brings both back when none is showing. */
 export const toggleFocus = () => {
-  const s = useEditor.getState()
-  s.setPrefs({ focus: !s.prefs.focus })
+  const { prefs, setPrefs } = useEditor.getState()
+  const showing = !prefs.focus && (prefs.leftPanel || prefs.rightPanel)
+  setPrefs(showing ? { focus: true } : { focus: false, leftPanel: true, rightPanel: true })
 }
 
+/** This device's id for votes, kept across visits so a reconnect doesn't give fresh votes. */
+let voter: string | null = null
+export function voterId() {
+  if (voter) return voter
+  try {
+    voter = localStorage.getItem('tratto.voter')
+    if (!voter) localStorage.setItem('tratto.voter', (voter = crypto.randomUUID().slice(0, 12)))
+  } catch {
+    voter = crypto.randomUUID().slice(0, 12)
+  }
+  return voter
+}
+
+export const toggleMinimap = () => {
+  const s = useEditor.getState()
+  s.setPrefs({ minimap: !s.prefs.minimap })
+}
+
+/** Quick picks shown next to the size sliders. */
 export const PEN_SIZES = [2, 4, 8, 14]
 export const HIGHLIGHTER_SIZES = [14, 22, 32]
 export const ERASER_SIZES = [12, 24, 48]

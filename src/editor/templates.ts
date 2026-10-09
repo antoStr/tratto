@@ -46,6 +46,9 @@ function shape(kind: ShapeEl['shape'], x: number, y: number, w: number, h: numbe
 /** Figma-style white card. */
 const frame = (x: number, y: number, w: number, h: number) => shape('rect', x, y, w, h, '#FFFFFF', '#E6E6E6', 1, 12)
 
+/** A shape with its label written inside it (FigJam), so they move together. */
+const withText = (el: ShapeEl, text: string): ShapeEl => ({ ...el, text, font: 'sans' })
+
 function sticky(x: number, y: number, color: string, str = ''): StickyEl {
   return { id: uid(), ...BASE, type: 'sticky', x, y, w: 200, h: 200, text: str, color, font: 'hand', align: 'center' }
 }
@@ -145,16 +148,17 @@ export const TEMPLATES: Template[] = [
     build() {
       const pts = ring(6, 440, 280)
       const colors = [BLUE, GREEN, PINK, VIOLET, ORANGE, YELLOW]
-      const out: El[] = pts.map((p) => line(0, 0, p.x, p.y, false))
-      out.push(shape('ellipse', -120, -64, 240, 128, '#E7F1FD', '#1971C2', 2), label(0, 0, 'Idea centrale', { size: 22, bold: true }))
-      pts.forEach((p, i) => {
+      // Text inside the shapes and connectors attached to them: a branch dragged away keeps its line.
+      const centre = withText(shape('ellipse', -120, -64, 240, 128, '#E7F1FD', '#1971C2', 2), 'Idea centrale')
+      const out: El[] = []
+      const branches = pts.map((p, i) => {
         const w = 170
         const h = 64
-        out.push(
-          i % 2 ? shape('ellipse', p.x - w / 2, p.y - h / 2, w, h, colors[i], '#757575', 1.5) : shape('rect', p.x - w / 2, p.y - h / 2, w, h, colors[i], '#757575', 1.5, 16),
-          label(p.x, p.y, `Ramo ${i + 1}`, { size: 18, bold: true }),
-        )
+        const b = i % 2 ? shape('ellipse', p.x - w / 2, p.y - h / 2, w, h, colors[i], '#757575', 1.5) : shape('rect', p.x - w / 2, p.y - h / 2, w, h, colors[i], '#757575', 1.5, 16)
+        out.push({ ...line(0, 0, p.x, p.y, false), from: centre.id, to: b.id })
+        return withText(b, `Ramo ${i + 1}`)
       })
+      out.push(centre, ...branches)
       return finish(out)
     },
   },
@@ -176,17 +180,17 @@ export const TEMPLATES: Template[] = [
       const yes = shape('rect', 300, -210, 200, 80, GREEN, '#2F9E44', sw, 12)
       const no = shape('rect', 300, 130, 200, 80, PINK, '#C2255C', sw, 12)
       const cy = (s: ShapeEl) => s.y + s.h / 2
+      const link = (a: ShapeEl, b: ShapeEl, x1: number, y1: number, x2: number, y2: number) => ({ ...line(x1, y1, x2, y2, true), from: a.id, to: b.id })
       return finish([
-        line(start.x + start.w, 0, step.x, 0, true),
-        line(step.x + step.w, 0, decision.x, 0, true),
-        line(decision.x + decision.w, 0, yes.x, cy(yes), true),
-        line(decision.x + decision.w, 0, no.x, cy(no), true),
-        start, step, decision, yes, no,
-        label(start.x + start.w / 2, 0, 'Inizio', { size: 18, bold: true }),
-        label(step.x + step.w / 2, 0, 'Passo', { size: 18, bold: true }),
-        label(decision.x + decision.w / 2, 0, 'Decisione?', { size: 18, bold: true }),
-        label(yes.x + yes.w / 2, cy(yes), 'Esito A', { size: 18, bold: true }),
-        label(no.x + no.w / 2, cy(no), 'Esito B', { size: 18, bold: true }),
+        link(start, step, start.x + start.w, 0, step.x, 0),
+        link(step, decision, step.x + step.w, 0, decision.x, 0),
+        link(decision, yes, decision.x + decision.w, 0, yes.x, cy(yes)),
+        link(decision, no, decision.x + decision.w, 0, no.x, cy(no)),
+        withText(start, 'Inizio'),
+        withText(step, 'Passo'),
+        withText(decision, 'Decisione?'),
+        withText(yes, 'Esito A'),
+        withText(no, 'Esito B'),
         label(250, -110, 'Sì', { size: 16, bold: true, color: '#2F9E44' }),
         label(250, 110, 'No', { size: 16, bold: true, color: '#C2255C' }),
       ])

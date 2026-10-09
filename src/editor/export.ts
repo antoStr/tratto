@@ -2,7 +2,7 @@ import type { Board } from './doc.ts'
 import { safeColor } from './doc.ts'
 import { aabb, shapePolygon, union } from './geometry.ts'
 import { MAX_ZOOM } from './controller.ts'
-import { arrowHead, drawElement, headStroke, inkPathData, isDark, LINE_HEIGHT, lineEnds, STICKY_PAD, stickyLayout, textLayout, type DrawEnv } from './render.ts'
+import { arrowHead, tapeOutline, authorBand, drawElement, headStroke, inkPathData, isDark, LINE_HEIGHT, lineEnds, sectionTitleBox, shapeTextColor, shapeTextLayout, showAuthor, STICKY_PAD, stickyLayout, textLayout, type DrawEnv } from './render.ts'
 import { preloadStamps, stampDataUrl } from './stamps.ts'
 import { FONT_STACK, type Box, type El, type ImageEl, type TextEl } from './types.ts'
 
@@ -32,8 +32,10 @@ type Ctx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
 
 function collect(board: Board, o: Pick<ExportOptions, 'ids' | 'padding'>): { els: El[]; box: Box } {
   const only = o.ids ? new Set(o.ids) : null
-  const els = board.all().filter((e) => !e.hidden && (!only || only.has(e.id)))
-  const b = union(els.map(aabb))
+  // Comments are notes for the people on the board, not part of the picture (as in FigJam).
+  const els = board.paintOrder().filter((e) => !e.hidden && e.type !== 'comment' && (!only || only.has(e.id)))
+  // Section titles sit above the section's box.
+  const b = union(els.map((el) => (el.type === 'section' ? union([aabb(el), sectionTitleBox(el, 1)])! : aabb(el))))
   if (!b) throw new Error(EMPTY)
   // Content drawn zoomed in is small in board units: a fixed margin would dwarf it.
   const p = o.padding ?? Math.min(32, Math.max(b.w, b.h) * 0.08)
@@ -175,9 +177,36 @@ function tspans(lines: string[], align: string, width: number, top: number, size
 
 const anchor = (align: string) => (align === 'center' ? 'middle' : align === 'right' ? 'end' : 'start')
 
+function shapeText(el: Extract<El, { type: 'shape' }>) {
+  if (!el.text) return ''
+  const t = shapeTextLayout(el)
+  return `<text xml:space="preserve" font-family="${esc(FONT_STACK[el.font ?? 'sans'])}" font-size="${f(t.size)}" fill="${esc(shapeTextColor(el))}" text-anchor="middle" dominant-baseline="central">${tspans(t.layout.lines, 'center', t.width, t.top, t.size, t.left)}</text>`
+}
+
+/** Pixel eraser marks as an SVG mask: white keeps, black strokes cut (as strong as the eraser was). */
+function eraseMask(el: El, id: string) {
+  const b = aabb(el)
+  const pad = Math.max(...el.erase!.map((m) => m.s)) + Math.max(b.w, b.h)
+  const paths = el.erase!.map((m) => {
+    const d = m.p.length < 4 ? `M${f(m.p[0])} ${f(m.p[1])}h0.01` : 'M' + m.p.map(f).join(' ').replace(/(\S+ \S+) /g, '$1 L')
+    return `<path d="${d}" fill="none" stroke="#000" stroke-opacity="${f(Math.min(1, Math.max(0, m.a)))}" stroke-width="${f(m.s)}" stroke-linecap="round" stroke-linejoin="round"/>`
+  })
+  return `<mask id="${id}" maskUnits="userSpaceOnUse" x="${f(-pad)}" y="${f(-pad)}" width="${f(el.w + pad * 2)}" height="${f(el.h + pad * 2)}"><rect x="${f(-pad)}" y="${f(-pad)}" width="${f(el.w + pad * 2)}" height="${f(el.h + pad * 2)}" fill="#fff"/>${paths.join('')}</mask>`
+}
+
 function svgBody(el: El, image: string | null): string {
   const dash = (sw: number) => ` stroke-dasharray="${f(sw * 3)} ${f(sw * 2.2)}"`
   switch (el.type) {
+    case 'section': {
+      const fill = col(el.fill, '#FFFFFF')
+      const t = sectionTitleBox(el, 1)
+      const ink = isDark(el.fill) ? '#FFFFFF' : '#1E1E1E'
+      return (
+        `<rect width="${f(el.w)}" height="${f(el.h)}" rx="${f(Math.min(8, el.w / 2, el.h / 2))}" fill="${fill}" stroke="${isDark(el.fill) ? '#FFFFFF' : '#000000'}" stroke-opacity="0.14"/>` +
+        `<rect y="${f(t.y - el.y)}" width="${f(t.w)}" height="${f(t.h)}" rx="5" fill="${fill}"/>` +
+        `<text font-family="${esc(FONT_STACK.sans)}" font-size="${f(t.size)}" font-weight="550" fill="${ink}" x="${f(t.pad)}" y="${f(t.y - el.y + t.h / 2)}" dominant-baseline="central">${esc(t.text)}</text>`
+      )
+    }
     case 'ink':
     case 'highlighter':
       return `<path d="${inkPathData(el)}" fill="${col(el.color)}"${el.type === 'highlighter' ? ' fill-opacity="0.45"' : ''}/>`
@@ -187,13 +216,16 @@ function svgBody(el: El, image: string | null): string {
       const attrs = `fill="${fill}"${stroke}`
       if (el.shape === 'rect') {
         const r = Math.min(el.radius, el.w / 2, el.h / 2)
-        return `<rect width="${f(el.w)}" height="${f(el.h)}" rx="${f(r)}" ${attrs}/>`
+        return `<rect width="${f(el.w)}" height="${f(el.h)}" rx="${f(r)}" ${attrs}/>` + shapeText(el)
       }
-      if (el.shape === 'ellipse') return `<ellipse cx="${f(el.w / 2)}" cy="${f(el.h / 2)}" rx="${f(el.w / 2)}" ry="${f(el.h / 2)}" ${attrs}/>`
+      if (el.shape === 'ellipse') return `<ellipse cx="${f(el.w / 2)}" cy="${f(el.h / 2)}" rx="${f(el.w / 2)}" ry="${f(el.h / 2)}" ${attrs}/>` + shapeText(el)
       const poly = shapePolygon(el.shape, el.w, el.h, el.points) ?? []
-      return `<polygon points="${poly.map(f).join(' ')}" ${attrs}/>`
+      return `<polygon points="${poly.map(f).join(' ')}" ${attrs}/>` + shapeText(el)
     }
+    case 'comment':
+      return ''
     case 'line': {
+      if (el.tape) return `<polygon points="${tapeOutline(el).map(f).join(' ')}" fill="${col(el.stroke)}" fill-opacity="0.82"/>`
       const { sx, sy, ex, ey } = lineEnds(el)
       const c = col(el.stroke)
       const [x1, y1, x2, y2] = el.points
@@ -211,8 +243,10 @@ function svgBody(el: El, image: string | null): string {
       let out = `<rect width="${f(el.w)}" height="${f(el.h)}" rx="4" fill="${col(el.color, '#FFF3A3')}" filter="url(#tratto-shadow)"/>`
       if (el.text) {
         const { layout, size } = stickyLayout(el)
-        out += `<text xml:space="preserve" font-family="${esc(FONT_STACK[el.font] ?? FONT_STACK.sans)}" font-size="${f(size)}" font-weight="${el.font === 'hand' ? 500 : 400}" fill="${isDark(el.color) ? '#FFFFFF' : '#1E1E1E'}" text-anchor="${anchor(el.align)}" dominant-baseline="central">${tspans(layout.lines, el.align, el.w - STICKY_PAD * 2, (el.h - layout.height) / 2, size, STICKY_PAD)}</text>`
+        out += `<text xml:space="preserve" font-family="${esc(FONT_STACK[el.font] ?? FONT_STACK.sans)}" font-size="${f(size)}" font-weight="${el.font === 'hand' ? 500 : 400}" fill="${isDark(el.color) ? '#FFFFFF' : '#1E1E1E'}" text-anchor="${anchor(el.align)}" dominant-baseline="central">${tspans(layout.lines, el.align, el.w - STICKY_PAD * 2, (el.h - authorBand(el) - layout.height) / 2, size, STICKY_PAD)}</text>`
       }
+      if (showAuthor(el))
+        out += `<text font-family="${esc(FONT_STACK.sans)}" font-size="${f(el.h * 0.055)}" fill="${isDark(el.color) ? '#FFFFFF' : '#000000'}" fill-opacity="0.6" x="${f(STICKY_PAD * 0.75)}" y="${f(el.h - STICKY_PAD * 0.75)}">${esc(el.author!)}</text>`
       return out
     }
     case 'image':
@@ -245,7 +279,9 @@ export async function exportSVG(board: Board, o: ExportOptions): Promise<string>
     if (!body) continue
     const rot = el.rotation ? ` rotate(${f((el.rotation * 180) / Math.PI)})` : ''
     const op = el.opacity < 1 ? ` opacity="${f(Math.max(0, el.opacity))}"` : ''
-    parts.push(`<g transform="translate(${f(el.x + el.w / 2)} ${f(el.y + el.h / 2)})${rot} translate(${f(-el.w / 2)} ${f(-el.h / 2)})"${op}>${body}</g>`)
+    const maskId = `tratto-erase-${parts.length}`
+    const mask = el.erase?.length ? eraseMask(el, maskId) : ''
+    parts.push(`<g transform="translate(${f(el.x + el.w / 2)} ${f(el.y + el.h / 2)})${rot} translate(${f(-el.w / 2)} ${f(-el.h / 2)})"${op}>${mask}${mask ? `<g mask="url(#${maskId})">${body}</g>` : body}</g>`)
   }
   const bg = o.background === false ? '' : `<rect x="${f(box.x)}" y="${f(box.y)}" width="${f(box.w)}" height="${f(box.h)}" fill="${esc(board.getMeta().background)}"/>`
   const defs = els.some((e) => e.type === 'sticky')

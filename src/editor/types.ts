@@ -1,4 +1,18 @@
-export type ShapeKind = 'rect' | 'ellipse' | 'triangle' | 'diamond' | 'star' | 'hexagon' | 'polygon'
+export type ShapeKind =
+  | 'rect'
+  | 'ellipse'
+  | 'triangle'
+  | 'triangleDown'
+  | 'diamond'
+  | 'parallelogram'
+  | 'pentagon'
+  | 'hexagon'
+  | 'octagon'
+  | 'star'
+  | 'plus'
+  | 'arrowRight'
+  | 'arrowLeft'
+  | 'polygon'
 export type FontKind = 'sans' | 'rounded' | 'geometric' | 'condensed' | 'serif' | 'book' | 'display' | 'mono' | 'hand' | 'print' | 'marker'
 export type Align = 'left' | 'center' | 'right'
 
@@ -16,6 +30,15 @@ interface Base {
   name?: string
   /** Folder (Figma-style group) the element belongs to. */
   groupId?: string
+  /** Pixel eraser marks (Paint-like), in the element's own coordinates: they move, turn and scale with it. */
+  erase?: EraseMark[]
+}
+
+/** One pass of the pixel eraser: polyline `p` (flat [x, y, …]), width `s`, strength `a` (0–1). */
+export interface EraseMark {
+  p: number[]
+  s: number
+  a: number
 }
 
 /** A folder in the layers panel. Membership lives on the elements (`groupId`). */
@@ -42,6 +65,9 @@ export interface ShapeEl extends Base {
   dash: boolean
   /** Only for 'polygon': flat [x, y, …] normalised to 0..1 inside the box. */
   points?: number[]
+  /** Text written inside the shape (FigJam style), centred and shrunk to fit. */
+  text?: string
+  font?: FontKind
 }
 
 /** Straight line or arrow. `points` is [x1, y1, x2, y2] relative to (x, y). */
@@ -53,6 +79,11 @@ export interface LineEl extends Base {
   dash: boolean
   arrowStart: boolean
   arrowEnd: boolean
+  /** Connector: ids of the elements its ends are attached to; they follow them when they move. */
+  from?: string
+  to?: string
+  /** Washi tape (FigJam): drawn as a striped band `strokeWidth` wide instead of a line. */
+  tape?: boolean
 }
 
 export interface TextEl extends Base {
@@ -74,6 +105,29 @@ export interface StickyEl extends Base {
   color: string
   font: FontKind
   align: Align
+  /** Who wrote it, shown in a corner like FigJam. */
+  author?: string
+  hideAuthor?: boolean
+}
+
+export interface CommentMsg {
+  author: string
+  color: string
+  text: string
+  /** Time written, ms since 1970. */
+  t: number
+}
+
+/** A comment pin: its point is (x, y), the tip of the pin; w and h are 0. */
+export interface CommentEl extends Base {
+  type: 'comment'
+  thread: CommentMsg[]
+}
+
+/** FigJam section: a named, coloured area; moving it moves what is inside. The title is `name`. */
+export interface SectionEl extends Base {
+  type: 'section'
+  fill: string
 }
 
 export interface ImageEl extends Base {
@@ -86,7 +140,7 @@ export interface StampEl extends Base {
   emoji: string
 }
 
-export type El = InkEl | ShapeEl | LineEl | TextEl | StickyEl | ImageEl | StampEl
+export type El = InkEl | ShapeEl | LineEl | TextEl | StickyEl | ImageEl | StampEl | SectionEl | CommentEl
 export type ElType = El['type']
 
 export type Pattern = 'none' | 'dots' | 'grid' | 'lines' | 'graph' | 'isometric'
@@ -115,6 +169,8 @@ export interface Camera {
 export const INK_COLORS = ['#1E1E1E', '#757575', '#FFFFFF', '#E03131', '#F76707', '#F5B700', '#2F9E44', '#0C8599', '#1971C2', '#6741D9', '#C2255C', '#8B5A2B']
 export const HIGHLIGHT_COLORS = ['#FFE066', '#8CE99A', '#74C0FC', '#FCC2D7', '#FFC078', '#D0BFFF']
 export const STICKY_COLORS = ['#FFF3A3', '#C9F2C7', '#C7E5FF', '#FFD1E3', '#E2D4FF', '#FFDDB8', '#E9E9E9']
+export const TAPE_COLORS = ['#FFB3C7', '#FFD8A8', '#FFEC99', '#B2F2BB', '#A5D8FF', '#D0BFFF', '#CED4DA', '#F8F9FA']
+export const SECTION_COLORS = ['#FFFFFF', '#F2F2F2', '#FFF8D6', '#E6F6E5', '#E3F1FF', '#FCE8F0', '#EFE9FF', '#FFEEDD']
 export const BACKGROUNDS = [
   { name: 'Grigio chiaro', value: '#F5F5F5' },
   { name: 'Bianco', value: '#FFFFFF' },

@@ -211,6 +211,41 @@ export function Segmented<T extends string>({ value, onChange, options, label }:
   )
 }
 
+/* ---------- Slider (range with its value) ---------- */
+
+/**
+ * A labelled range like Figma's, with the value shown beside it. `log` spreads the track
+ * logarithmically, so small sizes (1–10 px) are as easy to pick as big ones.
+ */
+export function Slider({ label, value, min, max, step = 1, log, onChange, format = String, className }: { label: string; value: number; min: number; max: number; step?: number; log?: boolean; onChange: (v: number) => void; format?: (v: number) => string; className?: string }) {
+  const toPos = (v: number) => (log ? (Math.log(v / min) / Math.log(max / min)) * 1000 : v)
+  const fromPos = (p: number) => {
+    const v = log ? min * Math.pow(max / min, p / 1000) : p
+    return Math.min(max, Math.max(min, Math.round(v / step) * step))
+  }
+  const pos = toPos(Math.min(max, Math.max(min, value)))
+  const lo = log ? 0 : min
+  const hi = log ? 1000 : max
+  return (
+    <label className={`slider ${className ?? ''}`}>
+      <span className="slider-label">{label}</span>
+      <input
+        type="range"
+        min={lo}
+        max={hi}
+        step={log ? 1 : step}
+        value={pos}
+        aria-valuetext={format(value)}
+        style={{ ['--fill' as string]: `${((pos - lo) / (hi - lo)) * 100}%` }}
+        onChange={(e) => onChange(fromPos(Number(e.target.value)))}
+      />
+      <span className="slider-value num" aria-hidden="true">
+        {format(value)}
+      </span>
+    </label>
+  )
+}
+
 /* ---------- Font picker ---------- */
 
 const FONT_GROUPS = [...new Set(FONTS.map((f) => f.group))]

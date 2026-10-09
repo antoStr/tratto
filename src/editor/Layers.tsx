@@ -14,6 +14,7 @@ import {
   ImagePlus,
   Keyboard,
   Lock,
+  MessageCircle,
   Minus,
   Moon,
   PanelLeftClose,
@@ -24,6 +25,7 @@ import {
   Settings2,
   Smile,
   Square,
+  SquareDashedTopSolid,
   StickyNote,
   Type,
   Unlock,
@@ -83,16 +85,23 @@ export function LeftPanel(p: Props) {
 
 const STATUS_TEXT: Record<Status, string> = { connecting: 'Connessione…', synced: 'Tutto salvato', offline: 'Non connesso' }
 
-/** Focus mode: the panels are gone, this small pill stays at the top left to bring them back. */
+/** Left panel closed (or focus mode): this small pill stays at the top left to bring it back. */
 export function FocusPill(p: Props) {
   const readOnly = useEditor((s) => s.readOnly)
+  const focus = useEditor((s) => s.prefs.focus)
   return (
     <div className="focus-pill">
       <AppMenu host={p.host} readOnly={readOnly} onHome={p.onHome} onNewBoard={p.onNewBoard} onExport={p.onExport} onShortcuts={p.onShortcuts} onInsertImage={p.onInsertImage} />
       <span className="focus-title">{p.title}</span>
-      <IconButton label="Mostra i pannelli" kbd="Ctrl+\" onClick={toggleFocus} tipSide="bottom">
-        <PanelLeftOpen size={16} />
-      </IconButton>
+      {focus ? (
+        <IconButton label="Mostra i pannelli" kbd="Ctrl+\" onClick={toggleFocus} tipSide="bottom">
+          <PanelLeftOpen size={16} />
+        </IconButton>
+      ) : (
+        <IconButton label="Mostra il pannello dei livelli" tipSide="bottom" onClick={() => useEditor.getState().setPrefs({ leftPanel: true })}>
+          <PanelLeftOpen size={16} />
+        </IconButton>
+      )}
     </div>
   )
 }
@@ -130,7 +139,7 @@ function FileHead({ title, host, status, onRename, onHome, onNewBoard, onExport,
           {host ? STATUS_TEXT[status] : status === 'synced' ? 'Connesso' : STATUS_TEXT[status]}
         </div>
       </div>
-      <IconButton label="Nascondi i pannelli" kbd="Ctrl+\" onClick={toggleFocus} tipSide="bottom">
+      <IconButton label="Nascondi il pannello" tipSide="bottom" onClick={() => useEditor.getState().setPrefs({ leftPanel: false })}>
         <PanelLeftClose size={16} />
       </IconButton>
     </div>
@@ -214,6 +223,10 @@ function typeIcon(el: El) {
       return <ImageIcon size={14} />
     case 'stamp':
       return <Smile size={14} />
+    case 'section':
+      return <SquareDashedTopSolid size={14} />
+    case 'comment':
+      return <MessageCircle size={14} />
   }
 }
 

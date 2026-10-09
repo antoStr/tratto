@@ -4,10 +4,10 @@ import type { Board } from './doc.ts'
 import { safeColor } from './doc.ts'
 import { frameBox, toScreen } from './geometry.ts'
 import { RULER_HEIGHT, RULER_LENGTH } from './ink.ts'
-import { fitText, fontCss, isDark, LINE_HEIGHT, STICKY_PAD, stickyLayout } from './render.ts'
+import { authorBand, fitText, fontCss, isDark, LINE_HEIGHT, sectionTitleBox, shapeTextColor, shapeTextLayout, STICKY_PAD, stickyLayout } from './render.ts'
 import type { Awareness } from './controller.ts'
 import { useEditor } from './store.ts'
-import { FONT_STACK, type StickyEl, type TextEl } from './types.ts'
+import { FONT_STACK, type ShapeEl, type StickyEl, type TextEl } from './types.ts'
 import { FontPicker, IconButton } from '../ui.tsx'
 
 export function useBoardVersion(board: Board) {
@@ -21,7 +21,7 @@ export function TextEditor({ board }: { board: Board }) {
   const editingId = useEditor((s) => s.editingId)
   const cam = useEditor((s) => s.camera)
   const el = editingId ? board.get(editingId) : undefined
-  const ref = useRef<HTMLTextAreaElement>(null)
+  const ref = useRef<HTMLTextAreaElement & HTMLInputElement>(null)
 
   useEffect(() => {
     if (!editingId) return
@@ -51,7 +51,7 @@ export function TextEditor({ board }: { board: Board }) {
     if (editingId && !el) useEditor.setState({ editingId: null })
   }, [editingId, el])
 
-  if (!el || (el.type !== 'text' && el.type !== 'sticky')) return null
+  if (!el || (el.type !== 'text' && el.type !== 'sticky' && el.type !== 'shape' && el.type !== 'section')) return null
   const z = cam.z
   const p = toScreen(cam, el.x, el.y)
   const finish = () => useEditor.setState({ editingId: null })
@@ -60,7 +60,7 @@ export function TextEditor({ board }: { board: Board }) {
     const to = e.relatedTarget as HTMLElement | null
     if (!to || !(e.currentTarget.contains(to) || to.closest('[data-text-tools]'))) finish()
   }
-  const tools = <TextTools board={board} el={el} refocus={() => ref.current?.focus({ preventScroll: true })} />
+  const tools = el.type === 'section' ? null : <TextTools board={board} el={el} refocus={() => ref.current?.focus({ preventScroll: true })} />
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Escape' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
       e.preventDefault()
@@ -95,11 +95,70 @@ export function TextEditor({ board }: { board: Board }) {
     )
   }
 
+  if (el.type === 'section') {
+    // The title pill, edited in place.
+    const t = sectionTitleBox(el, z)
+    const a = toScreen(cam, t.x, t.y)
+    return (
+      <div className="text-scope" onBlur={onBlur}>
+        <input
+          ref={ref}
+          className="section-title-edit"
+          aria-label="Nome della sezione"
+          value={el.name ?? ''}
+          placeholder="Sezione"
+          spellCheck={false}
+          maxLength={80}
+          onChange={(e) => board.update(el.id, { name: e.target.value })}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              finish()
+            }
+            onKeyDown(e)
+          }}
+          style={{ left: a.x, top: a.y, height: Math.max(22, t.h * z) }}
+        />
+      </div>
+    )
+  }
+
+  if (el.type === 'shape') {
+    const shape = el as ShapeEl
+    const t = shapeTextLayout(shape)
+    return (
+      <div className="text-scope" onBlur={onBlur}>
+        <div className="text-edit shape" style={{ left: p.x, top: p.y, width: shape.w * z, height: shape.h * z, transform: `rotate(${shape.rotation}rad)` }}>
+          <textarea
+            ref={ref}
+            aria-label="Testo della forma"
+            value={shape.text ?? ''}
+            spellCheck={false}
+            onChange={(e) => board.update(shape.id, { text: e.target.value.slice(0, 4000) } as Partial<ShapeEl>)}
+            onKeyDown={onKeyDown}
+            style={{
+              left: t.left * z,
+              top: t.top * z,
+              width: t.width * z,
+              height: Math.max(t.layout.height, t.size * LINE_HEIGHT) * z,
+              fontFamily: FONT_STACK[shape.font ?? 'sans'],
+              fontSize: t.size * z,
+              lineHeight: LINE_HEIGHT,
+              color: shapeTextColor(shape),
+              textAlign: 'center',
+            }}
+          />
+        </div>
+        {tools}
+      </div>
+    )
+  }
+
   const sticky = el as StickyEl
   const { layout, size } = stickyLayout(sticky)
   return (
     <div className="text-scope" onBlur={onBlur}>
-      <div className="text-edit sticky" style={{ left: p.x, top: p.y, width: sticky.w * z, height: sticky.h * z, padding: STICKY_PAD * z, transform: `rotate(${sticky.rotation}rad)` }}>
+      <div className="text-edit sticky" style={{ left: p.x, top: p.y, width: sticky.w * z, height: sticky.h * z, padding: STICKY_PAD * z, paddingBottom: (STICKY_PAD + authorBand(sticky)) * z, transform: `rotate(${sticky.rotation}rad)` }}>
         <textarea
           ref={ref}
           aria-label="Testo della nota"
@@ -129,14 +188,14 @@ const BAR_GAP = 8
  * Bar over the box being edited: font, plus bold and italic for text. Its buttons don't take
  * the focus from the text (mousedown is cancelled) and the font menu gives it back on close.
  */
-function TextTools({ board, el, refocus }: { board: Board; el: TextEl | StickyEl; refocus: () => void }) {
+function TextTools({ board, el, refocus }: { board: Board; el: TextEl | StickyEl | ShapeEl; refocus: () => void }) {
   const cam = useEditor((s) => s.camera)
   const b = frameBox(el)
   const a = toScreen(cam, b.x, b.y)
   const above = a.y - BAR_GAP - BAR_H
   const top = above >= 8 ? above : toScreen(cam, b.x, b.y + b.h).y + BAR_GAP
   const width = el.type === 'text' ? 232 : 176
-  const set = (patch: Partial<TextEl>) => board.update(el.id, el.type === 'text' ? fitText(el, patch) : patch)
+  const set = (patch: Partial<TextEl>) => board.update(el.id, el.type === 'text' ? fitText(el, patch) : (patch as Partial<ShapeEl>))
   const keepFocus = (e: React.MouseEvent) => e.preventDefault()
   return (
     <div
@@ -149,7 +208,7 @@ function TextTools({ board, el, refocus }: { board: Board; el: TextEl | StickyEl
       onKeyDown={(e) => e.key === 'Escape' && e.currentTarget.contains(e.target as Node) && useEditor.setState({ editingId: null })}
     >
       <FontPicker
-        value={el.font}
+        value={el.font ?? 'sans'}
         onChange={(font) => {
           set({ font })
           // The next text box starts with the same font.
@@ -183,6 +242,7 @@ interface Peer {
   color: string
   x: number
   y: number
+  chat: string | null
 }
 
 const HEX = /^#[0-9a-f]{6}$/i
@@ -215,7 +275,7 @@ export function Cursors({ awareness }: { awareness: Awareness | null }) {
   const cam = useEditor((s) => s.camera)
   const peers: Peer[] = usePeers(awareness)
     .filter(({ state }) => state.cursor && Number.isFinite(state.cursor.x) && Number.isFinite(state.cursor.y))
-    .map(({ id, state }) => ({ id, name: peerName(state), color: peerColor(state), x: state.cursor.x, y: state.cursor.y }))
+    .map(({ id, state }) => ({ id, name: peerName(state), color: peerColor(state), x: state.cursor.x, y: state.cursor.y, chat: typeof state.chat === 'string' && state.chat.trim() ? state.chat.slice(0, 80) : null }))
   return (
     <div className="cursors" aria-hidden="true">
       {peers.map((p) => {
@@ -225,8 +285,15 @@ export function Cursors({ awareness }: { awareness: Awareness | null }) {
             <svg width="18" height="18" viewBox="0 0 18 18">
               <path d="M2 1.5 15.5 7.6 9 9.4 6.9 16Z" fill={p.color} stroke="#fff" strokeWidth="1.4" strokeLinejoin="round" />
             </svg>
-            <span className="cursor-name" style={{ background: p.color, color: isDark(p.color) ? '#fff' : '#1E1E1E' }}>
-              {p.name}
+            <span className="cursor-name" data-chat={p.chat ? '' : undefined} style={{ background: p.color, color: isDark(p.color) ? '#fff' : '#1E1E1E' }}>
+              {p.chat ? (
+                <>
+                  <small>{p.name}</small>
+                  {p.chat}
+                </>
+              ) : (
+                p.name
+              )}
             </span>
           </div>
         )

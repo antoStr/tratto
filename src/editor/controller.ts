@@ -5,19 +5,23 @@ import {
   boundsOf,
   center,
   clamp,
+  connectable,
   corners,
   distToSegment,
   expand,
   frameBox,
   hitTest,
   intersects,
+  lineWorldEnds,
   MIN_SIZE,
   normalizeBox,
   pointInPolygon,
   rotate,
+  routeConnector,
   samplePoints,
   scaleElement,
   segmentDistance,
+  setLineEnds,
   snapAngle,
   toLocal,
   toScreen,
@@ -26,13 +30,15 @@ import {
   type Pt,
 } from './geometry.ts'
 import { nextPressure, OneEuro2D, onRuler, recognize, RULER_LENGTH, rulerSnapper, SMOOTHING_CUTOFF, storedPressure, strokeOutline, thinPoints } from './ink.ts'
-import { drawBackground, drawElement, ImageStore, LINE_HEIGHT, resetTextCaches, layoutText, fontCss, outlinePath } from './render.ts'
+import { COMMENT_PIN, drawBackground, drawElement, ImageStore, LINE_HEIGHT, resetTextCaches, layoutText, fontCss, outlinePath, sectionTitleBox } from './render.ts'
 import { onStampLoaded } from './stamps.ts'
-import { useEditor, type Tool } from './store.ts'
-import type { Box, Camera, El, InkEl, LineEl, ShapeEl, StickyEl, TextEl } from './types.ts'
+import { toggleFocus, useEditor, voterId, type Tool } from './store.ts'
+import { SECTION_COLORS, type Box, type Camera, type CommentEl, type El, type InkEl, type LineEl, type SectionEl, type ShapeEl, type ShapeKind, type StickyEl, type TextEl } from './types.ts'
 
 export type Awareness = NonNullable<HocuspocusProvider['awareness']>
-type Handle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'rot' | 'p0' | 'p1'
+/** `add-*`: FigJam's "+" beside a shape or sticky: click for a connected copy, drag for a connector. */
+type AddHandle = 'add-n' | 'add-e' | 'add-s' | 'add-w'
+type Handle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'rot' | 'p0' | 'p1' | AddHandle
 export type AlignKind = 'left' | 'hcenter' | 'right' | 'top' | 'vcenter' | 'bottom'
 
 /** Actions the rest of the UI can trigger on the live canvas. Filled in while a canvas is mounted. */
@@ -70,6 +76,19 @@ export const MIN_ZOOM = 0.04
 export const MAX_ZOOM = 32
 const CLIP_PREFIX = 'tratto-clipboard:'
 const ERASABLE = new Set(['ink', 'highlighter', 'line', 'shape'])
+/** What the pixel eraser can cut into (text and stickies stay editable, sections are containers). */
+const PIXEL_ERASABLE = new Set(['ink', 'highlighter', 'line', 'shape', 'image', 'stamp'])
+/** The pin of a comment on screen, in board units: it keeps its size whatever the zoom. */
+const pinBox = (el: El, z: number): Box => ({ x: el.x, y: el.y - COMMENT_PIN / z, w: COMMENT_PIN / z, h: COMMENT_PIN / z })
+/** What can receive votes: things with content, not lines, strokes or comments. */
+const votable = (el: El) => el.type !== 'line' && el.type !== 'ink' && el.type !== 'highlighter' && el.type !== 'comment'
+const inside = (o: Box, i: Box) => i.x >= o.x && i.y >= o.y && i.x + i.w <= o.x + o.w && i.y + i.h <= o.y + o.h
+/** A copy of a connector with one end (or both) let go. */
+function unbind(l: LineEl, ends: ('from' | 'to')[]): LineEl {
+  const next = { ...l }
+  for (const k of ends) delete next[k]
+  return next
+}
 const r2 = (n: number) => Math.round(n * 100) / 100
 /** Rounds stroke coordinates to 1/100 of the pen width, never coarser than 0.01: strokes drawn zoomed in are tiny. */
 const strokeRound = (size: number) => {
@@ -85,6 +104,7 @@ type Gesture =
       hl: boolean
       color: string
       size: number
+      opacity: number
       pts: number[]
       snap: ((x: number, y: number) => Pt) | null
       pointerId: number
@@ -95,7 +115,14 @@ type Gesture =
       /** Last raw position, added at release so the line ends exactly where the pen lifted. */
       raw: Pt | null
     }
-  | { kind: 'erase'; last: Pt; pointerId: number }
+  | {
+      kind: 'erase'
+      last: Pt
+      pointerId: number
+      /** Pixel mode: count of stretches so far, and per element its state before and the marks of this pass. */
+      seg: number
+      touched: Map<string, { orig: El; strokes: number[][]; lastSeg: number }>
+    }
   /** `tap`: started with the pen's barrel button, which opens the menu when not dragged. */
   | { kind: 'lasso'; poly: number[]; tap?: { clientX: number; clientY: number } }
   | { kind: 'marquee'; start: Pt; cur: Pt; base: string[] }
@@ -103,7 +130,8 @@ type Gesture =
   | { kind: 'resize'; handle: Handle; start: Pt; orig: Map<string, El>; frame: Box; rotation: number }
   | { kind: 'rotate'; c: Pt; a0: number; orig: Map<string, El> }
   | { kind: 'endpoint'; which: 0 | 1; orig: LineEl }
-  | { kind: 'create'; el: El; start: Pt; moved: boolean }
+  /** `spawn`: dragged from a "+": released on empty board, a copy of it is made there and connected. */
+  | { kind: 'create'; el: El; start: Pt; moved: boolean; spawn?: El }
   | { kind: 'laser' }
   | { kind: 'ruler'; sx: number; sy: number; x: number; y: number }
   | { kind: 'ruler-rotate' }
@@ -144,6 +172,8 @@ export function createController(o: Options) {
   const preview = new Map<string, El>()
   let laser: { x: number; y: number; t: number }[] = []
   let following: number | null = null
+  /** The "+" pressed, until we know whether it is a click or a drag. */
+  let pendingAdd: AddHandle | null = null
   let clipboard: El[] = []
   let pasteCount = 0
 
@@ -166,11 +196,21 @@ export function createController(o: Options) {
   const editable = (el: El) => !el.locked && !el.hidden
 
   function hitElement(p: Pt, tolPx = 6): El | null {
-    const all = board.all()
-    const tol = tolPx / cam().z
+    const all = board.paintOrder()
+    const z = cam().z
+    const tol = tolPx / z
     for (let i = all.length - 1; i >= 0; i--) {
       const el = current(all[i].id)!
       if (el.locked || el.hidden) continue
+      if (el.type === 'section') {
+        const t = sectionTitleBox(el, z)
+        if (p.x >= t.x && p.y >= t.y && p.x <= t.x + t.w && p.y <= t.y + t.h) return el
+      }
+      if (el.type === 'comment') {
+        const b = expand(pinBox(el, z), tol / 2)
+        if (p.x >= b.x && p.y >= b.y && p.x <= b.x + b.w && p.y <= b.y + b.h) return el
+        continue
+      }
       if (!intersects(expand(box(el), tol), { x: p.x, y: p.y, w: 0, h: 0 })) continue
       if (hitTest(el, p.x, p.y, tol)) return el
     }
@@ -246,10 +286,13 @@ export function createController(o: Options) {
     drawBackground(sctx, c, W, H, board.getMeta())
     sctx.setTransform(dpr * c.z, 0, 0, dpr * c.z, dpr * c.x, dpr * c.y)
     const v = view()
-    const env = { images, editingId: st().editingId, pixel: 1 / (c.z * dpr) }
+    const env = { images, editingId: st().editingId, pixel: 1 / (c.z * dpr), zoom: c.z }
     let anyVisible = false
     let anyOnScreen = false
-    for (const base of board.all()) {
+    // A section being drawn goes behind everything, like the others.
+    const creating = gesture?.kind === 'create' ? gesture.el : null
+    if (creating?.type === 'section') drawElement(sctx, creating, env)
+    for (const base of board.paintOrder()) {
       const el = preview.get(base.id) ?? base
       if (!el.hidden) anyVisible = true
       if (intersects(box(el), v)) {
@@ -259,17 +302,17 @@ export function createController(o: Options) {
     }
     const lost = anyVisible && !anyOnScreen
     if (lost !== st().lost) set({ lost })
-    if (gesture?.kind === 'create') drawElement(sctx, gesture.el, env)
+    if (creating && creating.type !== 'section') drawElement(sctx, creating, env)
   }
 
   let ACCENT = st().prefs.accent
   const handleScale = () => (st().prefs.bigHandles ? 1.6 : 1)
 
-  function strokeWorldPath(ctx: CanvasRenderingContext2D, pts: number[], size: number, hl: boolean, color: string) {
+  function strokeWorldPath(ctx: CanvasRenderingContext2D, pts: number[], size: number, hl: boolean, color: string, opacity = 1) {
     const c = cam()
     ctx.save()
     ctx.setTransform(dpr * c.z, 0, 0, dpr * c.z, dpr * c.x, dpr * c.y)
-    ctx.globalAlpha = hl ? 0.45 : 1
+    ctx.globalAlpha = (hl ? 0.45 : 1) * clamp(opacity, 0.05, 1)
     ctx.fillStyle = color
     ctx.fill(outlinePath(strokeOutline(pts, size, hl)))
     ctx.restore()
@@ -319,15 +362,15 @@ export function createController(o: Options) {
         }
       const live = s.live
       if (live && Array.isArray(live.pts) && live.pts.length >= 3 && typeof live.size === 'number')
-        strokeWorldPath(ctx, live.pts, live.size, !!live.hl, /^#[0-9a-f]{6}$/i.test(live.color) ? live.color : color)
+        strokeWorldPath(ctx, live.pts, live.size, !!live.hl, /^#[0-9a-f]{6}$/i.test(live.color) ? live.color : color, typeof live.op === 'number' ? live.op : 1)
       if (Array.isArray(s.laser)) drawLaser(ctx, s.laser as number[], color)
     }
 
     // Hover outline (Figma style).
     const g = gesture
-    if (hoverId && !g && !st().selection.includes(hoverId)) {
+    if (hoverId && (!g || g.kind === 'create' || g.kind === 'endpoint') && !st().selection.includes(hoverId)) {
       const el = current(hoverId)
-      if (el) outlineEl(ctx, el, ACCENT, 1.5)
+      if (el) outlineEl(ctx, el, ACCENT, g ? 2 : 1.5)
     }
 
     // Selection.
@@ -345,7 +388,8 @@ export function createController(o: Options) {
         ctx.closePath()
         ctx.stroke()
         if (handles.find((h) => h.h === 'rot')) {
-          const top = handles.find((h) => h.h === 'n')
+          // The knob hangs from the top edge, or from the top-right corner when the "+" take the top.
+          const top = handles.find((h) => h.h === (handles.some((k) => k.h === 'add-n') ? 'ne' : 'n'))
           const rot = handles.find((h) => h.h === 'rot')!
           if (top) {
             ctx.beginPath()
@@ -363,6 +407,23 @@ export function createController(o: Options) {
           ctx.strokeStyle = ACCENT
           ctx.lineWidth = k > 1 ? 1.5 : 1
           ctx.beginPath()
+          if (h.h.startsWith('add-')) {
+            if (g) continue
+            // FigJam's "+": a filled dot that grows when the pointer is on it.
+            const r = (hoverHandle === h.h ? 9 : 7) * k
+            ctx.fillStyle = ACCENT
+            ctx.arc(h.x, h.y, r, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.strokeStyle = '#FFFFFF'
+            ctx.lineWidth = 1.5
+            ctx.beginPath()
+            ctx.moveTo(h.x - r * 0.45, h.y)
+            ctx.lineTo(h.x + r * 0.45, h.y)
+            ctx.moveTo(h.x, h.y - r * 0.45)
+            ctx.lineTo(h.x, h.y + r * 0.45)
+            ctx.stroke()
+            continue
+          }
           if (h.h === 'rot' || h.h === 'p0' || h.h === 'p1') ctx.arc(h.x, h.y, 4.5 * k, 0, Math.PI * 2)
           else ctx.rect(Math.round(h.x) - 3.5 * k, Math.round(h.y) - 3.5 * k, 7 * k, 7 * k)
           ctx.fill()
@@ -385,6 +446,31 @@ export function createController(o: Options) {
       const b = frameBox(g.el)
       const bottom = toScreen(c, b.x + b.w / 2, b.y + b.h)
       label(ctx, `${Math.round(b.w)} × ${Math.round(b.h)}`, bottom.x, bottom.y + 18)
+    }
+
+    // Votes: during the session only your own (as in FigJam), everyone's once it has ended.
+    const voting = board.voting()
+    if (voting) {
+      const counts = voting.ended ? board.tally() : board.tally(voterId())
+      for (const [id, n] of counts) {
+        const el = current(id)
+        if (!el || el.hidden) continue
+        const b = frameBox(el)
+        const at = toScreen(c, b.x + b.w, b.y)
+        const r = 11
+        ctx.fillStyle = voting.ended ? '#E8590C' : ACCENT
+        ctx.beginPath()
+        ctx.arc(at.x - 4, at.y + 4, r, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.strokeStyle = '#FFFFFF'
+        ctx.lineWidth = 2
+        ctx.stroke()
+        ctx.fillStyle = '#FFFFFF'
+        ctx.font = '650 11px "Inter Variable", system-ui, sans-serif'
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillText(String(n), at.x - 4, at.y + 4.5)
+      }
     }
 
     if (g?.kind === 'marquee') {
@@ -416,7 +502,7 @@ export function createController(o: Options) {
       ctx.restore()
     }
 
-    if (g?.kind === 'draw' && g.pts.length >= 3) strokeWorldPath(ctx, g.pts, g.size, g.hl, g.color)
+    if (g?.kind === 'draw' && g.pts.length >= 3) strokeWorldPath(ctx, g.pts, g.size, g.hl, g.color, g.opacity)
 
     if (guides.length) {
       ctx.strokeStyle = '#F24822'
@@ -495,6 +581,7 @@ export function createController(o: Options) {
   function selectionFrame(): { box: Box; rotation: number } | null {
     const els = selected()
     if (!els.length) return null
+    if (els.length === 1 && els[0].type === 'comment') return { box: pinBox(els[0], cam().z), rotation: 0 }
     if (els.length === 1 && els[0].type !== 'line') return { box: { x: els[0].x, y: els[0].y, w: els[0].w, h: els[0].h }, rotation: els[0].rotation }
     return { box: union(els.map(frameBox))!, rotation: 0 }
   }
@@ -503,7 +590,7 @@ export function createController(o: Options) {
     if (readOnly()) return []
     const els = selected()
     const c = cam()
-    if (!els.length || els.some((e) => e.locked)) return []
+    if (!els.length || els.some((e) => e.locked) || (els.length === 1 && els[0].type === 'comment')) return []
     if (els.length === 1 && els[0].type === 'line') {
       const l = els[0]
       const a = toScreen(c, l.x + l.points[0], l.y + l.points[1])
@@ -526,11 +613,26 @@ export function createController(o: Options) {
     const list = [at('nw', b.x, b.y), at('ne', b.x + b.w, b.y), at('se', b.x + b.w, b.y + b.h), at('sw', b.x, b.y + b.h)]
     if (sw > 28) list.push(at('n', cx, b.y), at('s', cx, b.y + b.h))
     if (sh > 28) list.push(at('e', b.x + b.w, cy), at('w', b.x, cy))
-    if (!(els.length === 1 && els[0].type === 'stamp' && sw < 16)) {
-      const top = rotate(cx, b.y, cx, cy, f.rotation)
-      const s = toScreen(c, top.x, top.y)
+    const one = els.length === 1 ? els[0] : null
+    const adds = !!one && (one.type === 'shape' || one.type === 'sticky') && sw > 24 && sh > 24
+    if (adds) {
+      const d = 22 / c.z
+      list.push(at('add-n', cx, b.y - d), at('add-e', b.x + b.w + d, cy), at('add-s', cx, b.y + b.h + d), at('add-w', b.x - d, cy))
+    }
+    if (one?.type === 'section') return list
+    if (!(one?.type === 'stamp' && sw < 16)) {
       const d = 22 * handleScale()
-      list.push({ h: 'rot', x: s.x + Math.sin(f.rotation) * d, y: s.y - Math.cos(f.rotation) * d })
+      if (adds) {
+        // The top "+" sits where the rotation knob would: the knob goes out from the top-right corner.
+        const corner = rotate(b.x + b.w, b.y, cx, cy, f.rotation)
+        const s = toScreen(c, corner.x, corner.y)
+        const a = f.rotation - Math.PI / 4
+        list.push({ h: 'rot', x: s.x + Math.sin(a + Math.PI / 2) * d * 0.8, y: s.y - Math.cos(a + Math.PI / 2) * d * 0.8 })
+      } else {
+        const top = rotate(cx, b.y, cx, cy, f.rotation)
+        const s = toScreen(c, top.x, top.y)
+        list.push({ h: 'rot', x: s.x + Math.sin(f.rotation) * d, y: s.y - Math.cos(f.rotation) * d })
+      }
     }
     return list
   }
@@ -558,14 +660,31 @@ export function createController(o: Options) {
     return l.x >= f.box.x && l.y >= f.box.y && l.x <= f.box.x + f.box.w && l.y <= f.box.y + f.box.h
   }
 
-  const CURSORS: Record<string, string> = { n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize', nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', rot: 'grab', p0: 'move', p1: 'move' }
+  const CURSORS: Record<string, string> = {
+    n: 'ns-resize',
+    s: 'ns-resize',
+    e: 'ew-resize',
+    w: 'ew-resize',
+    nw: 'nwse-resize',
+    se: 'nwse-resize',
+    ne: 'nesw-resize',
+    sw: 'nesw-resize',
+    rot: 'grab',
+    p0: 'move',
+    p1: 'move',
+    'add-n': 'copy',
+    'add-e': 'copy',
+    'add-s': 'copy',
+    'add-w': 'copy',
+  }
   function updateCursor() {
     const t = st().tool
     let cur = 'default'
     if (gesture?.kind === 'pan') cur = 'grabbing'
     else if (spaceDown || t === 'hand') cur = 'grab'
     else if (hoverHandle) cur = CURSORS[hoverHandle]
-    else if (t === 'pen' || t === 'highlighter' || t === 'shape' || t === 'line' || t === 'arrow' || t === 'lasso' || t === 'laser' || t === 'stamp' || t === 'sticky') cur = 'crosshair'
+    else if (t === 'pen' || t === 'highlighter' || t === 'shape' || t === 'line' || t === 'arrow' || t === 'lasso' || t === 'laser' || t === 'stamp' || t === 'sticky' || t === 'section' || t === 'tape') cur = 'crosshair'
+    else if (t === 'comment') cur = 'cell'
     else if (t === 'eraser') cur = 'none'
     else if (t === 'text') cur = 'text'
     root.style.cursor = cur
@@ -590,7 +709,7 @@ export function createController(o: Options) {
   /** Sizes chosen in the toolbar are what you see on screen, whatever the zoom. */
   const worldSize = (screenPx: number) => r2(screenPx / cam().z)
 
-  function inkElement(pts: number[], size: number, color: string, hl: boolean): InkEl {
+  function inkElement(pts: number[], size: number, color: string, hl: boolean, opacity = 1): InkEl {
     let minX = Infinity
     let minY = Infinity
     let maxX = -Infinity
@@ -603,7 +722,7 @@ export function createController(o: Options) {
     }
     const rnd = strokeRound(size)
     const rel = pts.map((v, i) => (i % 3 === 0 ? rnd(v - minX) : i % 3 === 1 ? rnd(v - minY) : Math.round(v * 1000) / 1000))
-    return { id: uid(), type: hl ? 'highlighter' : 'ink', x: minX, y: minY, w: maxX - minX, h: maxY - minY, points: rel, color, size, ...baseProps() }
+    return { id: uid(), type: hl ? 'highlighter' : 'ink', x: minX, y: minY, w: maxX - minX, h: maxY - minY, points: rel, color, size, ...baseProps(), opacity }
   }
 
   function commitDraw(g: Extract<Gesture, { kind: 'draw' }>) {
@@ -613,13 +732,13 @@ export function createController(o: Options) {
     if (!g.pts.length || readOnly()) return
     const pts = thinPoints(g.pts, 0.4 / cam().z)
     const prefs = st().prefs
-    let el: El = inkElement(pts, g.size, g.color, g.hl)
+    let el: El = inkElement(pts, g.size, g.color, g.hl, g.opacity)
     if (!g.hl && prefs.inkToShape && !g.snap) {
       const r = recognize(pts, 1 / cam().z)
       if (r?.kind === 'line') {
-        el = lineElement(r.x1, r.y1, r.x2, r.y2, { stroke: g.color, strokeWidth: g.size, arrowEnd: false })
+        el = lineElement(r.x1, r.y1, r.x2, r.y2, { stroke: g.color, strokeWidth: g.size, arrowEnd: false, opacity: g.opacity })
       } else if (r) {
-        const base = { id: uid(), type: 'shape' as const, fill: 'transparent', stroke: g.color, strokeWidth: g.size, radius: 0, dash: false, ...baseProps() }
+        const base = { id: uid(), type: 'shape' as const, fill: 'transparent', stroke: g.color, strokeWidth: g.size, radius: 0, dash: false, ...baseProps(), opacity: g.opacity }
         if (r.kind === 'triangle') {
           const b = boundsOf(r.points)
           el = { ...base, shape: 'polygon', ...b, points: r.points.flatMap((p) => [r2((p.x - b.x) / b.w), r2((p.y - b.y) / b.h)]) }
@@ -651,25 +770,84 @@ export function createController(o: Options) {
     }
   }
 
-  function setLineEnds(l: LineEl, a: Pt, b: Pt): LineEl {
-    const minX = Math.min(a.x, b.x)
-    const minY = Math.min(a.y, b.y)
-    return { ...l, rotation: 0, x: minX, y: minY, w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y), points: [a.x - minX, a.y - minY, b.x - minX, b.y - minY] }
-  }
-
-  const lineWorldEnds = (l: LineEl): [Pt, Pt] => {
-    const c = center(l)
-    return [rotate(l.x + l.points[0], l.y + l.points[1], c.x, c.y, l.rotation), rotate(l.x + l.points[2], l.y + l.points[3], c.x, c.y, l.rotation)]
-  }
-
   /* ---------- erasing ---------- */
 
-  function eraseAlong(a: Pt, b: Pt) {
-    const radius = st().prefs.eraser.size / 2 / cam().z
-    const precise = st().prefs.eraser.mode === 'precise'
+  function startErase(p: Pt, pointerId: number) {
+    board.undo.stopCapturing()
+    const g: Extract<Gesture, { kind: 'erase' }> = { kind: 'erase', last: p, pointerId, seg: 0, touched: new Map() }
+    gesture = g
+    eraseAlong(g, p, p)
+  }
+
+  function eraseAlong(g: Extract<Gesture, { kind: 'erase' }>, a: Pt, b: Pt) {
+    const prefs = st().prefs.eraser
+    const radius = prefs.size / 2 / cam().z
+    if (prefs.mode === 'stroke') return eraseStrokes(a, b, radius)
+    // Pixel eraser (Paint): each element touched gets this pass as a mark in its own coordinates.
+    g.seg++
+    const area = expand(normalizeBox(a.x, a.y, b.x, b.y), radius)
+    const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / Math.max(radius, 1e-6)))
+    const rnd = strokeRound(radius)
+    const strength = clamp(prefs.strength, 0.05, 1)
+    for (const el of board.all()) {
+      if (!PIXEL_ERASABLE.has(el.type) || !editable(el) || !intersects(box(el), area)) continue
+      let hit = false
+      for (let i = 0; i <= steps && !hit; i++) hit = hitTest(el, a.x + ((b.x - a.x) * i) / steps, a.y + ((b.y - a.y) * i) / steps, radius, true)
+      if (!hit) continue
+      let t = g.touched.get(el.id)
+      if (!t) g.touched.set(el.id, (t = { orig: el, strokes: [], lastSeg: -1 }))
+      const pa = toLocal(t.orig, a.x, a.y)
+      const pb = toLocal(t.orig, b.x, b.y)
+      const run = t.lastSeg === g.seg - 1 ? t.strokes[t.strokes.length - 1] : undefined
+      if (run) {
+        // Points closer than a quarter of the eraser add nothing visible.
+        if (Math.hypot(pb.x - run[run.length - 2], pb.y - run[run.length - 1]) > radius / 4) run.push(rnd(pb.x), rnd(pb.y))
+      } else t.strokes.push([rnd(pa.x), rnd(pa.y), rnd(pb.x), rnd(pb.y)])
+      t.lastSeg = g.seg
+      const s = rnd(radius * 2)
+      preview.set(el.id, { ...t.orig, erase: [...(t.orig.erase ?? []), ...t.strokes.map((p) => ({ p, s, a: strength }))] })
+    }
+    scheduleFlush()
+    invalidate(true)
+  }
+
+  /** End of a pixel-eraser pass: elements with nothing visible left are removed for good. */
+  function finishErase(g: Extract<Gesture, { kind: 'erase' }>) {
+    clearTimeout(flushTimer)
+    flushTimer = 0
+    if (!g.touched.size || readOnly()) return preview.clear()
+    board.transact(() => {
+      for (const id of g.touched.keys()) {
+        const el = preview.get(id)
+        if (!el || !board.elements.has(id)) continue
+        if (nothingLeft(el)) board.elements.delete(id)
+        else board.elements.set(id, el)
+      }
+    })
+    preview.clear()
+  }
+
+  /** Whether the eraser marks hide the whole element: drawn small, is any pixel still there? */
+  function nothingLeft(el: El) {
+    if (!el.erase?.some((m) => m.a >= 0.99)) return false
+    const b = box(el)
+    const k = 160 / Math.max(b.w, b.h, 1e-6)
+    const w = Math.max(1, Math.ceil(b.w * k))
+    const h = Math.max(1, Math.ceil(b.h * k))
+    const c = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : Object.assign(document.createElement('canvas'), { width: w, height: h })
+    const ctx = c.getContext('2d') as CanvasRenderingContext2D | null
+    if (!ctx) return false
+    ctx.setTransform(k, 0, 0, k, -b.x * k, -b.y * k)
+    drawElement(ctx, { ...el, opacity: 1 }, { images })
+    const data = ctx.getImageData(0, 0, w, h).data
+    for (let i = 3; i < data.length; i += 4) if (data[i] > 24) return false
+    return true
+  }
+
+  /** Stroke mode: whatever the eraser touches goes away whole. */
+  function eraseStrokes(a: Pt, b: Pt, radius: number) {
     const area = expand(normalizeBox(a.x, a.y, b.x, b.y), radius)
     const remove: string[] = []
-    const add: El[] = []
     for (const el of board.all()) {
       if (!ERASABLE.has(el.type) || !editable(el) || !intersects(box(el), area)) continue
       const la = toLocal(el, a.x, a.y)
@@ -677,39 +855,11 @@ export function createController(o: Options) {
       if (el.type === 'ink' || el.type === 'highlighter') {
         const reach = radius + el.size / 2
         const pts = el.points
-        const hit: boolean[] = []
         let any = false
-        for (let i = 0; i < pts.length; i += 3) {
-          const h = distToSegment(pts[i], pts[i + 1], la.x, la.y, lb.x, lb.y) <= (precise ? radius + el.size * 0.25 : reach)
-          hit.push(h)
-          if (h) any = true
-        }
-        if (!any && pts.length >= 6) {
-          // A fast swipe can cross a stroke between two of its points.
-          for (let i = 0; i + 3 < pts.length && !any; i += 3)
-            if (segmentDistance(pts[i], pts[i + 1], pts[i + 3], pts[i + 4], la.x, la.y, lb.x, lb.y) <= reach) {
-              any = true
-              hit[i / 3] = hit[i / 3 + 1] = true
-            }
-        }
-        if (!any) continue
-        remove.push(el.id)
-        if (!precise) continue
-        // Keep the untouched runs as new strokes, in world space so rotation is preserved.
-        const c = center(el)
-        let run: number[] = []
-        const flushRun = () => {
-          if (run.length >= 6) add.push({ ...inkElement(run, el.size, el.color, el.type === 'highlighter'), z: el.z, opacity: el.opacity })
-          run = []
-        }
-        for (let i = 0; i < hit.length; i++) {
-          if (hit[i]) flushRun()
-          else {
-            const p = rotate(el.x + pts[i * 3], el.y + pts[i * 3 + 1], c.x, c.y, el.rotation)
-            run.push(p.x, p.y, pts[i * 3 + 2])
-          }
-        }
-        flushRun()
+        for (let i = 0; i < pts.length && !any; i += 3) any = distToSegment(pts[i], pts[i + 1], la.x, la.y, lb.x, lb.y) <= reach
+        // A fast swipe can cross a stroke between two of its points.
+        for (let i = 0; i + 3 < pts.length && !any; i += 3) any = segmentDistance(pts[i], pts[i + 1], pts[i + 3], pts[i + 4], la.x, la.y, lb.x, lb.y) <= reach
+        if (any) remove.push(el.id)
       } else if (el.type === 'line') {
         if (segmentDistance(el.points[0], el.points[1], el.points[2], el.points[3], la.x, la.y, lb.x, lb.y) <= radius + el.strokeWidth / 2) remove.push(el.id)
       } else {
@@ -723,11 +873,7 @@ export function createController(o: Options) {
         }
       }
     }
-    if (!remove.length) return
-    board.transact(() => {
-      for (const id of remove) board.elements.delete(id)
-      for (const el of add) board.elements.set(el.id, el)
-    })
+    if (remove.length) board.remove(remove)
   }
 
   /* ---------- gestures ---------- */
@@ -741,6 +887,7 @@ export function createController(o: Options) {
       hl,
       color: pen.color,
       size,
+      opacity: clamp((pen as { opacity?: number }).opacity ?? 1, 0.05, 1),
       pts: [],
       snap: rulerSnapper(state.ruler, s.x, s.y, (size * cam().z) / 2),
       pointerId: e.pointerId,
@@ -777,26 +924,64 @@ export function createController(o: Options) {
       pushDrawPoint(g, s, pressure)
     }
     const rnd = strokeRound(g.size)
-    aw('live', { pts: g.pts.slice(-3000).map((v, i) => (i % 3 === 2 ? r2(v) : rnd(v))), color: g.color, size: g.size, hl: g.hl })
+    aw('live', { pts: g.pts.slice(-3000).map((v, i) => (i % 3 === 2 ? r2(v) : rnd(v))), color: g.color, size: g.size, hl: g.hl, op: g.opacity })
     invalidate(false)
   }
 
+  /** The elements plus everything inside the sections among them (a section moves with its content). */
+  function withContent(els: El[]): El[] {
+    const out = new Map(els.map((el) => [el.id, el]))
+    for (const sec of els) {
+      if (sec.type !== 'section') continue
+      const f = frameBox(sec)
+      for (const el of board.all()) if (!out.has(el.id) && editable(el) && inside(f, frameBox(el))) out.set(el.id, el)
+    }
+    return [...out.values()]
+  }
+
+  /**
+   * Copies with new ids, stacked on top in the same order. Connectors copied with both ends' elements
+   * join the copies; an end whose element stays behind is let go.
+   */
+  function cloneAll(els: El[], dx: number, dy: number): { clones: El[]; ids: Map<string, string> } {
+    const ids = new Map(els.map((el) => [el.id, uid()]))
+    let z = board.topZ()
+    const clones = [...els]
+      .sort((a, b) => a.z - b.z)
+      .map((el) => {
+        let c = { ...el, id: ids.get(el.id)!, x: el.x + dx, y: el.y + dy, z: z++, locked: false } as El
+        if (c.type === 'line') {
+          const lose = (['from', 'to'] as const).filter((k) => c.type === 'line' && c[k] && !ids.has(c[k]!))
+          c = unbind(c, lose)
+          if (c.from) c.from = ids.get(c.from)
+          if (c.to) c.to = ids.get(c.to)
+        }
+        return c
+      })
+    return { clones, ids }
+  }
+
   function startMove(p: Pt, s: Pt, duplicate: boolean) {
-    let ids = st().selection.filter((id) => {
-      const el = board.get(id)
-      return el && editable(el)
-    })
-    if (!ids.length) return
+    const picked = st().selection.map((id) => board.get(id)).filter((el): el is El => !!el && editable(el))
+    if (!picked.length) return
+    let els = withContent(picked)
+    board.undo.stopCapturing()
     if (duplicate) {
-      const clones = ids.map((id) => ({ ...board.get(id)!, id: uid() }))
-      let z = board.topZ()
-      for (const c of clones.sort((a, b) => a.z - b.z)) c.z = z++
-      board.undo.stopCapturing()
+      const { clones, ids } = cloneAll(els, 0, 0)
       board.add(clones)
-      ids = clones.map((c) => c.id)
-      set({ selection: ids })
-    } else board.undo.stopCapturing()
-    const orig = new Map(ids.map((id) => [id, board.get(id)!]))
+      els = clones
+      set({ selection: picked.map((el) => ids.get(el.id)!) })
+    }
+    const ids = els.map((el) => el.id)
+    const moving = new Set(ids)
+    // A connector dragged on its own lets go of the elements it joined.
+    const orig = new Map<string, El>(
+      els.map((el): [string, El] => {
+        if (el.type !== 'line') return [el.id, el]
+        const lose = (['from', 'to'] as const).filter((k) => el[k] && !moving.has(el[k]!))
+        return [el.id, lose.length ? unbind(el, lose) : el]
+      }),
+    )
     const v = expand(view(), 200 / cam().z)
     const cands: Box[] = []
     for (const el of board.all()) {
@@ -845,23 +1030,41 @@ export function createController(o: Options) {
     const prefs = st().prefs
     const style = { stroke: prefs.shapeStyle.stroke, strokeWidth: worldSize(prefs.shapeStyle.strokeWidth) }
     let el: El
-    if (tool === 'shape') {
+    if (tool === 'section') {
+      const n = board.all().filter((e) => e.type === 'section').length + 1
+      el = { id: uid(), type: 'section', name: `Sezione ${n}`, x: p.x, y: p.y, w: 0, h: 0, fill: SECTION_COLORS[0], ...baseProps(), z: board.bottomZ() } satisfies SectionEl
+    } else if (tool === 'shape') {
+      const round = prefs.lastShape === 'roundRect'
       el = {
         id: uid(),
         type: 'shape',
-        shape: prefs.lastShape,
+        shape: round ? 'rect' : (prefs.lastShape as ShapeKind),
         x: p.x,
         y: p.y,
         w: 0,
         h: 0,
         fill: prefs.shapeStyle.fill,
-        radius: 0,
+        radius: round ? worldSize(16) : 0,
         dash: false,
         ...style,
         ...baseProps(),
       } satisfies ShapeEl
-    } else el = lineElement(p.x, p.y, p.x, p.y, { ...style, arrowEnd: tool === 'arrow' })
+    } else if (tool === 'tape') {
+      el = lineElement(p.x, p.y, p.x, p.y, { stroke: prefs.tape.color, strokeWidth: worldSize(prefs.tape.size), tape: true })
+    } else {
+      // A connector starting on a shape, sticky, text… is attached to it.
+      const from = hitElement(p)
+      el = lineElement(p.x, p.y, p.x, p.y, { ...style, arrowEnd: tool === 'arrow', ...(connectable(from) ? { from: from.id } : {}) })
+    }
     gesture = { kind: 'create', el, start: p, moved: false }
+  }
+
+  /** Connector being drawn or re-attached: the element under the pointer it would join (outlined). */
+  function connectTarget(p: Pt, not?: string): El | null {
+    const hit = hitElement(p, 8)
+    const target = connectable(hit) && hit.id !== not ? hit : null
+    if ((target?.id ?? null) !== hoverId) hoverId = target?.id ?? null
+    return target
   }
 
   function updateCreate(g: Extract<Gesture, { kind: 'create' }>, p: Pt, e: PointerEvent) {
@@ -873,7 +1076,13 @@ export function createController(o: Options) {
         const len = Math.hypot(p.x - g.start.x, p.y - g.start.y)
         end = { x: g.start.x + Math.cos(a) * len, y: g.start.y + Math.sin(a) * len }
       }
-      g.el = setLineEnds(g.el, g.start, end)
+      if (g.el.tape) g.el = setLineEnds(g.el, g.start, end)
+      else {
+        const target = connectTarget(p, g.el.from)
+        const line = unbind(setLineEnds(g.el, g.start, end), ['to'])
+        if (target) line.to = target.id
+        g.el = routeConnector(line, current) ?? line
+      }
     } else {
       let dx = p.x - g.start.x
       let dy = p.y - g.start.y
@@ -891,13 +1100,56 @@ export function createController(o: Options) {
   function finishCreate(g: Extract<Gesture, { kind: 'create' }>) {
     let el = g.el
     const z = cam().z
+    hoverId = null
+    if (g.spawn) return finishSpawn(g)
     if (!g.moved || (el.w * z < 4 && el.h * z < 4)) {
-      if (el.type === 'line') el = setLineEnds(el, { x: g.start.x - 80 / z, y: g.start.y }, { x: g.start.x + 80 / z, y: g.start.y })
+      if (el.type === 'line') el = unbind(setLineEnds(el, { x: g.start.x - 80 / z, y: g.start.y }, { x: g.start.x + 80 / z, y: g.start.y }), ['from', 'to'])
+      else if (el.type === 'section') el = { ...el, x: g.start.x - 320 / z, y: g.start.y - 200 / z, w: 640 / z, h: 400 / z }
       else el = { ...el, x: g.start.x - 60 / z, y: g.start.y - 60 / z, w: 120 / z, h: 120 / z }
     }
     board.undo.stopCapturing()
     board.add([el])
-    set({ selection: [el.id], tool: 'select' })
+    set({ selection: [el.id], tool: 'select', ...(el.type === 'section' && !g.moved ? { editingId: el.id } : {}) })
+  }
+
+  /** Copy of a shape or sticky for the "+" handles: same look, no text, on top. */
+  function sibling(el: El, cx: number, cy: number): El {
+    const copy = { ...el, id: uid(), x: cx - el.w / 2, y: cy - el.h / 2, z: board.topZ(), locked: false } as El
+    delete copy.erase
+    if (copy.type === 'sticky') Object.assign(copy, { text: '', author: myName() })
+    if (copy.type === 'shape') delete copy.text
+    return copy
+  }
+
+  /** Released after dragging from a "+": joined to what is under the pointer, or to a new copy there. */
+  function finishSpawn(g: Extract<Gesture, { kind: 'create' }>) {
+    const src = g.spawn!
+    let line = g.el as LineEl
+    const add: El[] = []
+    if (!line.to) {
+      const end = lineWorldEnds(line)[1]
+      const copy = sibling(src, end.x, end.y)
+      add.push(copy)
+      line = routeConnector({ ...line, to: copy.id }, (id) => (id === copy.id ? copy : current(id))) ?? line
+    }
+    board.undo.stopCapturing()
+    board.add([...add, line])
+    set({ selection: [add[0]?.id ?? line.id], tool: 'select', ...(add[0]?.type === 'sticky' ? { editingId: add[0].id } : {}) })
+  }
+
+  /** Click on a "+": a connected copy beside the element, on that side. */
+  function addBeside(el: El, side: AddHandle) {
+    const z = cam().z
+    const gap = Math.max(80 / z, Math.min(el.w, el.h) * 0.5)
+    const c = center(el)
+    const dir = { 'add-n': [0, -1], 'add-e': [1, 0], 'add-s': [0, 1], 'add-w': [-1, 0] }[side]
+    const copy = sibling(el, c.x + dir[0] * (el.w + gap), c.y + dir[1] * (el.h + gap))
+    const prefs = st().prefs
+    const base = lineElement(c.x, c.y, c.x, c.y, { stroke: prefs.shapeStyle.stroke, strokeWidth: worldSize(Math.max(2, prefs.shapeStyle.strokeWidth)), arrowEnd: true, from: el.id, to: copy.id })
+    const line = routeConnector(base, (id) => (id === copy.id ? copy : current(id))) ?? base
+    board.undo.stopCapturing()
+    board.add([copy, line])
+    set({ selection: [copy.id], ...(copy.type === 'sticky' ? { editingId: copy.id } : {}) })
   }
 
   function startText(p: Pt) {
@@ -925,9 +1177,16 @@ export function createController(o: Options) {
     set({ tool: 'select', selection: [el.id], editingId: el.id })
   }
 
+  /** Name to sign stickies with; none for a host who never set one (they appear as "Proprietario"). */
+  const myName = () => {
+    const n = awareness?.getLocalState()?.user?.name
+    if (typeof n !== 'string' || !n.trim() || (n === 'Proprietario' && !st().prefs.name.trim())) return undefined
+    return n.trim().slice(0, 40)
+  }
+
   function startSticky(p: Pt) {
     const s = worldSize(220)
-    const el: StickyEl = { id: uid(), type: 'sticky', x: p.x - s / 2, y: p.y - s / 2, w: s, h: s, text: '', color: st().prefs.stickyColor, font: 'sans', align: 'center', ...baseProps() }
+    const el: StickyEl = { id: uid(), type: 'sticky', x: p.x - s / 2, y: p.y - s / 2, w: s, h: s, text: '', color: st().prefs.stickyColor, font: 'sans', align: 'center', author: myName(), ...baseProps() }
     board.undo.stopCapturing()
     board.add([el])
     set({ tool: 'select', selection: [el.id], editingId: el.id })
@@ -1009,8 +1268,19 @@ export function createController(o: Options) {
         preview.set(el.id, next)
       }
     }
+    followConnectors(g.orig.keys())
     scheduleFlush()
     invalidate(true)
+  }
+
+  /** Connectors attached to elements being changed live follow them on screen right away. */
+  function followConnectors(ids: Iterable<string>) {
+    const changed = new Set(ids)
+    for (const el of board.all()) {
+      if (el.type !== 'line' || changed.has(el.id) || !((el.from && changed.has(el.from)) || (el.to && changed.has(el.to)))) continue
+      const next = routeConnector(el, current)
+      if (next) preview.set(el.id, next)
+    }
   }
 
   /** Text: corner handles scale the type, side handles set a wrapping width. */
@@ -1049,6 +1319,7 @@ export function createController(o: Options) {
         preview.set(el.id, setLineEnds(el, rotate(a.x, a.y, g.c.x, g.c.y, delta), rotate(b.x, b.y, g.c.x, g.c.y, delta)))
       } else preview.set(el.id, { ...el, x: nc.x - el.w / 2, y: nc.y - el.h / 2, rotation: el.rotation + delta })
     }
+    followConnectors(g.orig.keys())
     scheduleFlush()
     invalidate(true)
   }
@@ -1057,6 +1328,7 @@ export function createController(o: Options) {
     flushPreview()
     preview.clear()
     guides = []
+    hoverId = null
     invalidate(true)
   }
 
@@ -1109,6 +1381,7 @@ export function createController(o: Options) {
     const active = document.activeElement as HTMLElement | null
     if (active && active !== document.body) active.blur()
     if (st().editingId) set({ editingId: null })
+    if (st().commentId) set({ commentId: null })
 
     const state = st()
     const p = toWorld(cam(), s.x, s.y)
@@ -1119,9 +1392,7 @@ export function createController(o: Options) {
 
     // Pen eraser end and barrel button.
     if (!ro && e.pointerType === 'pen' && (e.button === 5 || (e.buttons & 32) !== 0)) {
-      gesture = { kind: 'erase', last: p, pointerId: e.pointerId }
-      board.undo.stopCapturing()
-      eraseAlong(p, p)
+      startErase(p, e.pointerId)
       return
     }
     if (!ro && e.pointerType === 'pen' && e.button === 2) {
@@ -1158,7 +1429,14 @@ export function createController(o: Options) {
       board.undo.stopCapturing()
       const sel = selected()
       const orig = new Map(sel.map((el) => [el.id, el]))
-      if (handle === 'p0' || handle === 'p1') gesture = { kind: 'endpoint', which: handle === 'p0' ? 0 : 1, orig: sel[0] as LineEl }
+      if (handle.startsWith('add-')) {
+        // Drag: a connector from this element; a click (no drag) adds a connected copy on that side.
+        const src = sel[0]
+        const prefs = st().prefs
+        const el = lineElement(p.x, p.y, p.x, p.y, { stroke: prefs.shapeStyle.stroke, strokeWidth: worldSize(Math.max(2, prefs.shapeStyle.strokeWidth)), arrowEnd: true, from: src.id })
+        gesture = { kind: 'create', el, start: p, moved: false, spawn: src }
+        pendingAdd = handle as AddHandle
+      } else if (handle === 'p0' || handle === 'p1') gesture = { kind: 'endpoint', which: handle === 'p0' ? 0 : 1, orig: sel[0] as LineEl }
       else if (handle === 'rot') {
         const f = selectionFrame()!
         const c = center(f.box)
@@ -1168,6 +1446,16 @@ export function createController(o: Options) {
         gesture = { kind: 'resize', handle, start: p, orig, frame: f.box, rotation: f.rotation }
       }
       return
+    }
+
+    // Voting session: a click puts one of your votes on what is under it (Maiusc or Alt takes it back).
+    const voting = board.voting()
+    if (voting && !voting.ended && !ro && tool === 'select') {
+      const hit = hitElement(p)
+      if (hit && votable(hit)) {
+        board.castVote(voterId(), hit.id, e.shiftKey || e.altKey ? -1 : 1)
+        return
+      }
     }
 
     switch (tool) {
@@ -1208,16 +1496,29 @@ export function createController(o: Options) {
         return
       case 'eraser':
         if (touchPans) break
-        board.undo.stopCapturing()
-        gesture = { kind: 'erase', last: p, pointerId: e.pointerId }
-        eraseAlong(p, p)
+        startErase(p, e.pointerId)
         return
       case 'shape':
       case 'line':
       case 'arrow':
+      case 'section':
+      case 'tape':
         if (touchPans) break
         startCreate(tool, p)
         return
+      case 'comment': {
+        // On a pin: open its thread. Elsewhere: a new pin, its thread open to write the first message.
+        const hit = hitElement(p)
+        if (hit?.type === 'comment') {
+          set({ selection: [hit.id], commentId: hit.id })
+          return
+        }
+        const el: CommentEl = { id: uid(), type: 'comment', x: p.x, y: p.y, w: 0, h: 0, thread: [], ...baseProps() }
+        board.undo.stopCapturing()
+        board.add([el])
+        set({ selection: [el.id], commentId: el.id, tool: 'select' })
+        return
+      }
       case 'text': {
         const hit = hitElement(p)
         if (hit?.type === 'text') set({ selection: [hit.id], editingId: hit.id, tool: 'select' })
@@ -1300,7 +1601,7 @@ export function createController(o: Options) {
         if (e.pointerId === g.pointerId) addDrawPoints(e)
         return
       case 'erase':
-        eraseAlong(g.last, p)
+        eraseAlong(g, g.last, p)
         g.last = p
         return
       case 'lasso':
@@ -1310,7 +1611,8 @@ export function createController(o: Options) {
       case 'marquee': {
         g.cur = p
         const m = normalizeBox(g.start.x, g.start.y, p.x, p.y)
-        const hits = board.all().filter((el) => editableForSelect(el) && intersects(frameBox(el), m) && (m.w > 0 || m.h > 0))
+        // Sections only when wholly inside, so a selection drawn within one doesn't pick it up.
+        const hits = board.all().filter((el) => editableForSelect(el) && (el.type === 'section' ? inside(m, frameBox(el)) : intersects(frameBox(el), m)) && (m.w > 0 || m.h > 0))
         const next = [...new Set([...g.base, ...hits.map((el) => el.id)])]
         const prev = st().selection
         // Most moves don't change what's inside: skip the update that re-renders the panels.
@@ -1330,7 +1632,12 @@ export function createController(o: Options) {
           dx += snap.dx
           dy += snap.dy
         }
-        for (const [id, el] of g.orig) preview.set(id, { ...el, x: el.x + dx, y: el.y + dy })
+        for (const [id, el] of g.orig) {
+          const moved = { ...el, x: el.x + dx, y: el.y + dy } as El
+          if (moved.type === 'line' && el.type === 'line' && el.erase?.length) moved.erase = el.erase
+          preview.set(id, moved)
+        }
+        followConnectors(g.orig.keys())
         scheduleFlush()
         invalidate(true)
         return
@@ -1350,12 +1657,22 @@ export function createController(o: Options) {
           const len = Math.hypot(p.x - fixed.x, p.y - fixed.y)
           q = { x: fixed.x + Math.cos(ang) * len, y: fixed.y + Math.sin(ang) * len }
         }
-        preview.set(g.orig.id, g.which === 0 ? setLineEnds(g.orig, q, b) : setLineEnds(g.orig, a, q))
+        // Over a shape, sticky… the end attaches to it; elsewhere it is let go.
+        const end = g.which === 0 ? 'from' : 'to'
+        const target = connectTarget(p, g.which === 0 ? g.orig.to : g.orig.from)
+        let line = unbind(g.which === 0 ? setLineEnds(g.orig, q, b) : setLineEnds(g.orig, a, q), [end])
+        if (target) {
+          line[end] = target.id
+          line = routeConnector(line, current) ?? line
+        }
+        preview.set(g.orig.id, line)
         scheduleFlush()
         invalidate(true)
         return
       }
       case 'create':
+        if (g.spawn && !g.moved && Math.hypot(s.x - toScreen(cam(), g.start.x, g.start.y).x, s.y - toScreen(cam(), g.start.x, g.start.y).y) < 4) return
+        pendingAdd = null
         updateCreate(g, p, e)
         return
       case 'laser':
@@ -1419,7 +1736,16 @@ export function createController(o: Options) {
         break
       }
       case 'create':
+        if (pendingAdd && g.spawn) {
+          const side = pendingAdd
+          pendingAdd = null
+          addBeside(g.spawn, side)
+          break
+        }
         finishCreate(g)
+        break
+      case 'erase':
+        finishErase(g)
         break
       case 'laser':
         // Let the trail fade, then clear it for others.
@@ -1428,6 +1754,7 @@ export function createController(o: Options) {
         }, 950)
         break
       case 'move':
+        if (!g.moved && selected().length === 1 && selected()[0].type === 'comment') set({ commentId: selected()[0].id })
         if (!g.moved && !e.shiftKey && st().selection.length > 1) {
           // Click (no drag) inside a multi-selection picks the element under the pointer.
           const hit = hitElement(worldPt(e))
@@ -1439,10 +1766,13 @@ export function createController(o: Options) {
     updateCursor()
   }
 
+  /** Elements with text to type into: text, stickies, shapes (FigJam), section titles. */
+  const writable = (el: El | null | undefined): el is El => !!el && !el.locked && (el.type === 'text' || el.type === 'sticky' || el.type === 'shape' || el.type === 'section')
+
   function onDoubleClick(e: MouseEvent) {
     if (readOnly()) return
     const hit = hitElement(worldPt(e))
-    if (hit && (hit.type === 'text' || hit.type === 'sticky')) set({ selection: [hit.id], editingId: hit.id, tool: 'select' })
+    if (writable(hit)) set({ selection: [hit.id], editingId: hit.id, tool: 'select' })
   }
 
   function onPointerLeave(e: PointerEvent) {
@@ -1511,7 +1841,7 @@ export function createController(o: Options) {
         '0': () => commands.zoomTo(1),
         ']': () => commands.order(e.shiftKey ? 'front' : 'forward'),
         '[': () => commands.order(e.shiftKey ? 'back' : 'backward'),
-        '\\': () => state.setPrefs({ focus: !state.prefs.focus }),
+        '\\': toggleFocus,
       }
       actions.g = () => (e.shiftKey ? commands.ungroup() : commands.group())
       if (e.shiftKey && key === 'l') actions.l = () => commands.toggleLock()
@@ -1548,7 +1878,8 @@ export function createController(o: Options) {
     }
     if (e.key === 'Enter' && state.selection.length === 1) {
       const el = board.get(state.selection[0])
-      if (el && (el.type === 'text' || el.type === 'sticky')) {
+      if (el?.type === 'comment') return set({ commentId: el.id })
+      if (writable(el)) {
         e.preventDefault()
         set({ editingId: el.id })
       }
@@ -1559,10 +1890,18 @@ export function createController(o: Options) {
       const step = (e.shiftKey ? 10 : 1) / Math.max(1, cam().z)
       const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0
       const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0
-      board.updateMany(new Map(selected().filter(editable).map((el) => [el.id, { x: el.x + dx, y: el.y + dy }])))
+      board.updateMany(new Map(withContent(selected().filter(editable)).map((el) => [el.id, { x: el.x + dx, y: el.y + dy }])))
       return
     }
     if (e.shiftKey && key === 'l') return state.setTool('arrow')
+    if (e.shiftKey && key === 's') return state.setTool('section')
+    if (key === 'x') return state.setTool('arrow')
+    if (key === 'c') return state.setTool('comment')
+    if (key === 'w') return state.setTool('tape')
+    if (e.key === '/') {
+      e.preventDefault()
+      return window.dispatchEvent(new CustomEvent('tratto:chat'))
+    }
     if (/^[1-4]$/.test(e.key) && state.tool === 'pen') return set({ pen: Number(e.key) - 1 })
     if (key === 'r' || key === 'o') {
       state.setPrefs({ lastShape: key === 'r' ? 'rect' : 'ellipse' })
@@ -1583,7 +1922,7 @@ export function createController(o: Options) {
   function onCopy(e: ClipboardEvent) {
     if (typing(e.target) || !st().selection.length) return
     e.preventDefault()
-    clipboard = selected()
+    clipboard = withContent(selected())
     pasteCount = 0
     e.clipboardData?.setData('text/plain', CLIP_PREFIX + JSON.stringify(clipboard))
   }
@@ -1606,8 +1945,7 @@ export function createController(o: Options) {
       dx = v.x + v.w / 2 - (b.x + b.w / 2)
       dy = v.y + v.h / 2 - (b.y + b.h / 2)
     }
-    let z = board.topZ()
-    const clones = [...els].sort((a, c) => a.z - c.z).map((el) => ({ ...el, id: uid(), x: el.x + dx, y: el.y + dy, z: z++, locked: false }))
+    const { clones } = cloneAll(els, dx, dy)
     board.undo.stopCapturing()
     board.add(clones)
     set({ selection: clones.map((c) => c.id), tool: 'select' })
@@ -1744,12 +2082,12 @@ export function createController(o: Options) {
       set({ selection: [] })
     },
     duplicate: () => {
-      clipboard = selected()
+      clipboard = withContent(selected())
       pasteCount = 0
       pasteElements(clipboard)
     },
     copy: () => {
-      clipboard = selected()
+      clipboard = withContent(selected())
       pasteCount = 0
       navigator.clipboard?.writeText(CLIP_PREFIX + JSON.stringify(clipboard)).catch(() => {})
     },

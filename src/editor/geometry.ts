@@ -1,4 +1,4 @@
-import type { Box, Camera, El, ShapeKind } from './types.ts'
+import type { Box, Camera, El, EraseMark, LineEl, ShapeKind } from './types.ts'
 
 export type Pt = { x: number; y: number }
 
@@ -118,15 +118,45 @@ export function pointInPolygon(x: number, y: number, poly: number[]) {
   return inside
 }
 
+/** Regular polygon with a point at the top, stretched to fill the box. */
+function regular(n: number, w: number, h: number) {
+  const raw: number[] = []
+  for (let i = 0; i < n; i++) {
+    const a = -Math.PI / 2 + (i * Math.PI * 2) / n
+    raw.push(Math.cos(a), Math.sin(a))
+  }
+  const xs = raw.filter((_, i) => i % 2 === 0)
+  const ys = raw.filter((_, i) => i % 2)
+  const left = Math.min(...xs)
+  const top = Math.min(...ys)
+  const sx = Math.max(...xs) - left
+  const sy = Math.max(...ys) - top
+  return raw.map((v, i) => (i % 2 ? ((v - top) / sy) * h : ((v - left) / sx) * w))
+}
+
 /** Outline of a shape as flat [x, y, …] in local coordinates; null for rect/ellipse, which are drawn natively. */
 export function shapePolygon(kind: ShapeKind, w: number, h: number, custom?: number[]): number[] | null {
   switch (kind) {
     case 'triangle':
       return [w / 2, 0, w, h, 0, h]
+    case 'triangleDown':
+      return [0, 0, w, 0, w / 2, h]
     case 'diamond':
       return [w / 2, 0, w, h / 2, w / 2, h, 0, h / 2]
+    case 'parallelogram':
+      return [w * 0.25, 0, w, 0, w * 0.75, h, 0, h]
+    case 'pentagon':
+      return regular(5, w, h)
     case 'hexagon':
       return [w * 0.25, 0, w * 0.75, 0, w, h / 2, w * 0.75, h, w * 0.25, h, 0, h / 2]
+    case 'octagon':
+      return [w * 0.3, 0, w * 0.7, 0, w, h * 0.3, w, h * 0.7, w * 0.7, h, w * 0.3, h, 0, h * 0.7, 0, h * 0.3]
+    case 'plus':
+      return [w / 3, 0, (w * 2) / 3, 0, (w * 2) / 3, h / 3, w, h / 3, w, (h * 2) / 3, (w * 2) / 3, (h * 2) / 3, (w * 2) / 3, h, w / 3, h, w / 3, (h * 2) / 3, 0, (h * 2) / 3, 0, h / 3, w / 3, h / 3]
+    case 'arrowRight':
+      return [0, h * 0.28, w * 0.6, h * 0.28, w * 0.6, 0, w, h / 2, w * 0.6, h, w * 0.6, h * 0.72, 0, h * 0.72]
+    case 'arrowLeft':
+      return [w, h * 0.28, w * 0.4, h * 0.28, w * 0.4, 0, 0, h / 2, w * 0.4, h, w * 0.4, h * 0.72, w, h * 0.72]
     case 'star': {
       const out: number[] = []
       for (let i = 0; i < 10; i++) {
@@ -159,11 +189,25 @@ function nearPolyline(pts: number[], stride: number, x: number, y: number, tol: 
   return closed && n > stride * 2 && distToSegment(x, y, pts[n - stride], pts[n - stride + 1], pts[0], pts[1]) <= tol
 }
 
-/** Whether a world point touches the element; `tol` is in world units. */
-export function hitTest(el: El, x: number, y: number, tol: number): boolean {
+/** Whether a local point lies under a full-strength pixel eraser mark (nothing left to click there). */
+export function erasedAt(el: El, x: number, y: number) {
+  return !!el.erase?.some((m) => m.a >= 0.99 && nearPolyline(m.p, 2, x, y, m.s / 2, false))
+}
+
+/**
+ * Whether a world point touches the element; `tol` is in world units. Points the pixel eraser
+ * removed don't count, unless `ignoreErase`.
+ */
+export function hitTest(el: El, x: number, y: number, tol: number, ignoreErase = false): boolean {
   if (el.hidden) return false
   const p = toLocal(el, x, y)
+  if (!ignoreErase && el.erase && erasedAt(el, p.x, p.y)) return false
   switch (el.type) {
+    case 'section': {
+      // Only the border: the inside is free for selecting and drawing what the section holds.
+      const inside = p.x >= -tol && p.y >= -tol && p.x <= el.w + tol && p.y <= el.h + tol
+      return inside && !(p.x > tol && p.y > tol && p.x < el.w - tol && p.y < el.h - tol)
+    }
     case 'ink':
     case 'highlighter':
       if (p.x < -el.size - tol || p.y < -el.size - tol || p.x > el.w + el.size + tol || p.y > el.h + el.size + tol) return false
@@ -171,7 +215,8 @@ export function hitTest(el: El, x: number, y: number, tol: number): boolean {
     case 'line':
       return nearPolyline(el.points, 2, p.x, p.y, el.strokeWidth / 2 + tol, false)
     case 'shape': {
-      const filled = el.fill !== 'transparent'
+      // Text inside makes the whole shape clickable, as if it were filled.
+      const filled = el.fill !== 'transparent' || !!el.text
       const edge = el.strokeWidth / 2 + tol
       if (el.shape === 'rect') {
         const inside = p.x >= 0 && p.y >= 0 && p.x <= el.w && p.y <= el.h
@@ -244,7 +289,103 @@ export function scaleElement(el: El, from: Box, to: Box): Partial<El> {
     const s = Math.max(w, h)
     Object.assign(patch, { w: s, h: s, x: ncx - s / 2, y: ncy - s / 2 })
   }
+  if (el.erase?.length) {
+    const kx = el.w > 0.01 ? (patch.w as number) / el.w : ex
+    const ky = el.h > 0.01 ? (patch.h as number) / el.h : ey
+    patch.erase = scaleMarks(el.erase, kx, ky)
+  }
   return patch as Partial<El>
+}
+
+export const scaleMarks = (marks: EraseMark[], kx: number, ky: number): EraseMark[] =>
+  marks.map((m) => ({ ...m, p: m.p.map((v, i) => (i % 2 ? v * ky : v * kx)), s: m.s * Math.sqrt(Math.abs(kx * ky)) }))
+
+/* ---------------- lines and connectors ---------------- */
+
+/** The two ends of a line in board coordinates. */
+export function lineWorldEnds(l: LineEl): [Pt, Pt] {
+  const c = center(l)
+  return [rotate(l.x + l.points[0], l.y + l.points[1], c.x, c.y, l.rotation), rotate(l.x + l.points[2], l.y + l.points[3], c.x, c.y, l.rotation)]
+}
+
+/** The line moved to new ends; its eraser marks follow (turned and stretched with it). */
+export function setLineEnds(l: LineEl, a: Pt, b: Pt): LineEl {
+  const minX = Math.min(a.x, b.x)
+  const minY = Math.min(a.y, b.y)
+  const next: LineEl = { ...l, rotation: 0, x: minX, y: minY, w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y), points: [a.x - minX, a.y - minY, b.x - minX, b.y - minY] }
+  if (l.erase?.length) {
+    const [oa, ob] = lineWorldEnds(l)
+    const u = Math.hypot(ob.x - oa.x, ob.y - oa.y)
+    const k = u > 1e-6 ? Math.hypot(b.x - a.x, b.y - a.y) / u : 1
+    const turn = u > 1e-6 ? Math.atan2(b.y - a.y, b.x - a.x) - Math.atan2(ob.y - oa.y, ob.x - oa.x) : 0
+    const c = center(l)
+    next.erase = l.erase.map((m) => {
+      const p: number[] = []
+      for (let i = 0; i < m.p.length; i += 2) {
+        const w = rotate(l.x + m.p[i], l.y + m.p[i + 1], c.x, c.y, l.rotation)
+        const q = rotate(a.x + (w.x - oa.x) * k, a.y + (w.y - oa.y) * k, a.x, a.y, turn)
+        p.push(q.x - minX, q.y - minY)
+      }
+      return { ...m, p, s: m.s * k }
+    })
+  }
+  return next
+}
+
+/** Point where the ray from the element's centre towards `toward` crosses its outline, pushed out by `gap`. */
+export function edgePoint(el: El, toward: Pt, gap = 0): Pt {
+  const c = center(el)
+  const l = toLocal(el, toward.x, toward.y)
+  const hw = el.w / 2
+  const hh = el.h / 2
+  let dx = l.x - hw
+  let dy = l.y - hh
+  if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) dy = -1
+  let t = Math.min(Math.abs(dx) > 1e-9 ? hw / Math.abs(dx) : Infinity, Math.abs(dy) > 1e-9 ? hh / Math.abs(dy) : Infinity)
+  if (el.type === 'shape' && el.shape === 'ellipse') t = 1 / Math.sqrt((dx * dx) / Math.max(hw * hw, 1e-9) + (dy * dy) / Math.max(hh * hh, 1e-9))
+  else if (el.type === 'shape') {
+    const poly = shapePolygon(el.shape, el.w, el.h, el.points)
+    if (poly) t = rayPolygon(hw, hh, dx, dy, poly) ?? t
+  }
+  const len = Math.hypot(dx, dy)
+  const k = t + gap / len
+  return rotate(el.x + hw + dx * k, el.y + hh + dy * k, c.x, c.y, el.rotation)
+}
+
+/** Smallest t > 0 where (ox, oy) + t·(dx, dy) crosses the closed polygon. */
+function rayPolygon(ox: number, oy: number, dx: number, dy: number, poly: number[]): number | null {
+  let best: number | null = null
+  for (let i = 0; i < poly.length; i += 2) {
+    const ax = poly[i]
+    const ay = poly[i + 1]
+    const bx = poly[(i + 2) % poly.length]
+    const by = poly[(i + 3) % poly.length]
+    const ex = bx - ax
+    const ey = by - ay
+    const den = dx * ey - dy * ex
+    if (Math.abs(den) < 1e-12) continue
+    const t = ((ax - ox) * ey - (ay - oy) * ex) / den
+    const u = ((ax - ox) * dy - (ay - oy) * dx) / den
+    if (t > 1e-9 && u >= -1e-9 && u <= 1 + 1e-9 && (best === null || t < best)) best = t
+  }
+  return best
+}
+
+/** Elements a connector can attach to. */
+export const connectable = (el: El | undefined | null): el is El => !!el && el.type !== 'line' && el.type !== 'ink' && el.type !== 'highlighter' && el.type !== 'comment' && !el.hidden
+
+/** A connector with its ends re-attached to the elements they belong to, or null if it has none. */
+export function routeConnector(l: LineEl, get: (id: string) => El | undefined): LineEl | null {
+  const A = l.from ? get(l.from) : undefined
+  const B = l.to ? get(l.to) : undefined
+  const a = connectable(A) ? A : null
+  const b = connectable(B) ? B : null
+  if (!a && !b) return null
+  const [pa, pb] = lineWorldEnds(l)
+  const ca = a ? center(a) : pa
+  const cb = b ? center(b) : pb
+  const gap = l.strokeWidth * 1.5
+  return setLineEnds(l, a ? edgePoint(a, cb, gap) : pa, b ? edgePoint(b, ca, gap) : pb)
 }
 
 /** Smallest stroke width or font size, in board units (a 2 px pen at the deepest zoom is 0.06). */
