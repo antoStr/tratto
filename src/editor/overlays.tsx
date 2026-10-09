@@ -1,13 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { RotateCw } from 'lucide-react'
+import { Bold, Italic, RotateCw } from 'lucide-react'
 import type { Board } from './doc.ts'
 import { safeColor } from './doc.ts'
-import { toScreen } from './geometry.ts'
+import { frameBox, toScreen } from './geometry.ts'
 import { RULER_HEIGHT, RULER_LENGTH } from './ink.ts'
-import { fontCss, isDark, layoutText, LINE_HEIGHT, STICKY_PAD, stickyLayout } from './render.ts'
+import { fitText, fontCss, isDark, LINE_HEIGHT, STICKY_PAD, stickyLayout } from './render.ts'
 import type { Awareness } from './controller.ts'
 import { useEditor } from './store.ts'
 import { FONT_STACK, type StickyEl, type TextEl } from './types.ts'
+import { FontPicker, IconButton } from '../ui.tsx'
 
 export function useBoardVersion(board: Board) {
   return useSyncExternalStore(board.subscribe, () => board.version)
@@ -54,6 +55,12 @@ export function TextEditor({ board }: { board: Board }) {
   const z = cam.z
   const p = toScreen(cam, el.x, el.y)
   const finish = () => useEditor.setState({ editingId: null })
+  // Focus moving to the text bar or to the font menu it opens (in a portal) keeps the box open.
+  const onBlur = (e: React.FocusEvent) => {
+    const to = e.relatedTarget as HTMLElement | null
+    if (!to || !(e.currentTarget.contains(to) || to.closest('[data-text-tools]'))) finish()
+  }
+  const tools = <TextTools board={board} el={el} refocus={() => ref.current?.focus({ preventScroll: true })} />
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Escape' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
       e.preventDefault()
@@ -63,29 +70,27 @@ export function TextEditor({ board }: { board: Board }) {
   }
 
   if (el.type === 'text') {
-    const update = (text: string) => {
-      const layout = layoutText(text || ' ', fontCss(el.font, el.fontSize, el.bold, el.italic), el.fontSize, el.fixedWidth ? el.w : null)
-      board.update(el.id, { text, w: el.fixedWidth ? el.w : Math.max(layout.width, 4), h: layout.height } as Partial<TextEl>)
-    }
     return (
-      <div className="text-edit" style={{ left: p.x, top: p.y, width: Math.max(el.w * z, 8) + el.fontSize * z, height: el.h * z, transform: `rotate(${el.rotation}rad)`, transformOrigin: `${(el.w * z) / 2}px ${(el.h * z) / 2}px` }}>
-        <textarea
-          ref={ref}
-          aria-label="Testo"
-          value={el.text}
-          spellCheck={false}
-          onChange={(e) => update(e.target.value)}
-          onBlur={finish}
-          onKeyDown={onKeyDown}
-          style={{
-            font: fontCss(el.font, el.fontSize * z, el.bold, el.italic),
-            lineHeight: LINE_HEIGHT,
-            color: safeColor(el.color),
-            textAlign: el.align,
-            whiteSpace: el.fixedWidth ? 'pre-wrap' : 'pre',
-            width: el.fixedWidth ? el.w * z : '100%',
-          }}
-        />
+      <div className="text-scope" onBlur={onBlur}>
+        <div className="text-edit" style={{ left: p.x, top: p.y, width: Math.max(el.w * z, 8) + el.fontSize * z, height: el.h * z, transform: `rotate(${el.rotation}rad)`, transformOrigin: `${(el.w * z) / 2}px ${(el.h * z) / 2}px` }}>
+          <textarea
+            ref={ref}
+            aria-label="Testo"
+            value={el.text}
+            spellCheck={false}
+            onChange={(e) => board.update(el.id, fitText(el, { text: e.target.value }))}
+            onKeyDown={onKeyDown}
+            style={{
+              font: fontCss(el.font, el.fontSize * z, el.bold, el.italic),
+              lineHeight: LINE_HEIGHT,
+              color: safeColor(el.color),
+              textAlign: el.align,
+              whiteSpace: el.fixedWidth ? 'pre-wrap' : 'pre',
+              width: el.fixedWidth ? el.w * z : '100%',
+            }}
+          />
+        </div>
+        {tools}
       </div>
     )
   }
@@ -93,24 +98,79 @@ export function TextEditor({ board }: { board: Board }) {
   const sticky = el as StickyEl
   const { layout, size } = stickyLayout(sticky)
   return (
-    <div className="text-edit sticky" style={{ left: p.x, top: p.y, width: sticky.w * z, height: sticky.h * z, padding: STICKY_PAD * z, transform: `rotate(${sticky.rotation}rad)` }}>
-      <textarea
-        ref={ref}
-        aria-label="Testo della nota"
-        value={sticky.text}
-        spellCheck={false}
-        onChange={(e) => board.update(sticky.id, { text: e.target.value.slice(0, 4000) } as Partial<StickyEl>)}
-        onBlur={finish}
-        onKeyDown={onKeyDown}
-        style={{
-          fontFamily: FONT_STACK[sticky.font],
-          fontSize: size * z,
-          lineHeight: LINE_HEIGHT,
-          height: Math.max(layout.height, size * LINE_HEIGHT) * z,
-          color: isDark(sticky.color) ? '#FFFFFF' : '#1E1E1E',
-          textAlign: sticky.align,
+    <div className="text-scope" onBlur={onBlur}>
+      <div className="text-edit sticky" style={{ left: p.x, top: p.y, width: sticky.w * z, height: sticky.h * z, padding: STICKY_PAD * z, transform: `rotate(${sticky.rotation}rad)` }}>
+        <textarea
+          ref={ref}
+          aria-label="Testo della nota"
+          value={sticky.text}
+          spellCheck={false}
+          onChange={(e) => board.update(sticky.id, { text: e.target.value.slice(0, 4000) } as Partial<StickyEl>)}
+          onKeyDown={onKeyDown}
+          style={{
+            fontFamily: FONT_STACK[sticky.font] ?? FONT_STACK.sans,
+            fontSize: size * z,
+            lineHeight: LINE_HEIGHT,
+            height: Math.max(layout.height, size * LINE_HEIGHT) * z,
+            color: isDark(sticky.color) ? '#FFFFFF' : '#1E1E1E',
+            textAlign: sticky.align,
+          }}
+        />
+      </div>
+      {tools}
+    </div>
+  )
+}
+
+const BAR_H = 32
+const BAR_GAP = 8
+
+/**
+ * Bar over the box being edited: font, plus bold and italic for text. Its buttons don't take
+ * the focus from the text (mousedown is cancelled) and the font menu gives it back on close.
+ */
+function TextTools({ board, el, refocus }: { board: Board; el: TextEl | StickyEl; refocus: () => void }) {
+  const cam = useEditor((s) => s.camera)
+  const b = frameBox(el)
+  const a = toScreen(cam, b.x, b.y)
+  const above = a.y - BAR_GAP - BAR_H
+  const top = above >= 8 ? above : toScreen(cam, b.x, b.y + b.h).y + BAR_GAP
+  const width = el.type === 'text' ? 232 : 176
+  const set = (patch: Partial<TextEl>) => board.update(el.id, el.type === 'text' ? fitText(el, patch) : patch)
+  const keepFocus = (e: React.MouseEvent) => e.preventDefault()
+  return (
+    <div
+      className="text-tools"
+      data-text-tools=""
+      role="toolbar"
+      aria-label="Formato del testo"
+      style={{ left: `max(8px, min(${a.x}px, calc(100% - ${width + 8}px)))`, top }}
+      // Escape on the bar leaves the text as it does in the box (not when it closes the font menu, in a portal).
+      onKeyDown={(e) => e.key === 'Escape' && e.currentTarget.contains(e.target as Node) && useEditor.setState({ editingId: null })}
+    >
+      <FontPicker
+        value={el.font}
+        onChange={(font) => {
+          set({ font })
+          // The next text box starts with the same font.
+          const prefs = useEditor.getState().prefs
+          if (el.type === 'text' && prefs.text.font !== font) useEditor.getState().setPrefs({ text: { ...prefs.text, font } })
+        }}
+        onCloseAutoFocus={(e) => {
+          e.preventDefault()
+          refocus()
         }}
       />
+      {el.type === 'text' && (
+        <>
+          <IconButton label="Grassetto" on={el.bold} onMouseDown={keepFocus} onClick={() => set({ bold: !el.bold })}>
+            <Bold size={16} />
+          </IconButton>
+          <IconButton label="Corsivo" on={el.italic} onMouseDown={keepFocus} onClick={() => set({ italic: !el.italic })}>
+            <Italic size={16} />
+          </IconButton>
+        </>
+      )}
     </div>
   )
 }

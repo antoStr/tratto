@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { aabb, hitTest, pointInPolygon, scaleElement, segmentDistance } from './geometry.ts'
-import { recognize, rulerSnapper, thinPoints } from './ink.ts'
+import { recognize, rulerSnapper, strokeOutline, thinPoints } from './ink.ts'
 import type { InkEl, ShapeEl } from './types.ts'
 
 const flat = (pts: [number, number][]) => pts.flatMap(([x, y]) => [x, y, 0.5])
@@ -32,6 +32,27 @@ test('ink to shape recognises the basic shapes and leaves scribbles alone', () =
   assert.equal(recognize(flat(scribble)), null)
 })
 
+test('a stroke written zoomed in looks the same on screen as at 100%', () => {
+  // A 40 px handwriting stroke with a 4 px pen; at zoom z it is 1/z the size in board units.
+  const stroke = (zoom: number) => {
+    const pts: number[] = []
+    for (let i = 0; i <= 20; i++) pts.push((i * 2) / zoom, (Math.sin((i / 20) * Math.PI) * 10) / zoom, -1)
+    return strokeOutline(pts, 4 / zoom, false).map(([x, y]) => [x * zoom, y * zoom])
+  }
+  const base = stroke(1)
+  for (const zoom of [4, 16, 32]) {
+    const out = stroke(zoom)
+    assert.equal(out.length, base.length, `zoom ${zoom}: same outline`)
+    out.forEach(([x, y], i) => assert.ok(Math.hypot(x - base[i][0], y - base[i][1]) < 1e-6, `zoom ${zoom}: point ${i}`))
+  }
+  // A tap is a dot the size of the pen, not a dash.
+  const dot = strokeOutline([10, 10, -1], 4 / 32, false)
+  assert.ok(Math.max(...dot.map(([x, y]) => Math.hypot(x - 10, y - 10))) * 32 < 3)
+  // Shapes are recognised at any zoom: the same circle on screen, drawn at 1600%.
+  assert.equal(recognize(flat(circle(100, 100, 80)).map((v, i) => (i % 3 === 2 ? v : v / 16)), 1 / 16)?.kind, 'ellipse')
+  assert.equal(recognize(flat(polyline([[0, 0], [200, 40]])).map((v, i) => (i % 3 === 2 ? v : v / 16)), 1 / 16)?.kind, 'line')
+})
+
 test('hit testing respects stroke width, fill and rotation', () => {
   const ink: InkEl = { id: 'a', type: 'ink', x: 0, y: 0, w: 100, h: 0, rotation: 0, z: 0, opacity: 1, points: [0, 0, 0.5, 100, 0, 0.5], color: '#000', size: 10 }
   assert.ok(hitTest(ink, 50, 4, 0))
@@ -55,6 +76,9 @@ test('scaling a stroke scales its points and thickness', () => {
   assert.deepEqual(p.points, [0, 0, 0.5, 200, 100, 0.5])
   assert.equal(p.size, 8)
   assert.equal(p.x, 10)
+  // A thin stroke written zoomed in stays thin (it used to jump to 0.5 units).
+  const thin = scaleElement({ ...ink, size: 0.06 }, { x: 10, y: 10, w: 100, h: 50 }, { x: 10, y: 10, w: 110, h: 55 }) as Partial<InkEl>
+  assert.ok(Math.abs(thin.size! - 0.066) < 1e-9)
 })
 
 test('geometry helpers', () => {

@@ -30,13 +30,13 @@ import {
 import type { Board } from './doc.ts'
 import { commands, type Awareness } from './controller.ts'
 import { center, frameBox, scaleElement, union } from './geometry.ts'
-import { drawBackground, fontCss, layoutText } from './render.ts'
+import { drawBackground, fitText } from './render.ts'
 import { peerColor, peerName, useBoardVersion, usePeers } from './overlays.tsx'
 import { useEditor } from './store.ts'
 import { StampPicker } from './Toolbar.tsx'
 import { stampInfo } from './stamps.ts'
-import { BACKGROUNDS, FONT_STACK, GRID_SIZES, INK_COLORS, PATTERNS, STICKY_COLORS, type Align, type BoardMeta, type El, type FontKind, type Pattern, type ShapeKind, type TextEl } from './types.ts'
-import { Avatar, IconButton, Menu, MenuContent, MenuItem, MenuSep, MenuTrigger, NumberField, Segmented, Swatches, Tip } from '../ui.tsx'
+import { BACKGROUNDS, GRID_SIZES, INK_COLORS, PATTERNS, STICKY_COLORS, type Align, type BoardMeta, type El, type FontKind, type Pattern, type ShapeKind, type TextEl } from './types.ts'
+import { Avatar, FontPicker, IconButton, Menu, MenuContent, MenuItem, MenuSep, MenuTrigger, NumberField, Segmented, Swatches, Tip } from '../ui.tsx'
 
 const TYPE_LABEL: Record<El['type'], string> = {
   ink: 'Tratto',
@@ -500,7 +500,7 @@ function StrokeWidth({ els, apply }: { els: El[]; apply: (fn: (el: El) => Partia
     <NumberField
       label="≡"
       title="Spessore"
-      min={0.5}
+      min={0.1}
       max={200}
       step={0.5}
       decimals={1}
@@ -514,29 +514,14 @@ function TextProps({ els, apply, same }: { els: El[]; apply: (fn: (el: El) => Pa
   const font = same((e) => (e.type === 'text' || e.type === 'sticky' ? e.font : undefined))
   const align = same((e) => (e.type === 'text' || e.type === 'sticky' ? e.align : undefined))
   const isText = els.every((e) => e.type === 'text')
-  /** Text boxes that size themselves need their box recomputed when type changes. */
-  const relayout = (el: El, patch: Partial<TextEl>): Partial<El> => {
-    if (el.type !== 'text') return patch as Partial<El>
-    const next = { ...el, ...patch }
-    const l = layoutText(next.text || ' ', fontCss(next.font, next.fontSize, next.bold, next.italic), next.fontSize, next.fixedWidth ? next.w : null)
-    return { ...patch, h: l.height, ...(next.fixedWidth ? {} : { w: Math.max(l.width, 4) }) } as Partial<El>
-  }
+  /** Text boxes need their box recomputed when type changes. */
+  const relayout = (el: El, patch: Partial<TextEl>): Partial<El> => (el.type === 'text' ? fitText(el, patch) : (patch as Partial<El>))
   return (
     <Section title="Testo">
-      <Segmented<FontKind>
-        label="Carattere"
-        value={(font ?? 'sans') as FontKind}
-        onChange={(f) => apply((el) => relayout(el, { font: f }))}
-        options={[
-          { value: 'sans', label: <span style={{ fontFamily: FONT_STACK.sans }}>Sans</span> },
-          { value: 'serif', label: <span style={{ fontFamily: FONT_STACK.serif }}>Serif</span> },
-          { value: 'mono', label: <span style={{ fontFamily: FONT_STACK.mono }}>Mono</span> },
-          { value: 'hand', label: <span style={{ fontFamily: FONT_STACK.hand, fontSize: 14 }}>Mano</span> },
-        ]}
-      />
+      <FontPicker value={font as FontKind | null} onChange={(f) => apply((el) => relayout(el, { font: f }))} />
       {isText && (
         <div className="grid2">
-          <NumberField label="Aa" title="Dimensione del testo" min={1} max={2000} value={same((e) => (e.type === 'text' ? Math.round(e.fontSize * 10) / 10 : undefined))} decimals={1} onChange={(fontSize) => apply((el) => relayout(el, { fontSize }))} />
+          <NumberField label="Aa" title="Dimensione del testo" min={0.1} max={2000} value={same((e) => (e.type === 'text' ? Math.round(e.fontSize * 10) / 10 : undefined))} decimals={1} onChange={(fontSize) => apply((el) => relayout(el, { fontSize }))} />
           <div className="btn-row">
             <IconButton label="Grassetto" on={!!same((e) => (e.type === 'text' ? e.bold : undefined))} onClick={() => apply((el) => (el.type === 'text' ? relayout(el, { bold: !el.bold }) : null))}>
               <Bold size={16} />

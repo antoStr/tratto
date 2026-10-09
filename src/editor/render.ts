@@ -34,8 +34,18 @@ export interface TextLayout {
   height: number
 }
 
+const requestedFonts = new Set<string>()
+/** Canvas text may not make the browser fetch a web font: ask for it (the board repaints on 'loadingdone'). */
+function loadFont(css: string) {
+  const key = css.replace(/[\d.]+px /, '')
+  if (requestedFonts.has(key) || typeof document === 'undefined' || !document.fonts) return
+  requestedFonts.add(key)
+  document.fonts.load(css).catch(() => {})
+}
+
 /** Splits text into lines, wrapping words at `maxWidth` (null = only at newlines). */
 export function layoutText(text: string, css: string, size: number, maxWidth: number | null): TextLayout {
+  loadFont(css)
   const c = ctx2d()
   c.font = css
   const lines: string[] = []
@@ -77,6 +87,14 @@ export function resetTextCaches() {
   layoutCache = new WeakMap()
 }
 
+/** `patch` plus the box the text then needs: a self-sizing box fits the text, a fixed-width one only grows taller. */
+export function fitText(el: TextEl, patch: Partial<TextEl>): Partial<TextEl> {
+  const next = { ...el, ...patch }
+  const l = layoutText(next.text || ' ', fontCss(next.font, next.fontSize, next.bold, next.italic), next.fontSize, next.fixedWidth ? next.w : null)
+  // Room for the caret in an empty box, relative to the type (a fixed minimum is huge when zoomed in).
+  return { ...patch, h: l.height, ...(next.fixedWidth ? {} : { w: Math.max(l.width, next.fontSize / 6) }) }
+}
+
 export function textLayout(el: TextEl): TextLayout {
   const hit = layoutCache.get(el)
   if (hit) return hit.layout
@@ -106,14 +124,43 @@ export function stickyLayout(el: StickyEl): { layout: TextLayout; size: number }
 
 const pathCache = new WeakMap<El, Path2D>()
 
+/** SVG path of a stroke, precise enough for strokes drawn zoomed in (where they are tiny in board units). */
 export function inkPathData(el: InkEl) {
-  return outlineToPath(strokeOutline(el.points, el.size, el.type === 'highlighter'))
+  return outlineToPath(strokeOutline(el.points, el.size, el.type === 'highlighter'), 100 / Math.min(1, el.size))
+}
+
+/** Same curves as outlineToPath, built directly: no string to format and parse, no rounding. */
+export function outlinePath(outline: number[][]): Path2D {
+  const p = new Path2D()
+  const n = outline.length
+  if (!n) return p
+  p.moveTo(outline[0][0], outline[0][1])
+  for (let i = 0; i < n; i++) {
+    const [x0, y0] = outline[i]
+    const [x1, y1] = outline[(i + 1) % n]
+    p.quadraticCurveTo(x0, y0, (x0 + x1) / 2, (y0 + y1) / 2)
+  }
+  p.closePath()
+  return p
+}
+
+const lineCache = new WeakMap<El, Path2D>()
+function centreLine(el: InkEl) {
+  let p = lineCache.get(el)
+  if (!p) {
+    p = new Path2D()
+    const pts = el.points
+    p.moveTo(pts[0], pts[1])
+    for (let i = 3; i < pts.length; i += 3) p.lineTo(pts[i], pts[i + 1])
+    lineCache.set(el, p)
+  }
+  return p
 }
 
 function inkPath(el: InkEl) {
   let p = pathCache.get(el)
   if (!p) {
-    p = new Path2D(inkPathData(el))
+    p = outlinePath(strokeOutline(el.points, el.size, el.type === 'highlighter'))
     pathCache.set(el, p)
   }
   return p
@@ -134,9 +181,18 @@ export function shapePath(el: ShapeEl): Path2D {
   return p
 }
 
+/**
+ * Arrow head length: proportional to the line width only. A minimum in board units would make
+ * arrows drawn zoomed in (thin in board units) grow huge heads.
+ */
+const headLength = (width: number) => width * 3.6
+
+/** Width of the outline drawn around an arrow head, which rounds its corners. */
+export const headStroke = (width: number) => width * 0.5
+
 /** Arrow head triangle at (x2, y2) pointing away from (x1, y1). */
 export function arrowHead(x1: number, y1: number, x2: number, y2: number, width: number): number[] {
-  const len = Math.max(10, width * 3.6)
+  const len = headLength(width)
   const a = Math.atan2(y2 - y1, x2 - x1)
   const spread = Math.PI / 7
   return [x2, y2, x2 - len * Math.cos(a - spread), y2 - len * Math.sin(a - spread), x2 - len * Math.cos(a + spread), y2 - len * Math.sin(a + spread)]
@@ -146,7 +202,7 @@ export function arrowHead(x1: number, y1: number, x2: number, y2: number, width:
 export function lineEnds(el: LineEl) {
   const [x1, y1, x2, y2] = el.points
   const len = Math.hypot(x2 - x1, y2 - y1) || 1
-  const back = Math.max(10, el.strokeWidth * 3.6) * 0.6
+  const back = headLength(el.strokeWidth) * 0.6
   const ux = (x2 - x1) / len
   const uy = (y2 - y1) / len
   return {
@@ -197,8 +253,13 @@ export interface DrawEnv {
   editingId?: string | null
   /** Pre-resolved bitmaps for export. */
   bitmaps?: Map<string, ImageBitmap>
-  /** Current zoom; on screen, very thin strokes are drawn at least one pixel wide. */
-  zoom?: number
+  /**
+   * One device pixel in board units, when drawing on screen. Strokes thinner than that are drawn
+   * as their centre line: same look at that size, several times faster to rasterize.
+   */
+  pixel?: number
+  /** Minimap: those strokes stay one pixel wide instead of fading out. */
+  hairline?: boolean
 }
 
 export function drawElement(ctx: Ctx, el: El, env: DrawEnv) {
@@ -213,15 +274,16 @@ export function drawElement(ctx: Ctx, el: El, env: DrawEnv) {
     case 'ink':
     case 'highlighter':
       if (el.type === 'highlighter') ctx.globalAlpha *= 0.45
+      // Thinner than a device pixel (far zoomed out): the canvas draws such lines on a fast path.
+      if (env.pixel && el.size <= env.pixel && el.points.length > 3) {
+        ctx.strokeStyle = safeColor(el.color)
+        ctx.lineWidth = env.hairline ? env.pixel : el.size
+        ctx.lineJoin = 'bevel'
+        ctx.stroke(centreLine(el))
+        break
+      }
       ctx.fillStyle = safeColor(el.color)
       ctx.fill(inkPath(el))
-      // Zoomed far out a stroke can shrink below a pixel and vanish: keep a hairline.
-      if (env.zoom && el.size * env.zoom < 1) {
-        ctx.strokeStyle = ctx.fillStyle
-        ctx.lineWidth = 1 / env.zoom
-        ctx.lineJoin = 'round'
-        ctx.stroke(inkPath(el))
-      }
       break
     case 'shape': {
       const path = shapePath(el)
@@ -260,7 +322,7 @@ export function drawElement(ctx: Ctx, el: El, env: DrawEnv) {
         ctx.lineTo(head[4], head[5])
         ctx.closePath()
         ctx.lineJoin = 'round'
-        ctx.lineWidth = Math.max(1, el.strokeWidth * 0.5)
+        ctx.lineWidth = headStroke(el.strokeWidth)
         ctx.fill()
         ctx.stroke()
       }

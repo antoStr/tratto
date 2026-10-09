@@ -1,7 +1,7 @@
 import type { HocuspocusProvider } from '@hocuspocus/provider'
 import { Board, uid } from './doc.ts'
 import {
-  aabb,
+  aabb as box,
   boundsOf,
   center,
   clamp,
@@ -11,6 +11,7 @@ import {
   frameBox,
   hitTest,
   intersects,
+  MIN_SIZE,
   normalizeBox,
   pointInPolygon,
   rotate,
@@ -24,8 +25,8 @@ import {
   union,
   type Pt,
 } from './geometry.ts'
-import { nextPressure, OneEuro2D, onRuler, outlineToPath, recognize, RULER_LENGTH, rulerSnapper, SMOOTHING_CUTOFF, storedPressure, strokeOutline, thinPoints } from './ink.ts'
-import { drawBackground, drawElement, ImageStore, LINE_HEIGHT, resetTextCaches, layoutText, fontCss } from './render.ts'
+import { nextPressure, OneEuro2D, onRuler, recognize, RULER_LENGTH, rulerSnapper, SMOOTHING_CUTOFF, storedPressure, strokeOutline, thinPoints } from './ink.ts'
+import { drawBackground, drawElement, ImageStore, LINE_HEIGHT, resetTextCaches, layoutText, fontCss, outlinePath } from './render.ts'
 import { onStampLoaded } from './stamps.ts'
 import { useEditor, type Tool } from './store.ts'
 import type { Box, Camera, El, InkEl, LineEl, ShapeEl, StickyEl, TextEl } from './types.ts'
@@ -70,6 +71,11 @@ export const MAX_ZOOM = 32
 const CLIP_PREFIX = 'tratto-clipboard:'
 const ERASABLE = new Set(['ink', 'highlighter', 'line', 'shape'])
 const r2 = (n: number) => Math.round(n * 100) / 100
+/** Rounds stroke coordinates to 1/100 of the pen width, never coarser than 0.01: strokes drawn zoomed in are tiny. */
+const strokeRound = (size: number) => {
+  const q = 100 / Math.min(1, size)
+  return (n: number) => Math.round(n * q) / q
+}
 
 type Gesture =
   | { kind: 'pan'; sx: number; sy: number; cam: Camera }
@@ -145,12 +151,6 @@ export function createController(o: Options) {
 
   const cam = () => st().camera
   const readOnly = () => st().readOnly
-  const boxCache = new WeakMap<El, Box>()
-  const box = (el: El) => {
-    let b = boxCache.get(el)
-    if (!b) boxCache.set(el, (b = aabb(el)))
-    return b
-  }
   const view = (): Box => {
     const c = cam()
     const a = toWorld(c, 0, 0)
@@ -246,7 +246,7 @@ export function createController(o: Options) {
     drawBackground(sctx, c, W, H, board.getMeta())
     sctx.setTransform(dpr * c.z, 0, 0, dpr * c.z, dpr * c.x, dpr * c.y)
     const v = view()
-    const env = { images, editingId: st().editingId }
+    const env = { images, editingId: st().editingId, pixel: 1 / (c.z * dpr) }
     let anyVisible = false
     let anyOnScreen = false
     for (const base of board.all()) {
@@ -271,7 +271,7 @@ export function createController(o: Options) {
     ctx.setTransform(dpr * c.z, 0, 0, dpr * c.z, dpr * c.x, dpr * c.y)
     ctx.globalAlpha = hl ? 0.45 : 1
     ctx.fillStyle = color
-    ctx.fill(new Path2D(outlineToPath(strokeOutline(pts, size, hl))))
+    ctx.fill(outlinePath(strokeOutline(pts, size, hl)))
     ctx.restore()
   }
 
@@ -601,7 +601,8 @@ export function createController(o: Options) {
       maxX = Math.max(maxX, pts[i])
       maxY = Math.max(maxY, pts[i + 1])
     }
-    const rel = pts.map((v, i) => (i % 3 === 0 ? r2(v - minX) : i % 3 === 1 ? r2(v - minY) : Math.round(v * 1000) / 1000))
+    const rnd = strokeRound(size)
+    const rel = pts.map((v, i) => (i % 3 === 0 ? rnd(v - minX) : i % 3 === 1 ? rnd(v - minY) : Math.round(v * 1000) / 1000))
     return { id: uid(), type: hl ? 'highlighter' : 'ink', x: minX, y: minY, w: maxX - minX, h: maxY - minY, points: rel, color, size, ...baseProps() }
   }
 
@@ -614,7 +615,7 @@ export function createController(o: Options) {
     const prefs = st().prefs
     let el: El = inkElement(pts, g.size, g.color, g.hl)
     if (!g.hl && prefs.inkToShape && !g.snap) {
-      const r = recognize(pts, 48 / cam().z)
+      const r = recognize(pts, 1 / cam().z)
       if (r?.kind === 'line') {
         el = lineElement(r.x1, r.y1, r.x2, r.y2, { stroke: g.color, strokeWidth: g.size, arrowEnd: false })
       } else if (r) {
@@ -775,7 +776,8 @@ export function createController(o: Options) {
       }
       pushDrawPoint(g, s, pressure)
     }
-    aw('live', { pts: g.pts.slice(-3000).map(r2), color: g.color, size: g.size, hl: g.hl })
+    const rnd = strokeRound(g.size)
+    aw('live', { pts: g.pts.slice(-3000).map((v, i) => (i % 3 === 2 ? r2(v) : rnd(v))), color: g.color, size: g.size, hl: g.hl })
     invalidate(false)
   }
 
@@ -906,7 +908,7 @@ export function createController(o: Options) {
       type: 'text',
       x: p.x,
       y: p.y - (fontSize * LINE_HEIGHT) / 2,
-      w: 4,
+      w: fontSize / 6,
       h: fontSize * LINE_HEIGHT,
       text: '',
       color: t.color,
@@ -1003,7 +1005,7 @@ export function createController(o: Options) {
         preview.set(el.id, next)
       } else {
         let next = { ...el, ...scaleElement(el, f, to) } as El
-        if (next.type === 'text' && el.type === 'text') next = { ...next, fontSize: Math.max(1, el.fontSize * Math.sqrt((to.w / f.w) * (to.h / f.h))) } as TextEl
+        if (next.type === 'text' && el.type === 'text') next = { ...next, fontSize: Math.max(MIN_SIZE, el.fontSize * Math.sqrt((to.w / f.w) * (to.h / f.h))) } as TextEl
         preview.set(el.id, next)
       }
     }
@@ -1015,7 +1017,7 @@ export function createController(o: Options) {
   function resizeText(orig: TextEl, next: TextEl, h: Handle): TextEl {
     if (h.length === 2) {
       const k = next.w / Math.max(orig.w, 0.01)
-      const fontSize = Math.max(1, orig.fontSize * k)
+      const fontSize = Math.max(MIN_SIZE, orig.fontSize * k)
       const layout = layoutText(orig.text || ' ', fontCss(orig.font, fontSize, orig.bold, orig.italic), fontSize, orig.fixedWidth ? orig.w * k : null)
       return { ...next, fontSize, h: layout.height, w: orig.fixedWidth ? orig.w * k : layout.width }
     }
@@ -1309,7 +1311,10 @@ export function createController(o: Options) {
         g.cur = p
         const m = normalizeBox(g.start.x, g.start.y, p.x, p.y)
         const hits = board.all().filter((el) => editableForSelect(el) && intersects(frameBox(el), m) && (m.w > 0 || m.h > 0))
-        set({ selection: [...new Set([...g.base, ...hits.map((el) => el.id)])] })
+        const next = [...new Set([...g.base, ...hits.map((el) => el.id)])]
+        const prev = st().selection
+        // Most moves don't change what's inside: skip the update that re-renders the panels.
+        if (next.length !== prev.length || next.some((id, i) => id !== prev[i])) set({ selection: next })
         invalidate(false)
         return
       }
@@ -1481,7 +1486,8 @@ export function createController(o: Options) {
   const TOOL_KEYS: Record<string, Tool> = { v: 'select', h: 'hand', p: 'pen', m: 'highlighter', e: 'eraser', q: 'lasso', l: 'line', t: 'text', s: 'sticky', k: 'laser' }
 
   function onKeyDown(e: KeyboardEvent) {
-    if (typing(e.target) || document.querySelector('[role="dialog"], [role="menu"]')) return
+    // Not from the text bar either: Backspace on its buttons must not delete the text being edited.
+    if (typing(e.target) || (e.target instanceof Element && e.target.closest('[data-text-tools]')) || document.querySelector('[role="dialog"], [role="menu"], [role="listbox"]')) return
     const mod = e.ctrlKey || e.metaKey
     const key = e.key.toLowerCase()
     const state = st()
@@ -1914,6 +1920,19 @@ export function createController(o: Options) {
   const ro = new ResizeObserver(resize)
   ro.observe(root)
   resize()
+  // A screen with another pixel density changes devicePixelRatio without resizing anything:
+  // without this the board stays blurry after moving the window there.
+  let dprQuery: MediaQueryList | null = null
+  const onDpr = () => {
+    resize()
+    watchDpr()
+  }
+  const watchDpr = () => {
+    dprQuery?.removeEventListener('change', onDpr)
+    dprQuery = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+    dprQuery.addEventListener('change', onDpr)
+  }
+  watchDpr()
 
   const camKey = `tratto.cam.${o.boardKey}`
   let camTimer = 0
@@ -2010,6 +2029,7 @@ export function createController(o: Options) {
       clearTimeout(camTimer)
       flushPreview()
       ro.disconnect()
+      dprQuery?.removeEventListener('change', onDpr)
       unsubStore()
       unsubBoard()
       offStamps()

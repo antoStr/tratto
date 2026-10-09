@@ -25,10 +25,10 @@ import {
   Triangle,
   Type,
 } from 'lucide-react'
-import { IconButton, Menu, MenuContent, MenuItem, MenuTrigger, Segmented, Swatches, Tip } from '../ui.tsx'
+import { FontPicker, IconButton, Menu, MenuContent, MenuItem, MenuTrigger, Segmented, Swatches, Tip } from '../ui.tsx'
 import { outlineToPath, strokeOutline } from './ink.ts'
 import { ERASER_SIZES, HIGHLIGHTER_SIZES, PEN_SIZES, useEditor, type Pen as PenPreset, type Tool } from './store.ts'
-import { FONT_STACK, HIGHLIGHT_COLORS, INK_COLORS, STICKY_COLORS, type FontKind, type ShapeKind } from './types.ts'
+import { HIGHLIGHT_COLORS, INK_COLORS, STICKY_COLORS, type ShapeKind } from './types.ts'
 import { STAMP_SET } from './stamps.ts'
 
 const SHAPES: { kind: ShapeKind; label: string; icon: ReactNode; kbd?: string }[] = [
@@ -209,18 +209,8 @@ function Tray() {
     case 'text':
       content = (
         <>
-          <div style={{ width: 260 }}>
-            <Segmented
-              label="Carattere"
-              value={prefs.text.font}
-              onChange={(font: FontKind) => setPrefs({ text: { ...prefs.text, font } })}
-              options={[
-                { value: 'sans', label: <span style={{ fontFamily: FONT_STACK.sans }}>Sans</span> },
-                { value: 'serif', label: <span style={{ fontFamily: FONT_STACK.serif }}>Serif</span> },
-                { value: 'mono', label: <span style={{ fontFamily: FONT_STACK.mono }}>Mono</span> },
-                { value: 'hand', label: <span style={{ fontFamily: FONT_STACK.hand, fontSize: 14 }}>Mano</span> },
-              ]}
-            />
+          <div style={{ width: 168 }}>
+            <FontPicker value={prefs.text.font} onChange={(font) => setPrefs({ text: { ...prefs.text, font } })} />
           </div>
           <span className="tb-sep" />
           <ColorPop label="Colore testo" value={prefs.text.color} onChange={(color) => setPrefs({ text: { ...prefs.text, color } })} />

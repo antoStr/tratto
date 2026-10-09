@@ -7,16 +7,23 @@ import { distToSegment, type Pt } from './geometry.ts'
  *
  * Jitter is already removed while drawing (see OneEuro2D), so streamline stays low: a high
  * value cuts the corners of small loops and makes handwriting look squashed.
+ *
+ * perfect-freehand has constants in absolute units (it drops the last 3 units of a line and
+ * draws a dot as a 1-unit dash) that assume screen pixels. Strokes are in board units, tiny
+ * when drawn zoomed in, where those constants turned short strokes into big half circles.
+ * So the outline is computed with the pen scaled to a fixed size, then scaled back.
  */
 export function strokeOutline(pts: number[], size: number, highlighter: boolean): number[][] {
+  if (!(size > 0)) return []
+  const k = PEN_UNIT / size
   const input: number[][] = []
   let real = false
   for (let i = 0; i < pts.length; i += 3) {
-    input.push([pts[i], pts[i + 1], pts[i + 2] < 0 ? 0.5 : pts[i + 2]])
+    input.push([pts[i] * k, pts[i + 1] * k, pts[i + 2] < 0 ? 0.5 : pts[i + 2]])
     if (pts[i + 2] >= 0) real = true
   }
   return getStroke(input, {
-    size,
+    size: PEN_UNIT,
     // Never derive width from speed: slow movements would swell into round blobs.
     simulatePressure: false,
     thinning: highlighter || !real ? 0 : 0.42,
@@ -27,8 +34,11 @@ export function strokeOutline(pts: number[], size: number, highlighter: boolean)
     last: true,
     start: { cap: true, taper: 0 },
     end: { cap: true, taper: 0 },
-  })
+  }).map(([x, y]) => [x / k, y / k])
 }
+
+/** perfect-freehand's default pen size, the scale its constants were tuned for. */
+const PEN_UNIT = 16
 
 /**
  * The "1€ filter" (Casiez et al.): heavy smoothing when the pen moves slowly, where tremor is
@@ -87,10 +97,10 @@ export function nextPressure(prev: number | null, raw: number) {
 
 export const storedPressure = (smoothed: number) => Math.round((0.2 + 0.8 * smoothed) * 1000) / 1000
 
-/** SVG path data for an outline polygon (quadratic curves through midpoints). */
-export function outlineToPath(outline: number[][]): string {
+/** SVG path data for an outline polygon (quadratic curves through midpoints), rounded to 1/`precision`. */
+export function outlineToPath(outline: number[][], precision = 100): string {
   if (!outline.length) return ''
-  const r = (n: number) => Math.round(n * 100) / 100
+  const r = (n: number) => Math.round(n * precision) / precision
   const d = outline.reduce<(string | number)[]>(
     (acc, [x0, y0], i, arr) => {
       const [x1, y1] = arr[(i + 1) % arr.length]
@@ -147,16 +157,17 @@ const area = (poly: Pt[]) => Math.abs(poly.reduce((s, p, i) => {
 
 /**
  * Guesses which simple shape a freehand stroke was meant to be. Returns null when the
- * stroke doesn't look like one, so the ink is kept as drawn. Strokes smaller than `minSize`
- * (world units; callers pass ~48 screen pixels) are handwriting, never shapes.
+ * stroke doesn't look like one, so the ink is kept as drawn. `px` is one screen pixel in
+ * world units (1 / zoom): thresholds are on screen, so it works the same at any zoom, and
+ * strokes smaller than 48 px are handwriting, never shapes.
  */
-export function recognize(flat: number[], minSize = 0): Recognized | null {
+export function recognize(flat: number[], px = 1): Recognized | null {
   const pts: Pt[] = []
   for (let i = 0; i < flat.length; i += 3) pts.push({ x: flat[i], y: flat[i + 1] })
   if (pts.length < 4) return null
   let length = 0
   for (let i = 1; i < pts.length; i++) length += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y)
-  if (length < Math.max(24, minSize * 2)) return null
+  if (length < 96 * px) return null
   const first = pts[0]
   const last = pts[pts.length - 1]
   const gap = Math.hypot(last.x - first.x, last.y - first.y)
@@ -164,7 +175,7 @@ export function recognize(flat: number[], minSize = 0): Recognized | null {
   // Straight line: endpoints far apart and no point strays from the chord.
   if (gap > length * 0.8) {
     const dev = Math.max(...pts.map((p) => distToSegment(p.x, p.y, first.x, first.y, last.x, last.y)))
-    if (dev < Math.max(6, length * 0.06)) return { kind: 'line', x1: first.x, y1: first.y, x2: last.x, y2: last.y }
+    if (dev < Math.max(6 * px, length * 0.06)) return { kind: 'line', x1: first.x, y1: first.y, x2: last.x, y2: last.y }
     return null
   }
   if (gap > length * 0.25) return null // open curve, not a closed shape
@@ -174,7 +185,7 @@ export function recognize(flat: number[], minSize = 0): Recognized | null {
   const xs = pts.map((p) => p.x)
   const ys = pts.map((p) => p.y)
   const box = { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) }
-  if (Math.max(box.w, box.h) < Math.max(12, minSize) || Math.min(box.w, box.h) < 12 || !hullArea) return null
+  if (Math.max(box.w, box.h) < 48 * px || Math.min(box.w, box.h) < 12 * px || !hullArea) return null
   const fill = hullArea / (box.w * box.h)
 
   // Largest triangle inside the hull: close to the whole hull means it is a triangle.

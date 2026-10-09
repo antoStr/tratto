@@ -1,7 +1,8 @@
 import type { Board } from './doc.ts'
 import { safeColor } from './doc.ts'
 import { aabb, shapePolygon, union } from './geometry.ts'
-import { arrowHead, drawElement, inkPathData, isDark, LINE_HEIGHT, lineEnds, STICKY_PAD, stickyLayout, textLayout, type DrawEnv } from './render.ts'
+import { MAX_ZOOM } from './controller.ts'
+import { arrowHead, drawElement, headStroke, inkPathData, isDark, LINE_HEIGHT, lineEnds, STICKY_PAD, stickyLayout, textLayout, type DrawEnv } from './render.ts'
 import { preloadStamps, stampDataUrl } from './stamps.ts'
 import { FONT_STACK, type Box, type El, type ImageEl, type TextEl } from './types.ts'
 
@@ -24,6 +25,7 @@ export interface ExportOptions {
 
 const MAX_SIDE = 16384
 const MAX_AREA = 120_000_000
+const MIN_SIDE = 512
 const EMPTY = "La lavagna è vuota: non c'è niente da esportare."
 
 type Ctx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
@@ -33,7 +35,8 @@ function collect(board: Board, o: Pick<ExportOptions, 'ids' | 'padding'>): { els
   const els = board.all().filter((e) => !e.hidden && (!only || only.has(e.id)))
   const b = union(els.map(aabb))
   if (!b) throw new Error(EMPTY)
-  const p = o.padding ?? 32
+  // Content drawn zoomed in is small in board units: a fixed margin would dwarf it.
+  const p = o.padding ?? Math.min(32, Math.max(b.w, b.h) * 0.08)
   return { els, box: { x: b.x - p, y: b.y - p, w: Math.max(1, b.w + p * 2), h: Math.max(1, b.h + p * 2) } }
 }
 
@@ -90,7 +93,9 @@ function paint(ctx: Ctx, els: El[], env: DrawEnv, bg: string | null, outW: numbe
 
 export async function exportPNG(board: Board, o: ExportOptions): Promise<Blob> {
   const { els, box } = collect(board, o)
-  const k = Math.min(o.scale ?? 2, MAX_SIDE / Math.max(box.w, box.h), Math.sqrt(MAX_AREA / (box.w * box.h)))
+  // Small content (typically written zoomed in) is enlarged to at least MIN_SIDE px per 1× so it stays sharp.
+  const scale = (o.scale ?? 2) * Math.max(1, MIN_SIDE / Math.max(box.w, box.h))
+  const k = Math.min(scale, MAX_SIDE / Math.max(box.w, box.h), Math.sqrt(MAX_AREA / (box.w * box.h)))
   const w = Math.max(1, Math.round(box.w * k))
   const h = Math.max(1, Math.round(box.h * k))
   await fontsReady()
@@ -112,7 +117,9 @@ export async function thumbnail(board: Board, fetchFile: ExportOptions['fetchFil
   } catch {
     return null
   }
-  const k = Math.min((W - 48) / Math.max(1, c.box.w), (H - 48) / Math.max(1, c.box.h), 1.5)
+  // Fit the content; the cap only stops a lone dot from filling the picture. Content written
+  // zoomed in is tiny in board units and needs the enlargement.
+  const k = Math.min((W - 48) / Math.max(1, c.box.w), (H - 48) / Math.max(1, c.box.h), MAX_ZOOM)
   await fontsReady()
   if (c.els.some((e) => e.type === 'stamp')) await preloadStamps()
   const bitmaps = await loadBitmaps(c.els, fetchFile)
@@ -192,7 +199,7 @@ function svgBody(el: El, image: string | null): string {
       const [x1, y1, x2, y2] = el.points
       let out = `<line x1="${f(sx)}" y1="${f(sy)}" x2="${f(ex)}" y2="${f(ey)}" stroke="${c}" stroke-width="${f(el.strokeWidth)}" stroke-linecap="round"${el.dash ? dash(el.strokeWidth) : ''}/>`
       for (const head of [el.arrowEnd && arrowHead(x1, y1, x2, y2, el.strokeWidth), el.arrowStart && arrowHead(x2, y2, x1, y1, el.strokeWidth)]) {
-        if (head) out += `<polygon points="${head.map(f).join(' ')}" fill="${c}" stroke="${c}" stroke-width="${f(Math.max(1, el.strokeWidth * 0.5))}" stroke-linejoin="round"/>`
+        if (head) out += `<polygon points="${head.map(f).join(' ')}" fill="${c}" stroke="${c}" stroke-width="${f(headStroke(el.strokeWidth))}" stroke-linejoin="round"/>`
       }
       return out
     }

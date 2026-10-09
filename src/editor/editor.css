@@ -546,6 +546,74 @@
   overflow-wrap: anywhere;
 }
 
+/* The text box being edited and its bar share one focus scope, without a box of their own. */
+.text-scope {
+  display: contents;
+}
+
+/* Bar over the text being edited: font, bold, italic. */
+.text-tools {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--r-lg);
+  background: var(--bg);
+  box-shadow: var(--shadow-float);
+  animation: tray-in 140ms var(--ease);
+}
+.text-tools .font-trigger {
+  width: 168px;
+}
+
+/* Font picker: a Figma dropdown field, each font name in its own typeface. */
+.font-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  height: 24px;
+  min-width: 0;
+  padding: 0 4px 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r);
+  background: var(--bg-2);
+  color: var(--text);
+  font-size: var(--fs-md);
+  text-align: left;
+  transition: border-color 100ms;
+}
+.font-trigger:hover,
+.font-trigger[data-state='open'] {
+  border-color: var(--border);
+}
+.font-trigger > span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.font-trigger[data-placeholder] {
+  color: var(--text-2);
+}
+.font-trigger-icon {
+  display: grid;
+  flex: none;
+  color: var(--icon-2);
+}
+.font-menu {
+  min-width: max(var(--radix-select-trigger-width), 200px);
+  max-height: var(--radix-select-content-available-height);
+  transform-origin: var(--radix-select-content-transform-origin);
+}
+.font-item {
+  height: 28px;
+  font-size: 15px;
+}
+
 /* Other people's cursors */
 .cursors {
   position: absolute;

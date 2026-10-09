@@ -1,7 +1,8 @@
 import { forwardRef, useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
-import { Dialog as RDialog, DropdownMenu, Switch as RSwitch, Tooltip as RTooltip } from 'radix-ui'
-import { Check, X } from 'lucide-react'
+import { Dialog as RDialog, DropdownMenu, Select, Switch as RSwitch, Tooltip as RTooltip } from 'radix-ui'
+import { Check, ChevronDown, X } from 'lucide-react'
 import { create } from 'zustand'
+import { FONT_STACK, FONTS, type FontKind } from './editor/types.ts'
 
 /* ---------- Tooltip ---------- */
 
@@ -207,6 +208,51 @@ export function Segmented<T extends string>({ value, onChange, options, label }:
         </button>
       ))}
     </div>
+  )
+}
+
+/* ---------- Font picker ---------- */
+
+const FONT_GROUPS = [...new Set(FONTS.map((f) => f.group))]
+
+/**
+ * Font menu like Figma's: each name in its own typeface. The open menu carries `data-text-tools`
+ * so a text box being edited stays open while it is used (see TextEditor).
+ */
+export function FontPicker({ value, onChange, onCloseAutoFocus }: { value: FontKind | null; onChange: (font: FontKind) => void; onCloseAutoFocus?: (e: Event) => void }) {
+  return (
+    <Select.Root value={value ?? ''} onValueChange={(v) => onChange(v as FontKind)}>
+      <Select.Trigger className="font-trigger" aria-label="Carattere">
+        <Select.Value placeholder="Misto" />
+        <Select.Icon className="font-trigger-icon">
+          <ChevronDown size={12} />
+        </Select.Icon>
+      </Select.Trigger>
+      <Select.Portal>
+        <Select.Content className="menu font-menu" position="popper" sideOffset={6} collisionPadding={8} data-text-tools="" onCloseAutoFocus={onCloseAutoFocus}>
+          <Select.Viewport>
+            {FONT_GROUPS.map((group, i) => (
+              <Select.Group key={group}>
+                {i > 0 && <Select.Separator className="menu-sep" />}
+                <Select.Label className="menu-label">{group}</Select.Label>
+                {FONTS.filter((f) => f.group === group).map((f) => (
+                  <Select.Item key={f.kind} value={f.kind} className="menu-item font-item">
+                    <span className="menu-icon" aria-hidden="true">
+                      <Select.ItemIndicator>
+                        <Check size={14} />
+                      </Select.ItemIndicator>
+                    </span>
+                    <Select.ItemText>
+                      <span style={{ fontFamily: FONT_STACK[f.kind] }}>{f.name}</span>
+                    </Select.ItemText>
+                  </Select.Item>
+                ))}
+              </Select.Group>
+            ))}
+          </Select.Viewport>
+        </Select.Content>
+      </Select.Portal>
+    </Select.Root>
   )
 }
 

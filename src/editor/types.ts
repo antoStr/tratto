@@ -1,5 +1,5 @@
 export type ShapeKind = 'rect' | 'ellipse' | 'triangle' | 'diamond' | 'star' | 'hexagon' | 'polygon'
-export type FontKind = 'sans' | 'serif' | 'mono' | 'hand'
+export type FontKind = 'sans' | 'rounded' | 'geometric' | 'condensed' | 'serif' | 'book' | 'display' | 'mono' | 'hand' | 'print' | 'marker'
 export type Align = 'left' | 'center' | 'right'
 
 interface Base {
@@ -124,12 +124,35 @@ export const BACKGROUNDS = [
   { name: 'Blu notte', value: '#1B2A41' },
 ]
 
+/** Every face but serif and mono (kept for existing boards) ships with the app, so guests see the same text. */
 export const FONT_STACK: Record<FontKind, string> = {
   sans: '"Inter Variable", "Segoe UI", system-ui, sans-serif',
+  rounded: '"Nunito Variable", "Segoe UI", system-ui, sans-serif',
+  geometric: '"Montserrat Variable", "Segoe UI", system-ui, sans-serif',
+  condensed: '"Oswald Variable", "Arial Narrow", sans-serif',
   serif: 'Georgia, Cambria, "Times New Roman", serif',
+  book: '"Lora Variable", Georgia, serif',
+  display: '"Playfair Display Variable", Georgia, serif',
   mono: '"Cascadia Code", Consolas, "SF Mono", monospace',
   hand: '"Caveat Variable", "Segoe Print", "Comic Sans MS", cursive',
+  print: '"Patrick Hand", "Segoe Print", "Comic Sans MS", cursive',
+  marker: '"Permanent Marker", "Segoe Print", "Comic Sans MS", cursive',
 }
+
+/** The font menu, in order: the name shown and its group. */
+export const FONTS: { kind: FontKind; name: string; group: string }[] = [
+  { kind: 'sans', name: 'Inter', group: 'Senza grazie' },
+  { kind: 'rounded', name: 'Nunito', group: 'Senza grazie' },
+  { kind: 'geometric', name: 'Montserrat', group: 'Senza grazie' },
+  { kind: 'condensed', name: 'Oswald', group: 'Senza grazie' },
+  { kind: 'serif', name: 'Georgia', group: 'Con grazie' },
+  { kind: 'book', name: 'Lora', group: 'Con grazie' },
+  { kind: 'display', name: 'Playfair Display', group: 'Con grazie' },
+  { kind: 'hand', name: 'Caveat', group: 'Scritti a mano' },
+  { kind: 'print', name: 'Patrick Hand', group: 'Scritti a mano' },
+  { kind: 'marker', name: 'Permanent Marker', group: 'Scritti a mano' },
+  { kind: 'mono', name: 'Monospaziato', group: 'Altri' },
+]
 
 export const DEFAULT_META: BoardMeta = { background: '#F5F5F5', pattern: 'dots', gridSize: 24 }
 export const GRID_SIZES = [12, 24, 48]

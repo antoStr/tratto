@@ -235,7 +235,12 @@ function buildRows(board: Board, open: Set<string> | null): Row[] {
   const isOpen = (id: string) => !open || open.has(id)
   const items = board.all().slice().reverse()
   const byFolder = new Map<string, El[]>()
-  for (const el of items) if (el.groupId) byFolder.set(el.groupId, [...(byFolder.get(el.groupId) ?? []), el])
+  for (const el of items) {
+    if (!el.groupId) continue
+    const list = byFolder.get(el.groupId)
+    if (list) list.push(el)
+    else byFolder.set(el.groupId, [el])
+  }
   const rows: Row[] = []
   const container = (id: string, name: string, members: El[], auto?: boolean) => {
     rows.push({ kind: 'folder', id, name, members, auto })
@@ -271,7 +276,7 @@ const rowIds = (r: Row) => (r.kind === 'el' ? [r.el.id] : r.members.map((m) => m
 const rowKey = (r: Row) => (r.kind === 'el' ? r.el.id : `folder:${r.id}`)
 
 function LayerList({ board }: { board: Board }) {
-  useBoardVersion(board)
+  const version = useBoardVersion(board)
   const selection = useEditor((s) => s.selection)
   const readOnly = useEditor((s) => s.readOnly)
   const scroller = useRef<HTMLDivElement>(null)
@@ -280,7 +285,11 @@ function LayerList({ board }: { board: Board }) {
   const [open, setOpen] = useState<Set<string>>(() => new Set())
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const anchor = useRef<string | null>(null)
-  const rows = buildRows(board, open)
+  // Rebuilt when the board or the open folders change, not on every scroll or selection change.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const rows = useMemo(() => buildRows(board, open), [board, version, open])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const allOpen = useMemo(() => buildRows(board, null), [board, version])
   const selected = useMemo(() => new Set(selection), [selection])
   const toggleOpen = (id: string, value = !open.has(id)) =>
     setOpen((s) => {
@@ -314,13 +323,13 @@ function LayerList({ board }: { board: Board }) {
     const last = selection.length ? board.get(selection[selection.length - 1]) : null
     if (!last) return
     // The folder (or "Scrittura" row) holding it; a whole folder selected from its row stays closed.
-    const all = buildRows(board, null)
-    const parent = all.find((r): r is FolderRow => r.kind === 'folder' && r.members.some((m) => m.id === last.id))
+    const parent = allOpen.find((r): r is FolderRow => r.kind === 'folder' && r.members.some((m) => m.id === last.id))
     const part = !!parent && !parent.members.every((m) => selected.has(m.id))
-    if (parent && part && !open.has(parent.id)) toggleOpen(parent.id, true)
+    const opening = !!parent && part && !open.has(parent.id)
+    if (opening) toggleOpen(parent.id, true)
     const target = parent && !part ? rowKey(parent) : last.id
     const el = scroller.current
-    const i = buildRows(board, parent && part ? new Set([...open, parent.id]) : open).findIndex((r) => rowKey(r) === target)
+    const i = (opening ? buildRows(board, new Set([...open, parent.id])) : rows).findIndex((r) => rowKey(r) === target)
     if (!el || i < 0) return
     const top = i * ROW
     if (top < el.scrollTop || top + ROW > el.scrollTop + el.clientHeight) el.scrollTop = top - el.clientHeight / 2

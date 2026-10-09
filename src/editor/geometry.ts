@@ -49,11 +49,23 @@ export function boundsOf(points: Pt[]): Box {
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY }
 }
 
+// Elements are never mutated (an edit stores a new object), so boxes can be cached per object.
+const aabbCache = new WeakMap<El, Box>()
+const frameCache = new WeakMap<El, Box>()
+
 /** Axis-aligned box around everything the element paints. */
-export const aabb = (el: El): Box => boundsOf(corners(el, strokePad(el)))
+export function aabb(el: El): Box {
+  let b = aabbCache.get(el)
+  if (!b) aabbCache.set(el, (b = boundsOf(corners(el, strokePad(el)))))
+  return b
+}
 
 /** Axis-aligned box around the element's own frame (no stroke padding): what selection handles use. */
-export const frameBox = (el: El): Box => boundsOf(corners(el))
+export function frameBox(el: El): Box {
+  let b = frameCache.get(el)
+  if (!b) frameCache.set(el, (b = boundsOf(corners(el))))
+  return b
+}
 
 export function union(boxes: Box[]): Box | null {
   if (!boxes.length) return null
@@ -172,10 +184,10 @@ export function hitTest(el: El, x: number, y: number, tol: number): boolean {
       if (el.shape === 'ellipse') {
         const rx = el.w / 2
         const ry = el.h / 2
-        const nx = (p.x - rx) / Math.max(rx, 0.5)
-        const ny = (p.y - ry) / Math.max(ry, 0.5)
+        const nx = (p.x - rx) / Math.max(rx, 1e-6)
+        const ny = (p.y - ry) / Math.max(ry, 1e-6)
         const d = Math.hypot(nx, ny)
-        const band = edge / Math.max(Math.min(rx, ry), 1)
+        const band = edge / Math.max(Math.min(rx, ry), 1e-6)
         return filled ? d <= 1 + band : Math.abs(d - 1) <= band
       }
       const poly = shapePolygon(el.shape, el.w, el.h, el.points)!
@@ -222,7 +234,8 @@ export function scaleElement(el: El, from: Box, to: Box): Partial<El> {
     const kx = el.w > 0.01 ? w / el.w : ex
     const ky = el.h > 0.01 ? h / el.h : ey
     patch.points = el.points.map((v, i) => (i % 3 === 0 ? v * kx : i % 3 === 1 ? v * ky : v))
-    patch.size = Math.max(0.5, el.size * Math.sqrt(Math.abs(ex * ey)))
+    // Only a guard against zero: strokes drawn zoomed in are legitimately much thinner than 1 unit.
+    patch.size = Math.max(MIN_SIZE, el.size * Math.sqrt(Math.abs(ex * ey)))
   } else if (el.type === 'line') {
     const kx = el.w > 0.01 ? w / el.w : 1
     const ky = el.h > 0.01 ? h / el.h : 1
@@ -233,6 +246,9 @@ export function scaleElement(el: El, from: Box, to: Box): Partial<El> {
   }
   return patch as Partial<El>
 }
+
+/** Smallest stroke width or font size, in board units (a 2 px pen at the deepest zoom is 0.06). */
+export const MIN_SIZE = 0.01
 
 export function snapAngle(angle: number, step = Math.PI / 12) {
   return Math.round(angle / step) * step
