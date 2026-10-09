@@ -1,0 +1,69 @@
+[package]
+name = "tratto"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+base64 = "0.23.1"
+egui = "0.36.2"
+ehttp = "0.7.1"
+flate2 = "1.1.10"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+lyon_tessellation = "1.0.22"
+resvg = { version = "0.48.1", default-features = false }
+rustybuzz = "0.20.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tiny-skia = "0.12.0"
+yrs = { version = "0.28.0", features = ["sync"] }
+
+rfd = "0.17.2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Our own fonts replace egui's, so its default ones are left out.
+eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "links", "wayland", "x11", "wgpu"] }
+# Its default features: windows and decorations on every Linux desktop (pulled in through eframe).
+winit = "0.30.13"
+arboard = "3.6.1"
+axum = { version = "0.8.9", features = ["ws"] }
+dirs = "7.0.0"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+getrandom = "0.4.3"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "net", "sync", "time", "macros", "process", "io-util"] }
+webbrowser = "1.2.4"
+
+# The guests' page: the same app in the browser, drawn with WebGL.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+eframe = { version = "0.36.2", default-features = false, features = ["glow", "web_screen_reader"] }
+js-sys = "0.3.106"
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4.79"
+web-sys = { version = "0.3.106", features = ["WebSocket", "MessageEvent", "BinaryType", "CloseEvent", "Window", "Location", "Storage", "HtmlCanvasElement", "Document", "Element", "Blob", "Url", "HtmlAnchorElement"] }
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_Pointer"] }
+
+[dev-dependencies]
+egui_kittest = { version = "0.36.2", features = ["wgpu", "snapshot"] }
+
+[profile.dev]
+debug = "line-tables-only"
+
+# Dependencies optimised and without debug info: a fast board while developing, a small target folder.
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true
+
+# The guests' page: small to download through the tunnel.
+[profile.web]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"

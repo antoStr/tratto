@@ -3,3 +3,5 @@ dist/
 release/
 bin/
 data/
+web/pkg/
+target/

@@ -1,0 +1,794 @@
+//! The board on screen: each element's primitives are tessellated (lyon) once into meshes in
+//! board coordinates and kept while the element and the zoom level stay the same; every frame
+//! only places them. Antialiasing comes from multisampling (desktop) or WebGL (browser).
+
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::{Arc, mpsc};
+
+use egui::epaint::{Vertex, WHITE_UV};
+use egui::{Color32, ColorImage, Mesh, Pos2, Shape, TextureHandle, TextureId, TextureOptions, pos2};
+use lyon_tessellation::math::point;
+use lyon_tessellation::path::iterator::PathIterator;
+use lyon_tessellation::path::{Path as LPath, PathEvent};
+use lyon_tessellation::{BuffersBuilder, FillOptions, FillRule, FillTessellator, FillVertex, LineCap, LineJoin, StrokeOptions, StrokeTessellator, StrokeVertex, VertexBuffers};
+
+use crate::geom::{BBox, Camera, aabb, intersects};
+use crate::model::{El, Kind};
+use crate::prims::{Affine, Cmd, Env, ImageKey, Path, Prim, prims_of};
+use crate::text;
+
+/// Converts a path, mapping every point through `t`.
+pub fn to_lyon(p: &Path, t: impl Fn(f32, f32) -> (f32, f32)) -> LPath {
+    let mut b = LPath::builder();
+    let mut open = false;
+    let mut start = (0.0, 0.0);
+    let ensure = |b: &mut lyon_tessellation::path::path::Builder, open: &mut bool, at: (f32, f32)| {
+        if !*open {
+            b.begin(point(at.0, at.1));
+            *open = true;
+        }
+    };
+    for c in &p.cmds {
+        match *c {
+            Cmd::Move(x, y) => {
+                if open {
+                    b.end(false);
+                }
+                let q = t(x, y);
+                b.begin(point(q.0, q.1));
+                start = q;
+                open = true;
+            }
+            Cmd::Line(x, y) => {
+                ensure(&mut b, &mut open, start);
+                let q = t(x, y);
+                b.line_to(point(q.0, q.1));
+            }
+            Cmd::Quad(x1, y1, x, y) => {
+                ensure(&mut b, &mut open, start);
+                let (c, q) = (t(x1, y1), t(x, y));
+                b.quadratic_bezier_to(point(c.0, c.1), point(q.0, q.1));
+            }
+            Cmd::Cubic(x1, y1, x2, y2, x, y) => {
+                ensure(&mut b, &mut open, start);
+                let (c1, c2, q) = (t(x1, y1), t(x2, y2), t(x, y));
+                b.cubic_bezier_to(point(c1.0, c1.1), point(c2.0, c2.1), point(q.0, q.1));
+            }
+            Cmd::Close => {
+                if open {
+                    b.end(true);
+                    open = false;
+                }
+            }
+        }
+    }
+    if open {
+        b.end(false);
+    }
+    b.build()
+}
+
+/// The path cut into dashes (`on` drawn, `off` skipped), restarting on every subpath.
+fn dashed(path: &LPath, on: f32, off: f32, tol: f32) -> LPath {
+    let mut b = LPath::builder();
+    if on <= 0.0 {
+        return b.build();
+    }
+    let mut open = false;
+    let (mut drawing, mut remaining) = (true, on);
+    let seg = |b: &mut lyon_tessellation::path::path::Builder, open: &mut bool, drawing: &mut bool, remaining: &mut f32, from: lyon_tessellation::math::Point, to: lyon_tessellation::math::Point| {
+        let mut len = (to - from).length();
+        if len <= 0.0 {
+            return;
+        }
+        let dir = (to - from) / len;
+        let mut at = from;
+        while len > 0.0 {
+            let step = remaining.min(len);
+            let end = at + dir * step;
+            if *drawing {
+                if !*open {
+                    b.begin(at);
+                    *open = true;
+                }
+                b.line_to(end);
+            }
+            *remaining -= step;
+            len -= step;
+            at = end;
+            if *remaining <= 1e-6 {
+                if *drawing && *open {
+                    b.end(false);
+                    *open = false;
+                }
+                *drawing = !*drawing;
+                *remaining = if *drawing { on } else { off.max(1e-3) };
+            }
+        }
+    };
+    for e in path.iter().flattened(tol) {
+        match e {
+            PathEvent::Begin { .. } => {
+                (drawing, remaining) = (true, on);
+            }
+            PathEvent::Line { from, to } => seg(&mut b, &mut open, &mut drawing, &mut remaining, from, to),
+            PathEvent::End { last, first, close } => {
+                if close {
+                    seg(&mut b, &mut open, &mut drawing, &mut remaining, last, first);
+                }
+                if open {
+                    b.end(false);
+                    open = false;
+                }
+            }
+            _ => {}
+        }
+    }
+    b.build()
+}
+
+/// One mesh of an element: coloured, or an image.
+struct Part {
+    image: Option<(ImageKey, f32)>,
+    pos: Vec<[f32; 2]>,
+    col: Vec<Color32>,
+    idx: Vec<u32>,
+}
+
+impl Part {
+    fn colored() -> Part {
+        Part { image: None, pos: Vec::new(), col: Vec::new(), idx: Vec::new() }
+    }
+    fn append(&mut self, buf: &VertexBuffers<[f32; 2], u32>, color: Color32) {
+        let base = self.pos.len() as u32;
+        self.pos.extend_from_slice(&buf.vertices);
+        self.col.extend(std::iter::repeat_n(color, buf.vertices.len()));
+        self.idx.extend(buf.indices.iter().map(|i| i + base));
+    }
+    /// Quad with full `inner` colour fading to transparent at `outer` (both as 4 corners).
+    fn feathered(&mut self, inner: [[f32; 2]; 4], outer: [[f32; 2]; 4], color: Color32) {
+        let base = self.pos.len() as u32;
+        self.pos.extend(inner);
+        self.pos.extend(outer);
+        self.col.extend([color; 4]);
+        self.col.extend([Color32::TRANSPARENT; 4]);
+        self.idx.extend([0, 1, 2, 0, 2, 3].map(|i| i + base));
+        for i in 0..4 {
+            let j = (i + 1) % 4;
+            self.idx.extend([i, j, 4 + j, i, 4 + j, 4 + i].map(|k| k + base));
+        }
+    }
+}
+
+struct Built {
+    ox: f64,
+    oy: f64,
+    parts: Vec<Part>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct Key {
+    bucket: i32,
+    editing: bool,
+    /// Exact zoom, for elements that keep a size on screen (section titles, comment pins).
+    zoom: u64,
+    thin: bool,
+}
+
+struct Entry {
+    el: Arc<El>,
+    key: Key,
+    built: Rc<Built>,
+    used: u64,
+}
+
+/// What the screen shows: screen = board · z + (cam.x, cam.y) + origin.
+#[derive(Clone, Copy)]
+pub struct Frame<'a> {
+    pub cam: Camera,
+    pub origin: Pos2,
+    /// Visible part of the board.
+    pub view: BBox,
+    pub pixels_per_point: f32,
+    pub editing: Option<&'a str>,
+}
+
+type GlyphMesh = Rc<(Vec<[f32; 2]>, Vec<u32>)>;
+
+/// An element cut by the pixel eraser, drawn in software at screen resolution.
+struct Erased {
+    el: Arc<El>,
+    zoom: f64,
+    /// Area drawn, in device pixels of the board at this zoom (board · z · ppp).
+    area: [f64; 4],
+    tex: TextureHandle,
+    used: u64,
+}
+
+pub struct Painter {
+    cache: HashMap<String, Entry>,
+    erased: HashMap<String, Erased>,
+    /// When the zoom last changed: erased elements are redrawn once it settles.
+    zoom_at: (f64, f64),
+    glyphs: HashMap<(usize, u16), GlyphMesh>,
+    fill: FillTessellator,
+    stroke: StrokeTessellator,
+    pub images: Images,
+    frame: u64,
+}
+
+impl Painter {
+    pub fn new(images: Images) -> Painter {
+        Painter { cache: HashMap::new(), erased: HashMap::new(), zoom_at: (0.0, 0.0), glyphs: HashMap::new(), fill: FillTessellator::new(), stroke: StrokeTessellator::new(), images, frame: 0 }
+    }
+
+    /// Paints the elements that are on screen; returns whether any visible element is.
+    pub fn paint(&mut self, ctx: &egui::Context, out: &mut Vec<Shape>, els: &[Arc<El>], f: &Frame) -> bool {
+        self.frame += 1;
+        self.images.poll(ctx);
+        if std::mem::take(&mut self.images.changed) {
+            self.erased.clear();
+        }
+        let z = f.cam.z;
+        let pixel = 1.0 / (z * f.pixels_per_point as f64);
+        let bucket = (2.0 * z.log2()).floor() as i32;
+        let mut mesh = Mesh::default();
+        let mut on_screen = false;
+        let now = crate::platform::now_ms();
+        if self.zoom_at.0 != z {
+            self.zoom_at = (z, now);
+        }
+        let settled = now - self.zoom_at.1 > 150.0;
+        for el in els {
+            if el.hidden || !intersects(&aabb(el), &f.view) {
+                continue;
+            }
+            on_screen = true;
+            if !el.erase.is_empty() {
+                flush(out, &mut mesh);
+                self.paint_erased(ctx, out, el, f, settled);
+                continue;
+            }
+            let zoom_bound = matches!(el.kind, Kind::Section { .. } | Kind::Comment { .. });
+            let key = Key { bucket, editing: f.editing == Some(el.id.as_str()), zoom: if zoom_bound { z.to_bits() } else { 0 }, thin: el.ink().is_some_and(|i| i.size <= pixel) };
+            let built = match self.cache.get_mut(&el.id) {
+                Some(e) if Arc::ptr_eq(&e.el, el) && e.key == key => {
+                    e.used = self.frame;
+                    e.built.clone()
+                }
+                _ => {
+                    let env = Env { zoom: z, pixel: Some(pixel), hairline: false, editing: f.editing, comments: true };
+                    let built = Rc::new(self.build(el, &env, tolerance(bucket, f.pixels_per_point)));
+                    self.cache.insert(el.id.clone(), Entry { el: el.clone(), key, built: built.clone(), used: self.frame });
+                    built
+                }
+            };
+            // screen = (o + v) · z + cam + origin, computed in f64 so far-away boards stay exact.
+            let (ax, ay) = (built.ox * z + f.cam.x + f.origin.x as f64, built.oy * z + f.cam.y + f.origin.y as f64);
+            let place = |p: [f32; 2]| pos2((p[0] as f64 * z + ax) as f32, (p[1] as f64 * z + ay) as f32);
+            for part in &built.parts {
+                match &part.image {
+                    None => {
+                        let base = mesh.vertices.len() as u32;
+                        mesh.vertices.extend(part.pos.iter().zip(&part.col).map(|(&p, &c)| Vertex { pos: place(p), uv: WHITE_UV, color: c }));
+                        mesh.indices.extend(part.idx.iter().map(|i| i + base));
+                    }
+                    Some((key, alpha)) => {
+                        let corners: Vec<Pos2> = part.pos.iter().map(|&p| place(p)).collect();
+                        match self.images.texture(ctx, key) {
+                            Some(Ok(tex)) => {
+                                flush(out, &mut mesh);
+                                let tint = Color32::from_white_alpha((alpha * 255.0) as u8);
+                                let mut m = Mesh::with_texture(tex);
+                                for (c, uv) in corners.iter().zip([pos2(0.0, 0.0), pos2(1.0, 0.0), pos2(1.0, 1.0), pos2(0.0, 1.0)]) {
+                                    m.vertices.push(Vertex { pos: *c, uv, color: tint });
+                                }
+                                m.indices.extend([0, 1, 2, 0, 2, 3]);
+                                out.push(Shape::mesh(m));
+                            }
+                            // Loading, or broken: a soft placeholder of the same size.
+                            other => {
+                                let c = if other.is_some() { Color32::from_rgba_unmultiplied(242, 72, 34, 20) } else { Color32::from_rgba_unmultiplied(128, 128, 128, 31) };
+                                let base = mesh.vertices.len() as u32;
+                                mesh.vertices.extend(corners.iter().map(|&p| Vertex { pos: p, uv: WHITE_UV, color: c }));
+                                mesh.indices.extend([0, 1, 2, 0, 2, 3].map(|i| i + base));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        flush(out, &mut mesh);
+        // Forget meshes not drawn for a while (elements deleted or long off screen).
+        if self.frame % 240 == 0 {
+            let now = self.frame;
+            self.cache.retain(|_, e| now - e.used < 600);
+            self.erased.retain(|_, e| now - e.used < 600);
+        }
+        if !settled && self.erased.values().any(|e| e.zoom != z) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(160));
+        }
+        on_screen
+    }
+
+    fn paint_erased(&mut self, ctx: &egui::Context, out: &mut Vec<Shape>, el: &Arc<El>, f: &Frame, settled: bool) {
+        let (z, ppp) = (f.cam.z, f.pixels_per_point as f64);
+        let k = z * ppp;
+        let b = aabb(el);
+        let full = [b.x * k, b.y * k, b.right() * k, b.bottom() * k];
+        // What is visible, plus half a screen around it so panning doesn't redraw at once.
+        let v = crate::geom::expand(f.view, f.view.w.max(f.view.h) * 0.5);
+        let want = [full[0].max(v.x * k).floor(), full[1].max(v.y * k).floor(), full[2].min(v.right() * k).ceil(), full[3].min(v.bottom() * k).ceil()];
+        if want[2] <= want[0] || want[3] <= want[1] {
+            return;
+        }
+        let seen = |area: [f64; 4]| [area[0].max(f.view.x * k), area[1].max(f.view.y * k), area[2].min(f.view.right() * k), area[3].min(f.view.bottom() * k)];
+        let covers = |e: &Erased| {
+            let s = seen(want);
+            e.area[0] <= s[0] && e.area[1] <= s[1] && e.area[2] >= s[2] && e.area[3] >= s[3]
+        };
+        let fresh = self.erased.get(&el.id).is_some_and(|e| Arc::ptr_eq(&e.el, el) && (e.zoom == z || !settled) && (e.zoom != z || covers(e)));
+        if !fresh {
+            // Never bigger than 4096 px a side: far zoomed in, only what is around the screen.
+            let (w, h) = ((want[2] - want[0]).min(4096.0), (want[3] - want[1]).min(4096.0));
+            let area = [want[0], want[1], want[0] + w, want[1] + h];
+            let t = tiny_skia::Transform::from_row(k as f32, 0.0, 0.0, k as f32, (-area[0]) as f32, (-area[1]) as f32);
+            let env = Env { zoom: z, pixel: Some(1.0 / k), hairline: false, editing: f.editing, comments: true };
+            if let Some(mut pm) = tiny_skia::Pixmap::new(w as u32, h as u32) {
+                let images = &self.images;
+                crate::raster::draw_element(&mut pm, el, &env, t, &|key| images.pixmap(key));
+                let img = ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data());
+                match self.erased.get_mut(&el.id) {
+                    Some(e) => {
+                        e.tex.set(img, TEXTURE);
+                        (e.el, e.zoom, e.area) = (el.clone(), z, area);
+                    }
+                    None => {
+                        let tex = ctx.load_texture(format!("erased:{}", el.id), img, TEXTURE);
+                        self.erased.insert(el.id.clone(), Erased { el: el.clone(), zoom: z, area, tex, used: self.frame });
+                    }
+                }
+            }
+        }
+        let Some(e) = self.erased.get_mut(&el.id) else { return };
+        e.used = self.frame;
+        // Area back to screen points (scaled if drawn at another zoom).
+        let s = z / e.zoom;
+        let to = |x: f64, y: f64| pos2((x * s / ppp + f.cam.x + f.origin.x as f64) as f32, (y * s / ppp + f.cam.y + f.origin.y as f64) as f32);
+        let rect = egui::Rect::from_min_max(to(e.area[0], e.area[1]), to(e.area[2], e.area[3]));
+        let mut m = Mesh::with_texture(e.tex.id());
+        m.add_rect_with_uv(rect, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        out.push(Shape::mesh(m));
+    }
+
+    fn build(&mut self, el: &El, env: &Env, tol: f32) -> Built {
+        let t = Affine::of(el);
+        let (ox, oy) = (el.x, el.y);
+        let tf = |x: f32, y: f32| {
+            let (wx, wy) = t.apply(x as f64, y as f64);
+            ((wx - ox) as f32, (wy - oy) as f32)
+        };
+        let mut parts = vec![Part::colored()];
+        for prim in prims_of(el, env) {
+            match prim {
+                Prim::Fill { path, color } => {
+                    let lp = to_lyon(&path, tf);
+                    let mut buf = VertexBuffers::new();
+                    let _ = self.fill.tessellate_path(&lp, &FillOptions::tolerance(tol).with_fill_rule(FillRule::NonZero), &mut BuffersBuilder::new(&mut buf, |v: FillVertex| v.position().to_array()));
+                    last_colored(&mut parts).append(&buf, color);
+                }
+                Prim::Stroke { path, width, color, round, dash } => {
+                    if width <= 0.0 {
+                        continue;
+                    }
+                    let mut lp = to_lyon(&path, tf);
+                    if let Some([on, off]) = dash {
+                        lp = dashed(&lp, on, off, tol);
+                    }
+                    let (cap, join) = if round { (LineCap::Round, LineJoin::Round) } else { (LineCap::Butt, LineJoin::Bevel) };
+                    let opts = StrokeOptions::tolerance(tol).with_line_width(width).with_line_cap(cap).with_line_join(join);
+                    let mut buf = VertexBuffers::new();
+                    let _ = self.stroke.tessellate_path(&lp, &opts, &mut BuffersBuilder::new(&mut buf, |v: StrokeVertex| v.position().to_array()));
+                    last_colored(&mut parts).append(&buf, color);
+                }
+                Prim::Text { placed, color } => {
+                    let part = last_colored(&mut parts);
+                    for &(g, gx, gy) in &placed.glyphs {
+                        let mesh = self.glyph(placed.face, g);
+                        let base = part.pos.len() as u32;
+                        part.pos.extend(mesh.0.iter().map(|&[px, py]| {
+                            let (x, y) = tf(gx + (px + placed.lean * py) * placed.k, gy - py * placed.k);
+                            [x, y]
+                        }));
+                        part.col.extend(std::iter::repeat_n(color, mesh.0.len()));
+                        part.idx.extend(mesh.1.iter().map(|i| i + base));
+                    }
+                }
+                Prim::Image { key, x, y, w, h, alpha } => {
+                    let corners = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)].map(|(cx, cy)| {
+                        let (px, py) = tf(cx, cy);
+                        [px, py]
+                    });
+                    parts.push(Part { image: Some((key, alpha)), pos: corners.to_vec(), col: Vec::new(), idx: Vec::new() });
+                }
+                Prim::Shadow { x, y, w, h, blur, dy, color, .. } => {
+                    let b = blur / 2.0;
+                    let rect = |x0: f32, y0: f32, x1: f32, y1: f32| [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].map(|(px, py)| {
+                        let (qx, qy) = tf(px, py);
+                        [qx, qy]
+                    });
+                    let (ib, jb) = (b.min(w / 2.0), b.min(h / 2.0));
+                    let inner = rect(x + ib, y + dy + jb, x + w - ib, y + dy + h - jb);
+                    let outer = rect(x - b, y + dy - b, x + w + b, y + dy + h + b);
+                    last_colored(&mut parts).feathered(inner, outer, color);
+                }
+            }
+        }
+        parts.retain(|p| p.image.is_some() || !p.idx.is_empty());
+        Built { ox, oy, parts }
+    }
+
+    fn glyph(&mut self, face: usize, g: u16) -> GlyphMesh {
+        self.glyphs
+            .entry((face, g))
+            .or_insert_with(|| {
+                let path = text::glyph_path(face, g);
+                let lp = to_lyon(&path, |x, y| (x, y));
+                let mut buf: VertexBuffers<[f32; 2], u32> = VertexBuffers::new();
+                let tol = text::faces()[face].upem * 0.0008;
+                let _ = FillTessellator::new().tessellate_path(&lp, &FillOptions::tolerance(tol).with_fill_rule(FillRule::NonZero), &mut BuffersBuilder::new(&mut buf, |v: FillVertex| v.position().to_array()));
+                Rc::new((buf.vertices, buf.indices))
+            })
+            .clone()
+    }
+
+    /// Drops every cached mesh (fonts or images changed).
+    pub fn clear(&mut self) {
+        self.cache.clear();
+    }
+}
+
+/// Curves are flattened to within a third of a device pixel at the deepest zoom of the level.
+fn tolerance(bucket: i32, ppp: f32) -> f32 {
+    let z_hi = 2f64.powf((bucket + 1) as f64 / 2.0);
+    (0.33 / (z_hi * ppp as f64)) as f32
+}
+
+fn last_colored(parts: &mut Vec<Part>) -> &mut Part {
+    if parts.last().is_none_or(|p| p.image.is_some()) {
+        parts.push(Part::colored());
+    }
+    parts.last_mut().unwrap()
+}
+
+fn flush(out: &mut Vec<Shape>, mesh: &mut Mesh) {
+    if !mesh.indices.is_empty() {
+        out.push(Shape::mesh(std::mem::take(mesh)));
+    }
+}
+
+/// A path already in screen coordinates, filled.
+pub fn fill_mesh(path: &Path, color: Color32) -> Mesh {
+    let lp = to_lyon(path, |x, y| (x, y));
+    let mut buf: VertexBuffers<[f32; 2], u32> = VertexBuffers::new();
+    let _ = FillTessellator::new().tessellate_path(&lp, &FillOptions::tolerance(0.15).with_fill_rule(FillRule::NonZero), &mut BuffersBuilder::new(&mut buf, |v: FillVertex| v.position().to_array()));
+    let mut m = Mesh::default();
+    m.vertices = buf.vertices.iter().map(|p| Vertex { pos: pos2(p[0], p[1]), uv: WHITE_UV, color }).collect();
+    m.indices = buf.indices;
+    m
+}
+
+/* ---------------- images ---------------- */
+
+enum Img {
+    Loading,
+    Ready(TextureHandle),
+    Failed,
+}
+
+/// Starts fetching an uploaded image; calls back with its bytes (or None) from any thread.
+pub type Fetch = Arc<dyn Fn(String, Box<dyn FnOnce(Option<Vec<u8>>) + Send>) + Send + Sync>;
+
+/// Textures of the board's images and reactions, loaded on first use.
+pub struct Images {
+    tex: HashMap<ImageKey, Img>,
+    /// Pictures also kept in memory for software drawing (erased images, exports).
+    pixmaps: std::cell::RefCell<HashMap<String, Option<Arc<tiny_skia::Pixmap>>>>,
+    /// A picture for software drawing arrived: erased elements must be drawn again.
+    changed: bool,
+    tx: mpsc::Sender<(ImageKey, Option<ColorImage>)>,
+    rx: mpsc::Receiver<(ImageKey, Option<ColorImage>)>,
+    fetch: Option<Fetch>,
+}
+
+const TEXTURE: TextureOptions = TextureOptions {
+    magnification: egui::TextureFilter::Linear,
+    minification: egui::TextureFilter::Linear,
+    wrap_mode: egui::TextureWrapMode::ClampToEdge,
+    mipmap_mode: Some(egui::TextureFilter::Linear),
+};
+
+/// Pictures bigger than this are scaled down when decoded.
+const MAX_SIDE: u32 = 4096;
+
+pub fn decode_image(bytes: &[u8]) -> Option<ColorImage> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16_384);
+    limits.max_image_height = Some(16_384);
+    limits.max_alloc = Some(512 * 1024 * 1024);
+    reader.limits(limits);
+    let mut img = reader.decode().ok()?;
+    if img.width().max(img.height()) > MAX_SIDE {
+        img = img.resize(MAX_SIDE, MAX_SIDE, image::imageops::FilterType::Triangle);
+    }
+    let rgba = img.to_rgba8();
+    Some(ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], &rgba))
+}
+
+impl Images {
+    pub fn new(fetch: Option<Fetch>) -> Images {
+        let (tx, rx) = mpsc::channel();
+        Images { tex: HashMap::new(), pixmaps: Default::default(), changed: false, tx, rx, fetch }
+    }
+
+    /// Puts a just-added image in the cache, so it shows without a round trip.
+    pub fn prime(&mut self, ctx: &egui::Context, file_id: &str, img: ColorImage) {
+        let h = ctx.load_texture(format!("img:{file_id}"), img, TEXTURE);
+        self.tex.insert(ImageKey::File(file_id.into()), Img::Ready(h));
+    }
+
+    /// The picture for software drawing; starts loading it when missing.
+    pub fn pixmap(&self, key: &ImageKey) -> Option<Arc<tiny_skia::Pixmap>> {
+        match key {
+            ImageKey::Stamp(emoji) => crate::raster::stamp_pixmap(emoji),
+            ImageKey::File(id) => {
+                if let Some(p) = self.pixmaps.borrow().get(id) {
+                    return p.clone();
+                }
+                self.pixmaps.borrow_mut().insert(id.clone(), None);
+                if let Some(fetch) = &self.fetch {
+                    let (tx, k) = (self.tx.clone(), key.clone());
+                    fetch(id.clone(), Box::new(move |bytes| {
+                        let _ = tx.send((k, bytes.as_deref().and_then(decode_image)));
+                    }));
+                }
+                None
+            }
+        }
+    }
+
+    fn poll(&mut self, ctx: &egui::Context) {
+        while let Ok((key, img)) = self.rx.try_recv() {
+            if let (ImageKey::File(id), Some(img)) = (&key, &img)
+                && self.pixmaps.borrow().contains_key(id)
+            {
+                let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_srgba_unmultiplied()).collect();
+                let pm = crate::raster::pixmap_from_rgba(img.size[0] as u32, img.size[1] as u32, &rgba).map(Arc::new);
+                self.pixmaps.borrow_mut().insert(id.clone(), pm);
+                self.changed = true;
+            }
+            let state = match img {
+                Some(img) => Img::Ready(ctx.load_texture(format!("{key:?}"), img, TEXTURE)),
+                None => Img::Failed,
+            };
+            self.tex.insert(key, state);
+        }
+    }
+
+    /// The texture if ready; None while loading; Some(Err) when it can't be shown.
+    pub fn texture(&mut self, ctx: &egui::Context, key: &ImageKey) -> Option<Result<TextureId, ()>> {
+        if !self.tex.contains_key(key) {
+            match key {
+                ImageKey::Stamp(emoji) => {
+                    let img = crate::assets::stamp(emoji).and_then(|s| crate::assets::rasterize_svg(s.svg, 256)).map(|p| ColorImage::from_rgba_premultiplied([p.width() as usize, p.height() as usize], p.data()));
+                    let state = match img {
+                        Some(img) => Img::Ready(ctx.load_texture(format!("stamp:{emoji}"), img, TEXTURE)),
+                        None => Img::Failed,
+                    };
+                    self.tex.insert(key.clone(), state);
+                }
+                ImageKey::File(id) => {
+                    self.tex.insert(key.clone(), Img::Loading);
+                    match &self.fetch {
+                        Some(fetch) => {
+                            let (tx, k, ctx) = (self.tx.clone(), key.clone(), ctx.clone());
+                            fetch(
+                                id.clone(),
+                                Box::new(move |bytes| {
+                                    let _ = tx.send((k, bytes.as_deref().and_then(decode_image)));
+                                    ctx.request_repaint();
+                                }),
+                            );
+                        }
+                        None => {
+                            self.tex.insert(key.clone(), Img::Failed);
+                        }
+                    }
+                }
+            }
+        }
+        match self.tex.get(key) {
+            Some(Img::Ready(h)) => Some(Ok(h.id())),
+            Some(Img::Failed) => Some(Err(())),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dashes_cover_on_and_skip_off() {
+        let p = to_lyon(&Path::polyline(&[0.0, 0.0, 10.0, 0.0]), |x, y| (x, y));
+        let d = dashed(&p, 3.0, 2.0, 0.1);
+        let begins = d.iter().filter(|e| matches!(e, PathEvent::Begin { .. })).count();
+        assert_eq!(begins, 2, "0–3 and 5–8");
+    }
+
+    #[test]
+    fn every_element_kind_tessellates() {
+        let doc = yrs::Doc::new();
+        crate::doc::apply_update(&doc, include_bytes!("../testdata/legacy.ydoc"), crate::doc::REMOTE).unwrap();
+        let mut b = crate::doc::Board::new(doc, Arc::new(|| {}));
+        let mut p = Painter::new(Images::new(None));
+        for el in b.paint_order().to_vec() {
+            let built = p.build(&el, &Env { comments: true, ..Env::default() }, 0.1);
+            let has_mesh = built.parts.iter().any(|q| !q.idx.is_empty() || q.image.is_some());
+            assert!(has_mesh, "{} draws something", el.id);
+        }
+    }
+}
+
+/* ---------------- background ---------------- */
+
+/// Board colour plus a pattern (dots, grid, lines, graph paper, isometric) readable at any zoom.
+/// `rect` is the canvas on screen; the camera is relative to its top-left corner.
+pub fn background(out: &mut Vec<Shape>, rect: egui::Rect, cam: &Camera, meta: &crate::model::BoardMeta, ppp: f32) {
+    use crate::model::Pattern;
+    let bg = crate::model::color_or(&meta.background, Color32::from_gray(0xF5));
+    out.push(Shape::rect_filled(rect, 0.0, bg));
+    if meta.pattern == Pattern::None {
+        return;
+    }
+    // Pattern spacing on screen, kept between 14 and ~100 px by doubling or halving.
+    let mut k = 1.0;
+    while meta.grid_size * cam.z * k < 14.0 {
+        k *= 2.0;
+    }
+    while meta.grid_size * cam.z * k > 100.0 {
+        k /= 2.0;
+    }
+    let step = (meta.grid_size * cam.z * k) as f32;
+    let dark = crate::model::is_dark(&meta.background);
+    let ink = |a: f32| if dark { Color32::from_white_alpha((a * 255.0) as u8) } else { Color32::from_black_alpha((a * 255.0) as u8) };
+    let (w, h) = (rect.width(), rect.height());
+    let wrap = |v: f64, s: f32| (v.rem_euclid(s as f64)) as f32;
+    let mut mesh = Mesh::default();
+    let mut quad = |x0: f32, y0: f32, x1: f32, y1: f32, c: Color32| {
+        mesh.add_colored_rect(egui::Rect::from_min_max(pos2(rect.min.x + x0, rect.min.y + y0), pos2(rect.min.x + x1, rect.min.y + y1)), c);
+    };
+    // One device pixel wide, on the pixel grid.
+    let px = 1.0 / ppp;
+    let crisp = |v: f32| ((v * ppp).round() + 0.5) / ppp;
+    let mut lines = |s: f32, x0: f32, y0: f32, vertical: bool, c: Color32| {
+        if vertical {
+            let mut x = x0;
+            while x < w {
+                let cx = crisp(x);
+                quad(cx - px / 2.0, 0.0, cx + px / 2.0, h, c);
+                x += s;
+            }
+        }
+        let mut y = y0;
+        while y < h {
+            let cy = crisp(y);
+            quad(0.0, cy - px / 2.0, w, cy + px / 2.0, c);
+            y += s;
+        }
+    };
+    let (ox, oy) = (wrap(cam.x, step), wrap(cam.y, step));
+    let r = 1.1;
+    match meta.pattern {
+        Pattern::Dots => {
+            let c = ink(0.16);
+            let mut x = ox;
+            while x < w {
+                let mut y = oy;
+                while y < h {
+                    quad(x - r, y - r, x + r, y + r, c);
+                    y += step;
+                }
+                x += step;
+            }
+        }
+        Pattern::Isometric => {
+            // Dots on a triangular lattice: every other row is shifted by half a step.
+            let c = ink(0.18);
+            let row_h = step as f64 * 0.866;
+            let mut row = (-cam.y / row_h).floor() as i64 - 1;
+            while (row as f64 * row_h + cam.y) < h as f64 + row_h {
+                let y = (row as f64 * row_h + cam.y) as f32;
+                let shift = row.rem_euclid(2) as f64 * step as f64 / 2.0;
+                let mut x = wrap(cam.x + shift, step);
+                while x < w {
+                    quad(x - r, y - r, x + r, y + r, c);
+                    x += step;
+                }
+                row += 1;
+            }
+        }
+        Pattern::Graph => {
+            // Graph paper: fine lines plus a stronger line every five squares.
+            lines(step, ox, oy, true, ink(0.05));
+            let major = step * 5.0;
+            lines(major, wrap(cam.x, major), wrap(cam.y, major), true, ink(0.11));
+        }
+        Pattern::Grid => lines(step, ox, oy, true, ink(0.07)),
+        Pattern::Lines => lines(step, ox, oy, false, ink(0.08)),
+        Pattern::None => {}
+    }
+    out.push(Shape::mesh(mesh));
+}
+
+#[cfg(test)]
+pub mod picture {
+    use super::*;
+
+    use crate::model::*;
+
+    /// One element of each kind side by side.
+    pub fn sample() -> Vec<Arc<El>> {
+        let mut out = Vec::new();
+        let mut add = |x: f64, y: f64, w: f64, h: f64, kind: Kind| {
+            let mut el = El::new(kind);
+            (el.x, el.y, el.w, el.h, el.z) = (x, y, w, h, out.len() as f64);
+            out.push(Arc::new(el));
+        };
+        let shape = |k: ShapeKind, fill: &str, text: Option<&str>| Kind::Shape(crate::model::Shape { shape: k, fill: fill.into(), stroke: "#1E1E1E".into(), stroke_width: 3.0, radius: 16.0, dash: false, points: None, text: text.map(str::to_string), font: None });
+        add(40.0, 40.0, 160.0, 100.0, shape(ShapeKind::Rect, "transparent", None));
+        add(240.0, 40.0, 160.0, 100.0, shape(ShapeKind::Ellipse, "#C7E5FF", Some("Ellisse con testo")));
+        add(440.0, 40.0, 120.0, 100.0, shape(ShapeKind::Star, "#FFE066", None));
+        add(600.0, 40.0, 140.0, 100.0, shape(ShapeKind::Diamond, "transparent", Some("Sì?")));
+        let pts: Vec<f32> = (0..=40).flat_map(|i| { let t = i as f32 / 40.0; [t * 180.0, (t * 9.0).sin() * 30.0 + 40.0, 0.3 + 0.6 * (t * 3.1).sin().abs()] }).collect();
+        add(40.0, 180.0, 180.0, 80.0, Kind::Ink(Ink { points: pts.clone(), color: "#1971C2".into(), size: 6.0 }));
+        add(240.0, 180.0, 180.0, 80.0, Kind::Highlighter(Ink { points: pts.iter().enumerate().map(|(i, v)| if i % 3 == 2 { -1.0 } else { *v }).collect(), color: "#FFE066".into(), size: 22.0 }));
+        add(440.0, 200.0, 140.0, 40.0, Kind::Line(Line { points: vec![0.0, 40.0, 140.0, 0.0], stroke: "#E03131".into(), stroke_width: 3.0, dash: false, arrow_start: false, arrow_end: true, from: None, to: None, tape: false }));
+        add(600.0, 200.0, 140.0, 40.0, Kind::Line(Line { points: vec![0.0, 20.0, 140.0, 20.0], stroke: "#FFB3C7".into(), stroke_width: 28.0, dash: false, arrow_start: false, arrow_end: false, from: None, to: None, tape: true }));
+        add(40.0, 300.0, 220.0, 220.0, Kind::Sticky(Sticky { text: "Una nota adesiva con un po' di testo".into(), color: "#FFF3A3".into(), font: FontKind::Hand, align: Align::Center, author: Some("Anto".into()), hide_author: false }));
+        add(300.0, 300.0, 0.0, 0.0, Kind::Text(Text { text: "Titolo in grassetto\nseconda riga".into(), color: "#1E1E1E".into(), font_size: 24.0, font: FontKind::Sans, align: Align::Left, bold: true, italic: false, fixed_width: false }));
+        add(300.0, 400.0, 64.0, 64.0, Kind::Stamp { emoji: "🎉".into() });
+        add(400.0, 400.0, 64.0, 64.0, Kind::Stamp { emoji: "👍".into() });
+        add(520.0, 300.0, 220.0, 160.0, Kind::Section { fill: "#E3F1FF".into() });
+        add(760.0, 80.0, 0.0, 0.0, Kind::Comment { thread: vec![CommentMsg { author: "Anto".into(), color: "#0D99FF".into(), text: "Ok".into(), t: 0.0 }, CommentMsg { author: "B".into(), color: "#9747FF".into(), text: "Sì".into(), t: 0.0 }] });
+        out.into_iter().map(|el| {
+            let mut el = (*el).clone();
+            crate::text::fit_text(&mut el);
+            Arc::new(el)
+        }).collect()
+    }
+
+    /// Draws the sample to an image to look at: `TRATTO_SHOT=out.png cargo test picture -- --nocapture`.
+    #[test]
+    fn sample_board_picture() {
+        let Ok(path) = std::env::var("TRATTO_SHOT") else { return };
+        let els = sample();
+        let meta = BoardMeta::default();
+        let mut painter = Painter::new(Images::new(None));
+        let zoom: f64 = std::env::var("TRATTO_ZOOM").ok().and_then(|z| z.parse().ok()).unwrap_or(1.0);
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(820.0, 560.0)).wgpu().build_ui(move |ui| {
+            let rect = ui.max_rect();
+            let cam = Camera { x: 0.0, y: 0.0, z: zoom };
+            let view = BBox { x: -cam.x / cam.z, y: -cam.y / cam.z, w: rect.width() as f64 / cam.z, h: rect.height() as f64 / cam.z };
+            let mut shapes = Vec::new();
+            background(&mut shapes, rect, &cam, &meta, 1.0);
+            painter.paint(ui.ctx(), &mut shapes, &els, &Frame { cam, origin: rect.min, view, pixels_per_point: 1.0, editing: None });
+            ui.painter().extend(shapes);
+        });
+        harness.run();
+        harness.render().unwrap().save(path).unwrap();
+    }
+}
