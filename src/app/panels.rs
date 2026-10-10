@@ -1143,7 +1143,7 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
 /// Right panel closed: people, share and the way back, floating at the top right.
 pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
     let t = ui::theme(ctx);
-    let x = if b.editor.prefs.minimap { stage.max.x - 16.0 - 192.0 - 12.0 } else { stage.max.x - 12.0 };
+    let x = if b.editor.prefs.minimap { stage.max.x - 12.0 - 200.0 - 8.0 } else { stage.max.x - 12.0 };
     egui::Area::new(Id::new("right-pill")).pivot(egui::Align2::RIGHT_TOP).fixed_pos(pos2(x, stage.min.y + 12.0)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui::float_frame(&t).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
             ui.horizontal(|ui| {

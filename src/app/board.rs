@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use egui::{Color32, FontFamily, FontId, Id, Pos2, Rect, Sense, Stroke, vec2};
+use egui::{Color32, FontFamily, FontId, Id, Pos2, Rect, Sense, Stroke, pos2, vec2};
 
 use super::{Action, Toasts, dialogs::Dialogs};
 use crate::doc::{Board, REMOTE, apply_update, encode_state};
@@ -429,20 +429,6 @@ impl BoardScreen {
             });
         });
 
-        let prefs = &self.editor.prefs;
-        let show_ui = !prefs.focus;
-        if show_ui && prefs.left_panel {
-            egui::Panel::left(Id::new("left")).exact_size(240.0).resizable(false).frame(egui::Frame::new().fill(t.bg).stroke(Stroke::new(1.0, t.border))).show(ui, |ui| {
-                if let Some(a) = super::panels::left(ui, self, toasts, dialogs) {
-                    action = Some(a);
-                }
-            });
-        }
-        if show_ui && self.editor.prefs.right_panel {
-            egui::Panel::right(Id::new("right")).exact_size(240.0).resizable(false).frame(egui::Frame::new().fill(t.bg).stroke(Stroke::new(1.0, t.border))).show(ui, |ui| {
-                super::panels::right(ui, self, toasts);
-            });
-        }
         egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
             if let Some(a) = self.stage(ui, &t, toasts, dialogs) {
                 action = Some(a);
@@ -458,27 +444,51 @@ impl BoardScreen {
     fn stage(&mut self, ui: &mut egui::Ui, t: &Theme, toasts: &mut Toasts, dialogs: &mut Dialogs) -> Option<Action> {
         let ctx = ui.ctx().clone();
         let rect = ui.max_rect();
-        let resp = ui.interact(rect, Id::new("board"), Sense::click_and_drag());
+        let mut action_from_panel = None;
+        // Figma UI3: the panels are cards floating over the board, which runs underneath them.
+        let prefs = &self.editor.prefs;
+        let (show_left, show_right) = (!prefs.focus && prefs.left_panel, !prefs.focus && prefs.right_panel);
+        let kl = ui::motion::presence(&ctx, Id::new("left-panel"), show_left);
+        let kr = ui::motion::presence(&ctx, Id::new("right-panel"), show_right);
+        const GAP: f32 = 8.0;
+        const PANEL: f32 = 240.0;
+        self.editor.safe = [if show_left { (PANEL + GAP * 2.0) as f64 } else { 0.0 }, 0.0, if show_right { (PANEL + GAP * 2.0) as f64 } else { 0.0 }, 0.0];
+        let left_rect = Rect::from_min_size(rect.min + vec2(GAP, GAP), vec2(PANEL, rect.height() - GAP * 2.0));
+        let right_rect = Rect::from_min_size(pos2(rect.max.x - GAP - PANEL, rect.min.y + GAP), vec2(PANEL, rect.height() - GAP * 2.0));
+        panel_card(&ctx, "left-panel", left_rect, kl, -1.0, t, |ui| {
+            if let Some(a) = super::panels::left(ui, self, toasts, dialogs) {
+                action_from_panel = Some(a);
+            }
+        });
+        panel_card(&ctx, "right-panel", right_rect, kr, 1.0, t, |ui| super::panels::right(ui, self, toasts));
+        // What floats over the board centres on the part the panels leave free.
+        let stage = rect;
+        let rect = Rect::from_min_max(rect.min + vec2((PANEL + GAP) * kl.clamp(0.0, 1.0), 0.0), rect.max - vec2((PANEL + GAP) * kr.clamp(0.0, 1.0), 0.0));
+
+        let resp = ui.interact(stage, Id::new("board"), Sense::click_and_drag());
         let ed = &mut self.editor;
-        ed.size = (rect.width() as f64, rect.height() as f64);
-        ed.origin = rect.min;
-        if self.need_fit && rect.width() > 10.0 {
+        ed.size = (stage.width() as f64, stage.height() as f64);
+        ed.origin = stage.min;
+        if self.need_fit && stage.width() > 10.0 {
             self.need_fit = false;
-            if ed.board.len() > 0 { ed.fit() } else { ed.set_cam(Camera { x: rect.width() as f64 / 2.0, y: rect.height() as f64 / 2.0, z: 1.0 }) }
+            ed.fit_now();
         }
         let any_dialog = self.ui.export.is_some() || self.ui.share || self.ui.shortcuts || dialogs.settings || self.ui.menu.is_some();
         let keys = !ctx.egui_wants_keyboard_input() && !any_dialog;
         let hovered = resp.hovered() && !any_dialog;
         let dbl = if resp.double_clicked() { resp.interact_pointer_pos() } else { None };
         ed.handle_input(&ctx, hovered, keys, dbl);
+        if ed.tick_camera(crate::platform::now_ms()) {
+            ctx.request_repaint();
+        }
 
         // The board.
-        let painter = ui.painter_at(rect);
+        let painter = ui.painter_at(stage);
         let mut shapes = Vec::new();
         let ppp = ctx.pixels_per_point();
-        crate::paint::background(&mut shapes, rect, &ed.cam, &ed.board.meta(), ppp);
+        crate::paint::background(&mut shapes, stage, &ed.cam, &ed.board.meta(), ppp);
         let els = ed.paint_list();
-        let frame = Frame { cam: ed.cam, origin: rect.min, view: ed.view(), pixels_per_point: ppp, editing: ed.editing.as_deref() };
+        let frame = Frame { cam: ed.cam, origin: stage.min, view: ed.view(), pixels_per_point: ppp, editing: ed.editing.as_deref() };
         let editing = ed.editing.clone();
         let frame = Frame { editing: editing.as_deref(), ..frame };
         let on_screen = ed.painter.paint(&ctx, &mut shapes, &els, &frame);
@@ -490,10 +500,10 @@ impl BoardScreen {
             ctx.request_repaint();
         }
 
-        self.text_editor(&ctx, rect, t);
+        self.text_editor(&ctx, stage, t);
         super::live::comment_thread(&ctx, &mut self.editor, &mut self.ui);
         super::live::cursor_chat(&ctx, &mut self.editor, &mut self.ui);
-        let mut action = None;
+        let mut action = action_from_panel;
         super::toolbar::toolbar(&ctx, rect, &mut self.editor, &mut self.ui);
         super::live::top_bars(&ctx, rect, &mut self.editor);
         if !self.editor.prefs.focus {
@@ -694,4 +704,27 @@ impl BoardScreen {
     pub fn images(&self) -> impl Fn(&ImageKey) -> Option<Arc<tiny_skia::Pixmap>> + '_ {
         |k| self.editor.painter.images.pixmap(k)
     }
+}
+/// A Figma UI3 panel: a rounded card floating over the board, sliding in from its side
+/// (`side` -1 left, 1 right) as `k` goes from 0 to 1.
+fn panel_card(ctx: &egui::Context, id: &str, rect: Rect, k: f32, side: f32, t: &Theme, add: impl FnOnce(&mut egui::Ui)) {
+    if k <= 0.01 {
+        return;
+    }
+    let rect = rect.translate(vec2((1.0 - k.min(1.0)) * 20.0 * side, 0.0));
+    egui::Area::new(Id::new(id)).fixed_pos(rect.min).order(egui::Order::Middle).show(ctx, |ui| {
+        ui.set_opacity(k.clamp(0.0, 1.0));
+        // The whole card takes the pointer, also where it is empty.
+        let (r, _) = ui.allocate_exact_size(rect.size(), Sense::click_and_drag());
+        let radius = egui::CornerRadius::same(ui::RADIUS_LG);
+        for s in ui::card_shadows(t) {
+            ui.painter().add(s.as_shape(r, radius));
+        }
+        ui.painter().rect(r, radius, t.bg, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+        let inner = r.shrink(1.0);
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)));
+        // Rectangular clipping: keep the content off the rounded bottom corners.
+        child.set_clip_rect(Rect::from_min_max(inner.min, inner.max - vec2(0.0, 6.0)));
+        add(&mut child);
+    });
 }

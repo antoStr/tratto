@@ -224,6 +224,11 @@ pub struct Editor {
     /// Canvas size and top-left corner on screen, in points.
     pub size: (f64, f64),
     pub origin: Pos2,
+    /// Canvas edges covered by floating panels (left, top, right, bottom): fitting and centring
+    /// use the part of the board that can be seen.
+    pub safe: [f64; 4],
+    /// A camera move in progress: from, to, start (ms).
+    fly: Option<(Camera, Camera, f64)>,
     /// This device's voter id.
     pub voter: String,
     /// Name to sign stickies with, if any.
@@ -302,6 +307,8 @@ impl Editor {
             lost: false,
             size: (800.0, 600.0),
             origin: pos2(0.0, 0.0),
+            safe: [0.0; 4],
+            fly: None,
             voter,
             name: None,
             requests: Vec::new(),
@@ -401,13 +408,19 @@ impl Editor {
 
     /* ---------- camera ---------- */
 
+    /// Moves the camera at once, stopping any camera move in progress (wheel, drag, pinch).
     pub fn set_cam(&mut self, c: Camera) {
+        self.fly = None;
+        self.apply_cam(c);
+    }
+
+    fn apply_cam(&mut self, c: Camera) {
         let c = Camera { x: c.x, y: c.y, z: c.z.clamp(MIN_ZOOM, MAX_ZOOM) };
         if c != self.cam {
             self.cam = c;
             self.cam_dirty = true;
-            let (w, h) = self.size;
-            self.presence.set("view", json!({ "cx": r2((w / 2.0 - c.x) / c.z), "cy": r2((h / 2.0 - c.y) / c.z), "z": (c.z * 1000.0).round() / 1000.0 }));
+            let (w, h) = self.safe_center();
+            self.presence.set("view", json!({ "cx": r2((w - c.x) / c.z), "cy": r2((h - c.y) / c.z), "z": (c.z * 1000.0).round() / 1000.0 }));
         }
     }
 
@@ -417,14 +430,61 @@ impl Editor {
         self.set_cam(Camera { x: sx - w.x * nz, y: sy - w.y * nz, z: nz });
     }
 
-    pub fn fit_box(&mut self, b: Option<BBox>, max_zoom: f64) {
-        let (w, h) = self.size;
+    /// Glides the camera to `c`: a quick ease-out, so zooming and jumping keep you oriented.
+    /// A new target picks up from wherever the camera is, so repeated calls follow smoothly.
+    pub fn fly_to(&mut self, c: Camera) {
+        let c = Camera { x: c.x, y: c.y, z: c.z.clamp(MIN_ZOOM, MAX_ZOOM) };
+        if c != self.cam {
+            self.fly = Some((self.cam, c, crate::platform::now_ms()));
+        }
+    }
+
+    /// Advances a camera move; true while it goes on.
+    pub fn tick_camera(&mut self, now: f64) -> bool {
+        let Some((a, b, start)) = self.fly else { return false };
+        const MS: f64 = 320.0;
+        let t = ((now - start) / MS).clamp(0.0, 1.0);
+        let e = 1.0 - (1.0 - t).powi(3);
+        // Zoom moves evenly on a log scale and the screen centre slides in board space, so a
+        // big zoom change neither rushes nor swings sideways.
+        let (cx, cy) = self.safe_center();
+        let (wa, wb) = (a.to_world(cx, cy), b.to_world(cx, cy));
+        let z = (a.z.ln() + (b.z.ln() - a.z.ln()) * e).exp();
+        let (wx, wy) = (wa.x + (wb.x - wa.x) * e, wa.y + (wb.y - wa.y) * e);
+        self.apply_cam(Camera { x: cx - wx * z, y: cy - wy * z, z });
+        if t >= 1.0 {
+            self.apply_cam(b);
+            self.fly = None;
+        }
+        self.fly.is_some()
+    }
+
+    /// Centre of the part of the canvas not covered by panels, in canvas coordinates.
+    pub fn safe_center(&self) -> (f64, f64) {
+        let [l, t, r, b] = self.safe;
+        ((l + self.size.0 - r) / 2.0, (t + self.size.1 - b) / 2.0)
+    }
+
+    fn safe_size(&self) -> (f64, f64) {
+        let [l, t, r, b] = self.safe;
+        ((self.size.0 - l - r).max(100.0), (self.size.1 - t - b).max(100.0))
+    }
+
+    /// Camera that shows `b` in the visible area, at most at `max_zoom`.
+    fn fitted(&self, b: Option<BBox>, max_zoom: f64) -> Camera {
+        let (cx, cy) = self.safe_center();
         let Some(b) = b else {
-            return self.set_cam(Camera { x: w / 2.0, y: h / 2.0, z: 1.0 });
+            return Camera { x: cx, y: cy, z: 1.0 };
         };
-        let pad = 80.0;
+        let (w, h) = self.safe_size();
+        let pad = 64.0f64.min(w / 6.0);
         let z = ((w - pad * 2.0) / b.w.max(1.0)).min((h - pad * 2.0) / b.h.max(1.0)).min(max_zoom).clamp(MIN_ZOOM, MAX_ZOOM);
-        self.set_cam(Camera { x: w / 2.0 - (b.x + b.w / 2.0) * z, y: h / 2.0 - (b.y + b.h / 2.0) * z, z });
+        Camera { x: cx - (b.x + b.w / 2.0) * z, y: cy - (b.y + b.h / 2.0) * z, z }
+    }
+
+    pub fn fit_box(&mut self, b: Option<BBox>, max_zoom: f64) {
+        let c = self.fitted(b, max_zoom);
+        self.fly_to(c);
     }
 
     pub fn stop_following(&mut self) {
@@ -1355,17 +1415,28 @@ impl Editor {
     }
 
     pub fn zoom_by(&mut self, f: f64) {
-        let (w, h) = self.size;
-        self.zoom_at(w / 2.0, h / 2.0, self.cam.z * f);
+        // Successive presses build on the zoom being flown to, not on the one half-way there.
+        let z = self.fly.map_or(self.cam.z, |(_, b, _)| b.z);
+        self.zoom_to(z * f);
     }
 
     pub fn zoom_to(&mut self, z: f64) {
-        let (w, h) = self.size;
-        self.zoom_at(w / 2.0, h / 2.0, z);
+        let (cx, cy) = self.safe_center();
+        let base = self.fly.map_or(self.cam, |(_, b, _)| b);
+        let nz = z.clamp(MIN_ZOOM, MAX_ZOOM);
+        let w = base.to_world(cx, cy);
+        self.fly_to(Camera { x: cx - w.x * nz, y: cy - w.y * nz, z: nz });
     }
 
     pub fn content_box(&mut self) -> Option<BBox> {
         union(self.board.all().iter().filter(|e| !e.hidden).map(|e| aabb(e)))
+    }
+
+    /// Shows the whole board at once (on opening it).
+    pub fn fit_now(&mut self) {
+        let b = self.content_box();
+        let c = self.fitted(b, 2.0);
+        self.set_cam(c);
     }
 
     pub fn fit(&mut self) {
@@ -1656,14 +1727,15 @@ impl Editor {
     }
 
     pub fn viewport_center(&self) -> Pt {
-        self.cam.to_world(self.size.0 / 2.0, self.size.1 / 2.0)
+        let (cx, cy) = self.safe_center();
+        self.cam.to_world(cx, cy)
     }
 
     pub fn center_on(&mut self, p: Pt) {
         self.stop_following();
-        let z = self.cam.z;
-        let (w, h) = self.size;
-        self.set_cam(Camera { x: w / 2.0 - p.x * z, y: h / 2.0 - p.y * z, z });
+        let z = self.fly.map_or(self.cam.z, |(_, b, _)| b.z);
+        let (cx, cy) = self.safe_center();
+        self.fly_to(Camera { x: cx - p.x * z, y: cy - p.y * z, z });
     }
 
     /// Brings elements into view without changing the zoom unless they don't fit.
@@ -1715,10 +1787,9 @@ impl Editor {
             return;
         }
         let z = z.clamp(MIN_ZOOM, MAX_ZOOM);
-        let (w, h) = self.size;
-        let following = self.following;
-        self.set_cam(Camera { x: w / 2.0 - cx * z, y: h / 2.0 - cy * z, z });
-        self.following = following;
+        let (x, y) = self.safe_center();
+        // Their view arrives a few times a second: gliding to it keeps the motion smooth.
+        self.fly_to(Camera { x: x - cx * z, y: y - cy * z, z });
     }
 
     /// Votes: a click puts one of this person's votes on what is under it (Shift or Alt takes it back).

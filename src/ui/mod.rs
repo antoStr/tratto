@@ -3,10 +3,11 @@
 
 pub mod icon_data;
 pub mod icons;
+pub mod motion;
 
 use std::sync::Arc;
 
-use egui::{Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Id, Response, RichText, Sense, Stroke, TextStyle, Ui, Vec2, pos2, vec2};
+use egui::{Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Id, Rect, Response, RichText, Sense, Stroke, TextStyle, Ui, Vec2, pos2, vec2};
 
 pub use icons::icon;
 
@@ -279,13 +280,15 @@ pub fn button(ui: &mut Ui, text: &str, kind: Kind, icon_name: Option<&str>, big:
     let pad = if big { 12.0 } else { 8.0 };
     let size = vec2(galley.size().x + icon_w + pad * 2.0, h);
     let (rect, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
-    let hovered = enabled && resp.hovered();
+    let k = motion::hover(ui.ctx(), resp.id.with("hover"), enabled && resp.hovered());
+    let s = motion::press(ui.ctx(), resp.id, enabled && resp.is_pointer_button_down_on());
+    let rect = Rect::from_center_size(rect.center(), rect.size() * s);
     let (fill, fg, border) = match kind {
-        Kind::Primary => (if hovered { t.brand_fill_hover } else { t.brand_fill }, Color32::WHITE, None),
-        Kind::Secondary => (if hovered { t.hover } else { t.bg }, t.text, Some(t.border)),
-        Kind::Ghost => (if hovered { t.hover } else { Color32::TRANSPARENT }, t.text, None),
-        Kind::Danger => (if hovered { mix(hex(0xC8331A), 0.88, Color32::BLACK) } else { hex(0xC8331A) }, Color32::WHITE, None),
-        Kind::DangerText => (if hovered { t.hover } else { t.bg }, t.danger_text, Some(t.border)),
+        Kind::Primary => (blend(t.brand_fill, t.brand_fill_hover, k), Color32::WHITE, None),
+        Kind::Secondary => (blend(t.bg, t.hover, k), t.text, Some(t.border)),
+        Kind::Ghost => (t.hover.gamma_multiply(k), t.text, None),
+        Kind::Danger => (blend(hex(0xC8331A), mix(hex(0xC8331A), 0.88, Color32::BLACK), k), Color32::WHITE, None),
+        Kind::DangerText => (blend(t.bg, t.hover, k), t.danger_text, Some(t.border)),
     };
     // Disabled: grey like Figma's, so it doesn't look clickable.
     let (fill, fg) = match kind {
@@ -322,21 +325,27 @@ pub fn icon_button(ui: &mut Ui, name: &str, label: &str, kbd: Option<&str>, size
     let t = theme(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let resp = resp.on_hover_cursor(egui::CursorIcon::Default);
-    let hovered = resp.hovered();
-    let (fill, fg) = if active {
-        (t.brand_fill, Color32::WHITE)
-    } else if on {
-        (t.selected, if t.dark { Color32::WHITE } else { mix(t.brand, 0.7, Color32::BLACK) })
-    } else if hovered {
-        (t.hover, t.icon)
-    } else {
-        (Color32::TRANSPARENT, t.icon)
-    };
-    ui.painter().rect_filled(rect, RADIUS, fill);
-    icon(ui, name, rect.center(), icon_size, fg);
+    let ctx = ui.ctx().clone();
+    // Colours ease between states and the button gives a little under the pointer.
+    let h = motion::hover(&ctx, resp.id.with("hover"), resp.hovered() && !active);
+    let a = motion::hover(&ctx, resp.id.with("active"), active);
+    let s = motion::press(&ctx, resp.id, resp.is_pointer_button_down_on());
+    let rest = if on { t.selected } else { t.hover.gamma_multiply(h) };
+    let fill = blend(rest, t.brand_fill, a);
+    let fg = blend(if on && !t.dark { mix(t.brand, 0.7, Color32::BLACK) } else { t.icon }, Color32::WHITE, a);
+    let radius = if size.x >= 32.0 { 8.0 } else { RADIUS as f32 };
+    ui.painter().rect_filled(Rect::from_center_size(rect.center(), rect.size() * s), radius * s, fill);
+    icon(ui, name, rect.center(), icon_size * s, fg);
     focus_ring(ui, &resp, rect);
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on || active, label));
     tip(resp, label, kbd)
+}
+
+/// Straight mix of two colours (premultiplied), `k` 0 gives `a`, 1 gives `b`.
+pub fn blend(a: Color32, b: Color32, k: f32) -> Color32 {
+    let k = k.clamp(0.0, 1.0);
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * k).round() as u8;
+    Color32::from_rgba_premultiplied(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()), m(a.a(), b.a()))
 }
 
 /// A small panel icon button (24×24, icon 16).
@@ -569,11 +578,20 @@ pub fn float_frame(t: &Theme) -> egui::Frame {
         .fill(t.bg)
         .corner_radius(RADIUS_LG)
         .inner_margin(egui::Margin::same(8))
-        .shadow(egui::Shadow { offset: [0, 5], blur: 12, spread: 0, color: black(if t.dark { 0.35 } else { 0.13 }) })
-        .stroke(Stroke::new(0.5, black(if t.dark { 0.5 } else { 0.15 })))
+        .shadow(egui::Shadow { offset: [0, 4], blur: 16, spread: 0, color: black(if t.dark { 0.3 } else { 0.09 }) })
+        .stroke(Stroke::new(1.0, t.border))
 }
 
 /// Frame of a dark popup menu.
+/// Figma's elevation for floating cards: a tight contact shadow under a soft wide one.
+pub fn card_shadows(t: &Theme) -> [egui::Shadow; 2] {
+    let k = if t.dark { 2.5 } else { 1.0 };
+    [
+        egui::Shadow { offset: [0, 1], blur: 3, spread: 0, color: black(0.06 * k) },
+        egui::Shadow { offset: [0, 4], blur: 16, spread: 0, color: black(0.07 * k) },
+    ]
+}
+
 pub fn menu_frame(t: &Theme) -> egui::Frame {
     egui::Frame::new().fill(t.menu).corner_radius(RADIUS_LG).inner_margin(egui::Margin::same(8)).shadow(egui::Shadow { offset: [0, 10], blur: 16, spread: 0, color: black(0.15) })
 }
