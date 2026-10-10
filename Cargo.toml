@@ -20,6 +20,7 @@ binaries = [{ path = "tratto", main = true }, { path = "tratto-cloudflared", mai
 [package.metadata.packager.nsis]
 installer-mode = "currentUser"
 languages = ["Italian"]
+custom-language-file = { Italian = "assets/nsis/Italian.nsh" }
 installer-icon = "assets/icon.ico"
 # The uninstaller offers to delete the boards too (unticked by default).
 appdata-paths = ["$APPDATA/Tratto"]
