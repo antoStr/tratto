@@ -1,6 +1,6 @@
 # Tratto
 
-Lavagna infinita per Windows, Mac e Linux con l'interfaccia di Figma e gli strumenti di Microsoft Whiteboard: penna sensibile alla pressione, evidenziatore, gomma, righello, lazo, forme, testo, note adesive, immagini, reazioni, puntatore laser e modelli. Le lavagne restano sul PC; quando serve, un link fa entrare altre persone dal browser.
+Lavagna infinita per Windows, Mac e Linux con l'interfaccia di Figma e FigJam e gli strumenti di Microsoft Whiteboard: penna sensibile alla pressione, evidenziatore, nastro adesivo, gomma, righello, lazo, 21 forme, connettori dritti, a gomito o curvi con etichetta, testo con elenchi, note adesive, tabelle, blocchi di codice, widget (sondaggio, lista di cose da fare, contatore), sezioni, immagini, reazioni, commenti, timer, votazioni, puntatore laser e modelli. Le lavagne restano sul PC; quando serve, un link fa entrare altre persone dal browser.
 
 Dalla versione 2 Tratto è un'app nativa scritta in Rust con [egui]: si apre in un attimo e usa circa un quinto della memoria della versione 1 (Electron). Le lavagne della versione 1 si aprono senza modifiche.
 
@@ -24,6 +24,8 @@ Il collegamento passa da un tunnel cifrato di Cloudflare. Il PC si collega solo 
 **Penna e touch.** Con la penna: il tasto laterale trascinato seleziona col lazo, toccato apre il menu; la parte superiore cancella. Tenendo premuta la penna o il dito su un elemento si apre il menu. Con due dita sposti e ingrandisci la lavagna.
 
 **Impostazioni** (`Ctrl+,`, anche dalla schermata delle lavagne): tema, dimensione dell'interfaccia e del testo, contrasto elevato, colore principale, posizione della barra, pannelli, minimappa, penna, aggiornamenti.
+
+**Come in FigJam.** Selezionando qualcosa compare sopra una barra scura con i suoi colori, la forma, il carattere e le altre impostazioni. Il **+** della barra degli strumenti aggiunge blocchi di codice e widget. *Tabella*: doppio clic su una cella per scrivere, Tab per passare alla successiva (nell'ultima aggiunge una riga). *Connettori*: doppio clic su una linea per scriverci un'etichetta. *Widget*: si cliccano direttamente sulla lavagna (con lo strumento di selezione) e si scrivono nel pannello a destra.
 
 **Esportare.** *Menu ▸ Esporta*: PNG, JPG, SVG, PDF o file Tratto.
 
@@ -55,7 +57,7 @@ cargo test
 ### Limiti noti
 - Il link `trycloudflare.com` cambia a ogni condivisione. Per un indirizzo fisso serve un tunnel Cloudflare con nome e un dominio tuo.
 - Tutti gli ospiti condividono un solo link per volta, legato a una sola lavagna.
-- Mancano ancora tabelle, blocchi di codice e widget.
+- Dei servizi di FigJam mancano quelli che richiedono un cloud: l'intelligenza artificiale, i plugin e i widget della community, la musica del timer.
 
 [egui]: https://github.com/emilk/egui
 [cargo-packager]: https://github.com/crabnebula-dev/cargo-packager
