@@ -1,6 +1,6 @@
 [package]
 name = "tratto"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2024"
 description = "Lavagna infinita con penna e condivisione sicura"
 authors = ["antoStr <antostr.dev@gmail.com>"]
@@ -17,11 +17,8 @@ long-description = "Lavagna infinita con penna, forme, note adesive e modelli. L
 # The tunnel program lives next to Tratto (see share::cloudflared); CI downloads it into the build folder.
 binaries = [{ path = "tratto", main = true }, { path = "tratto-cloudflared", main = false }]
 
-# The app, its installer and its uninstaller are signed by scripts/sign.ps1 when the build has a
-# code signing certificate (see the script); without one they stay unsigned.
-[package.metadata.packager.windows]
-sign-command = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sign.ps1 %1"
-
+# Windows signing: the build adds a sign-command calling scripts/sign.ps1 when the repository has
+# a code signing certificate (see .github/workflows/build.yml); otherwise nothing is signed.
 [package.metadata.packager.nsis]
 installer-mode = "currentUser"
 languages = ["Italian"]
