@@ -211,16 +211,20 @@ pub struct Painter {
     erased: HashMap<String, Erased>,
     /// When the zoom last changed: erased elements are redrawn once it settles.
     zoom_at: (f64, f64),
-    glyphs: HashMap<(usize, u16), GlyphMesh>,
+    /// Glyph outlines by face, glyph and level of detail.
+    glyphs: HashMap<(usize, u16, u8), GlyphMesh>,
     fill: FillTessellator,
     stroke: StrokeTessellator,
     pub images: Images,
     frame: u64,
+    /// Vertices and indices of the last frame: the next one reserves them at once instead of
+    /// growing (and copying) a big buffer many times.
+    pub last_len: (usize, usize),
 }
 
 impl Painter {
     pub fn new(images: Images) -> Painter {
-        Painter { cache: HashMap::new(), erased: HashMap::new(), zoom_at: (0.0, 0.0), glyphs: HashMap::new(), fill: FillTessellator::new(), stroke: StrokeTessellator::new(), images, frame: 0 }
+        Painter { cache: HashMap::new(), erased: HashMap::new(), zoom_at: (0.0, 0.0), glyphs: HashMap::new(), fill: FillTessellator::new(), stroke: StrokeTessellator::new(), images, frame: 0, last_len: (0, 0) }
     }
 
     /// Paints the elements that are on screen; returns whether any visible element is.
@@ -234,6 +238,9 @@ impl Painter {
         let pixel = 1.0 / (z * f.pixels_per_point as f64);
         let bucket = (2.0 * z.log2()).floor() as i32;
         let mut mesh = Mesh::default();
+        mesh.vertices.reserve(self.last_len.0);
+        mesh.indices.reserve(self.last_len.1);
+        let mut len = (0, 0);
         let mut on_screen = false;
         let now = crate::platform::now_ms();
         if self.zoom_at.0 != z {
@@ -273,6 +280,7 @@ impl Painter {
                         let base = mesh.vertices.len() as u32;
                         mesh.vertices.extend(part.pos.iter().zip(&part.col).map(|(&p, &c)| Vertex { pos: place(p), uv: WHITE_UV, color: c }));
                         mesh.indices.extend(part.idx.iter().map(|i| i + base));
+                        len = (len.0 + part.pos.len(), len.1 + part.idx.len());
                     }
                     Some((key, alpha)) => {
                         let corners: Vec<Pos2> = part.pos.iter().map(|&p| place(p)).collect();
@@ -300,6 +308,7 @@ impl Painter {
             }
         }
         flush(out, &mut mesh);
+        self.last_len = len;
         // Forget meshes not drawn for a while (elements deleted or long off screen).
         if self.frame % 240 == 0 {
             let now = self.frame;
@@ -394,8 +403,32 @@ impl Painter {
                 }
                 Prim::Text { placed, color } => {
                     let part = last_colored(&mut parts);
+                    let size = placed.k * text::faces()[placed.face].upem;
+                    // Text a few pixels tall cannot be read: a faint bar per line shows it is there,
+                    // for a handful of vertices instead of hundreds per word.
+                    if size * 0.33 / tol < 8.0 {
+                        let faint = color.gamma_multiply(0.45);
+                        let mut lines: Vec<(f32, f32, f32)> = Vec::new();
+                        for &(_, gx, gy) in &placed.glyphs {
+                            match lines.last_mut() {
+                                Some(l) if l.2 == gy => l.1 = l.1.max(gx),
+                                _ => lines.push((gx, gx, gy)),
+                            }
+                        }
+                        for (x0, x1, y) in lines {
+                            let corners = [(x0, y - 0.5 * size), (x1 + 0.5 * size, y - 0.5 * size), (x1 + 0.5 * size, y - 0.1 * size), (x0, y - 0.1 * size)].map(|(cx, cy)| {
+                                let (px, py) = tf(cx, cy);
+                                [px, py]
+                            });
+                            let base = part.pos.len() as u32;
+                            part.pos.extend(corners);
+                            part.col.extend([faint; 4]);
+                            part.idx.extend([0, 1, 2, 0, 2, 3].map(|i| i + base));
+                        }
+                        continue;
+                    }
                     for &(g, gx, gy) in &placed.glyphs {
-                        let mesh = self.glyph(placed.face, g);
+                        let mesh = self.glyph(placed.face, g, tol / placed.k);
                         let base = part.pos.len() as u32;
                         part.pos.extend(mesh.0.iter().map(|&[px, py]| {
                             let (x, y) = tf(gx + (px + placed.lean * py) * placed.k, gy - py * placed.k);
@@ -429,14 +462,18 @@ impl Painter {
         Built { ox, oy, parts }
     }
 
-    fn glyph(&mut self, face: usize, g: u16) -> GlyphMesh {
+    /// A glyph flattened to within `tol` font units. Small text on screen gets coarser outlines:
+    /// the finest level is needed only when zoomed in a lot, and costs ten times the vertices.
+    fn glyph(&mut self, face: usize, g: u16, tol: f32) -> GlyphMesh {
+        let finest = text::faces()[face].upem * 0.0008;
+        let level = (tol / finest).log2().floor().clamp(0.0, 8.0) as u8;
         self.glyphs
-            .entry((face, g))
+            .entry((face, g, level))
             .or_insert_with(|| {
                 let path = text::glyph_path(face, g);
                 let lp = to_lyon(&path, |x, y| (x, y));
                 let mut buf: VertexBuffers<[f32; 2], u32> = VertexBuffers::new();
-                let tol = text::faces()[face].upem * 0.0008;
+                let tol = finest * (1u32 << level) as f32;
                 let _ = FillTessellator::new().tessellate_path(&lp, &FillOptions::tolerance(tol).with_fill_rule(FillRule::NonZero), &mut BuffersBuilder::new(&mut buf, |v: FillVertex| v.position().to_array()));
                 Rc::new((buf.vertices, buf.indices))
             })
@@ -792,3 +829,4 @@ pub mod picture {
         harness.render().unwrap().save(path).unwrap();
     }
 }
+

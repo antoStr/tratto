@@ -105,6 +105,11 @@ impl Home {
                 if side_item(ui, "settings-2", "Impostazioni", false).clicked() {
                     dialogs.settings = true;
                 }
+                if let crate::updates::State::Available { version, url } = crate::updates::current()
+                    && side_item(ui, "download", &format!("Scarica Tratto {version}"), false).clicked()
+                {
+                    let _ = webbrowser::open(&url);
+                }
                 if side_item(ui, "file-up", "Importa una lavagna", false).clicked() {
                     action = self.import(store, toasts);
                 }

@@ -1,7 +1,47 @@
 [package]
 name = "tratto"
-version = "0.1.0"
+version = "2.0.0"
 edition = "2024"
+description = "Lavagna infinita con penna e condivisione sicura"
+authors = ["antoStr <antostr.dev@gmail.com>"]
+homepage = "https://github.com/antoStr/tratto"
+
+# Installers, built by .github/workflows/build.yml: `cargo packager --release --formats nsis|dmg|appimage,deb`.
+[package.metadata.packager]
+product-name = "Tratto"
+identifier = "app.tratto.desktop"
+publisher = "antoStr"
+category = "Productivity"
+icons = ["assets/icon.png", "assets/icon.ico"]
+long-description = "Lavagna infinita con penna, forme, note adesive e modelli. Le lavagne restano sul PC; un link fa entrare altre persone dal browser."
+# The tunnel program lives next to Tratto (see share::cloudflared); CI downloads it into the build folder.
+binaries = [{ path = "tratto", main = true }, { path = "tratto-cloudflared", main = false }]
+
+[package.metadata.packager.nsis]
+installer-mode = "currentUser"
+languages = ["Italian"]
+installer-icon = "assets/icon.ico"
+# The uninstaller offers to delete the boards too (unticked by default).
+appdata-paths = ["$APPDATA/Tratto"]
+# Tratto 1.x (Electron) lived in %LOCALAPPDATA%\Programs\Tratto: its own uninstaller removes it
+# silently, keeping the boards (they stay in %APPDATA%\Tratto, where this version reads them).
+preinstall-section = '''
+Section RemoveTratto1
+  IfFileExists "$LOCALAPPDATA\Programs\Tratto\Uninstall Tratto.exe" 0 done
+    ExecWait '"$LOCALAPPDATA\Programs\Tratto\Uninstall Tratto.exe" /S _?=$LOCALAPPDATA\Programs\Tratto'
+    Delete "$LOCALAPPDATA\Programs\Tratto\Uninstall Tratto.exe"
+    RMDir "$LOCALAPPDATA\Programs\Tratto"
+  done:
+SectionEnd
+'''
+
+[package.metadata.packager.macos]
+minimum-system-version = "11.0"
+# No paid Apple Developer ID: signed ad hoc, so the first launch needs right click > Open.
+signing-identity = "-"
+
+[package.metadata.packager.deb]
+section = "graphics"
 
 [dependencies]
 base64 = "0.23.1"
@@ -43,6 +83,10 @@ web-sys = { version = "0.3.106", features = ["WebSocket", "MessageEvent", "Binar
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_Pointer"] }
+
+# The icon of Tratto.exe (and of its shortcuts).
+[target."cfg(windows)".build-dependencies]
+winresource = "0.1"
 
 [dev-dependencies]
 egui_kittest = { version = "0.36.2", features = ["wgpu", "snapshot"] }

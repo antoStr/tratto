@@ -155,13 +155,14 @@ pub struct Share {
     pub port: u16,
 }
 
-/// Where the tunnel program is: next to Tratto, or in bin/ while developing.
+/// Where the tunnel program is: next to Tratto, or in bin/ while developing. Installed it is
+/// called tratto-cloudflared, so the .deb does not clash with Cloudflare's own /usr/bin/cloudflared.
 pub fn cloudflared() -> PathBuf {
-    let exe = if cfg!(windows) { "cloudflared.exe" } else { "cloudflared" };
-    let beside = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(exe)));
+    let ext = if cfg!(windows) { ".exe" } else { "" };
+    let beside = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(format!("tratto-cloudflared{ext}"))));
     match beside {
         Some(p) if p.exists() => p,
-        _ => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("bin").join(exe),
+        _ => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("bin").join(format!("cloudflared{ext}")),
     }
 }
 

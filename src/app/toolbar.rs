@@ -4,7 +4,7 @@ use egui::{Color32, Id, Pos2, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 
 use super::board::BoardUi;
 use crate::editor::{Editor, Tool};
-use crate::geom::{BBox, union};
+use crate::geom::{BBox, Camera, union};
 use crate::model::{FONTS, FontKind, HIGHLIGHT_COLORS, INK_COLORS, STICKY_COLORS, ShapeKind, TAPE_COLORS};
 use crate::prefs::{EraserMode, Pen, ShapeTool, ToolbarPos};
 use crate::ui::{self, Theme, icon, icon_button};
@@ -526,8 +526,12 @@ fn fit_for(b: BBox) -> Fit {
 pub struct Minimap {
     tex: Option<egui::TextureHandle>,
     shown: Option<Fit>,
-    drawn_at: f64,
     version: u64,
+    /// Drawing the map takes tens of milliseconds on a big board, so it waits until the camera
+    /// and the board have been still for a moment instead of hitching every few frames.
+    seen: Option<(Camera, u64)>,
+    still_since: f64,
+    content: Option<(u64, Option<BBox>)>,
     /// Pointer offset from the view centre while dragging, in board units.
     grab: Option<(f64, f64)>,
 }
@@ -537,13 +541,25 @@ pub fn minimap(ctx: &egui::Context, stage: Rect, ed: &mut Editor, m: &mut Minima
     let t = ui::theme(ctx);
     let now = crate::platform::now_ms();
     let view = ed.view();
-    let content = union(ed.board.all().iter().filter(|e| !e.hidden).map(|e| crate::geom::aabb(e)));
+    let version = ed.board.version;
+    if m.seen != Some((ed.cam, version)) {
+        m.seen = Some((ed.cam, version));
+        m.still_since = now;
+    }
+    let content = match m.content {
+        Some((v, c)) if v == version => c,
+        _ => {
+            let c = union(ed.board.all().iter().filter(|e| !e.hidden).map(|e| crate::geom::aabb(e)));
+            m.content = Some((version, c));
+            c
+        }
+    };
     let target = fit_for(union(content.into_iter().chain([view])).unwrap());
     let stale = m.shown.is_none_or(|f| (f.k / target.k).ln().abs() > 0.05 || (f.x - target.x).hypot(f.y - target.y) > 2.0);
-    let changed = m.version != ed.board.version;
-    if (m.tex.is_none() || ((stale || changed) && m.grab.is_none())) && now - m.drawn_at > 250.0 {
-        m.drawn_at = now;
-        m.version = ed.board.version;
+    let changed = m.version != version;
+    let still = now - m.still_since;
+    if m.tex.is_none() || ((stale || changed) && m.grab.is_none() && still > 300.0) {
+        m.version = version;
         m.shown = Some(target);
         let ppp = ctx.pixels_per_point() as f64;
         let (w, h) = ((MW as f64 * ppp) as u32, (MH as f64 * ppp) as u32);
@@ -560,7 +576,7 @@ pub fn minimap(ctx: &egui::Context, stage: Rect, ed: &mut Editor, m: &mut Minima
             }
         }
     } else if stale || changed {
-        ctx.request_repaint_after(std::time::Duration::from_millis(260));
+        ctx.request_repaint_after(std::time::Duration::from_millis((310.0 - still).max(10.0) as u64));
     }
     let Some(f) = m.shown else { return };
     egui::Area::new(Id::new("minimap")).pivot(egui::Align2::RIGHT_TOP).fixed_pos(pos2(stage.max.x - 16.0, stage.min.y + 16.0)).order(egui::Order::Foreground).show(ctx, |ui| {

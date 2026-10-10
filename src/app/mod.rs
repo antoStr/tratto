@@ -110,6 +110,7 @@ struct Bench {
     ui_ms: Vec<f64>,
     gaps: Vec<f64>,
     last: f64,
+    vertices: usize,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -129,7 +130,14 @@ pub enum Action {
 #[cfg(not(target_arch = "wasm32"))]
 impl App {
     pub fn new(cc: &eframe::CreationContext, store: Store) -> App {
+        if std::env::var_os("TRATTO_BENCH").is_some() {
+            println!("T app_new {:.0}", crate::platform::now_ms());
+        }
         ui::install_fonts(&cc.egui_ctx);
+        // A new version shows up on the home screen (and in Settings ▸ Updates).
+        if std::env::var_os("TRATTO_BENCH").is_none() {
+            crate::updates::check(&cc.egui_ctx);
+        }
         let prefs = store.setting("prefs").map(|s| Prefs::from_json(&s)).unwrap_or_default();
         let saved_prefs = prefs.to_json();
         let home = home::Home::new(&store);
@@ -242,12 +250,13 @@ impl eframe::App for App {
                 }
                 bench.last = now;
                 bench.ui_ms.push(now - t0);
+                bench.vertices = bench.vertices.max(b.editor.painter.last_len.0);
                 let c = b.editor.cam;
                 b.editor.cam = crate::geom::Camera { x: c.x - 4.0, ..c };
                 ctx.request_repaint();
             } else {
                 let fps = 1000.0 * bench.gaps.len() as f64 / bench.gaps.iter().sum::<f64>();
-                println!("PAN frames={} fps={fps:.1} frame_ms_p50={:.2} p95={:.2} p99={:.2} ui_ms_p50={:.2} p95={:.2}", bench.gaps.len(), percentile(&bench.gaps, 0.5), percentile(&bench.gaps, 0.95), percentile(&bench.gaps, 0.99), percentile(&bench.ui_ms, 0.5), percentile(&bench.ui_ms, 0.95));
+                println!("PAN frames={} fps={fps:.1} frame_ms_p50={:.2} p95={:.2} p99={:.2} ui_ms_p50={:.2} p95={:.2} vertices={}", bench.gaps.len(), percentile(&bench.gaps, 0.5), percentile(&bench.gaps, 0.95), percentile(&bench.gaps, 0.99), percentile(&bench.ui_ms, 0.5), percentile(&bench.ui_ms, 0.95), bench.vertices);
                 bench.pan = false;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }

@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CLOUDFLARED: '2026.9.3'
+
 jobs:
   build:
     strategy:
@@ -16,44 +19,72 @@ jobs:
         include:
           - os: windows-latest
             name: Windows
-            cloudflared: node scripts/fetch-cloudflared.ts win
-            target: --win --x64
+            target: x86_64-pc-windows-msvc
+            formats: nsis
+            # Checksums are the ones Cloudflare publishes in the release notes (of the binary itself).
+            cloudflared: cloudflared-windows-amd64.exe
+            sha: f096265ec2fcbe9bb6e2d64268db167ced3fcbb83d894bdb9e2fcdb26f2ea7e2
           - os: macos-latest
-            name: Mac
-            cloudflared: node scripts/fetch-cloudflared.ts mac-x64 && node scripts/fetch-cloudflared.ts mac-arm64
-            target: --mac
-          - os: ubuntu-latest
+            name: Mac-arm64
+            target: aarch64-apple-darwin
+            formats: dmg
+            cloudflared: cloudflared-darwin-arm64.tgz
+            sha: 5472c1a01c84bc31b3021056a73b4e5774ddddefc572124ea8fdf6c340639f32
+          - os: macos-latest
+            name: Mac-x64
+            target: x86_64-apple-darwin
+            formats: dmg
+            cloudflared: cloudflared-darwin-amd64.tgz
+            sha: ab588b3b4db9cdb4476c30a3db2a72635b1d8327d44741fee6799a0f37b0ec07
+          # The oldest supported Ubuntu: the AppImage then runs on older distributions too.
+          - os: ubuntu-22.04
             name: Linux
-            cloudflared: node scripts/fetch-cloudflared.ts linux
-            target: --linux
+            target: x86_64-unknown-linux-gnu
+            formats: appimage,deb
+            cloudflared: cloudflared-linux-amd64
+            sha: 77e26d8d900e0b8469f416239d14b5f296525fdf79fee6f511ef55609e3fbac2
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      APPIMAGE_EXTRACT_AND_RUN: '1'
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - run: rustup target add ${{ matrix.target }} wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
         with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - if: matrix.os == 'ubuntu-latest'
-        run: npm test
-      - run: npm run build
-      - run: ${{ matrix.cloudflared }}
-      # Always build without publishing: the release job below uploads every platform at once.
-      - run: npx electron-builder ${{ matrix.target }} --publish never
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          key: ${{ matrix.target }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.129,cargo-packager
+      # The guests' page (the same app in the browser), bundled into the desktop app.
+      - run: sh scripts/web.sh
+      - if: runner.os == 'Linux'
+        run: cargo test --release --target ${{ matrix.target }}
+      - run: cargo build --release --target ${{ matrix.target }}
+      - name: Download cloudflared next to Tratto
+        run: |
+          out=target/${{ matrix.target }}/release
+          curl -fsSL -o cf.download "https://github.com/cloudflare/cloudflared/releases/download/$CLOUDFLARED/${{ matrix.cloudflared }}"
+          case "${{ matrix.cloudflared }}" in
+            *.tgz) tar -xzf cf.download cloudflared && mv cloudflared cf.bin ;;
+            *) mv cf.download cf.bin ;;
+          esac
+          if command -v sha256sum >/dev/null; then sum="sha256sum"; else sum="shasum -a 256"; fi
+          echo "${{ matrix.sha }}  cf.bin" | $sum -c -
+          exe=tratto-cloudflared; [ "$RUNNER_OS" = Windows ] && exe=tratto-cloudflared.exe
+          mv cf.bin "$out/$exe" && chmod +x "$out/$exe"
+      - run: cargo packager --release --target ${{ matrix.target }} --formats ${{ matrix.formats }} --binaries-dir target/${{ matrix.target }}/release --out-dir dist
       - uses: actions/upload-artifact@v4
         with:
           name: Tratto-${{ matrix.name }}
-          # Installers plus what electron-updater reads (latest*.yml, .blockmap).
           path: |
-            release/*.exe
-            release/*.dmg
-            release/*.AppImage
-            release/*.deb
-            release/*.blockmap
-            release/latest*.yml
+            dist/*-setup.exe
+            dist/*.dmg
+            dist/*.AppImage
+            dist/*.deb
           if-no-files-found: error
 
   release:
@@ -67,7 +98,26 @@ jobs:
         with:
           path: files
           merge-multiple: true
-      - run: ls -la files
+      # Tratto 1.x (Electron) updates itself from these files: on Windows and in the AppImage it
+      # downloads the new installer and runs it when closed, which moves it to this version.
+      - name: Files for the automatic update of Tratto 1.x
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd files
+          entry() { echo "  - url: $1"; echo "    sha512: $(openssl dgst -sha512 -binary "$1" | base64 -w0)"; echo "    size: $(stat -c%s "$1")"; }
+          feed() {
+            echo "version: ${TAG#v}"
+            echo "files:"
+            for f in "$@"; do entry "$f"; done
+            echo "path: $1"
+            echo "sha512: $(openssl dgst -sha512 -binary "$1" | base64 -w0)"
+            echo "releaseDate: '$(date -u +%Y-%m-%dT%H:%M:%S.000Z)'"
+          }
+          feed *-setup.exe > latest.yml
+          feed *.AppImage *.deb > latest-linux.yml
+          cat latest.yml latest-linux.yml
+          ls -la
       - name: Publish the GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

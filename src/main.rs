@@ -41,6 +41,9 @@ fn data_dir() -> std::path::PathBuf {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
+    if std::env::var_os("TRATTO_BENCH").is_some() {
+        println!("T main {:.0}", platform::now_ms());
+    }
     let store = match store::Store::open(&data_dir().join("tratto.db")) {
         Ok(s) => s,
         Err(e) => {
@@ -54,9 +57,17 @@ fn main() -> eframe::Result {
         viewport = viewport.with_icon(icon);
     }
     let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
-    // Benchmarks measure how fast frames can be drawn, not the screen's refresh rate.
-    if std::env::var_os("TRATTO_BENCH").is_some() {
-        wgpu_options.surface.present_mode = eframe::wgpu::PresentMode::AutoNoVsync;
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
+        // A whiteboard does not need the gaming card of a laptop: the integrated one saves battery.
+        if std::env::var_os("WGPU_POWER_PREF").is_none() {
+            setup.power_preference = eframe::wgpu::PowerPreference::LowPower;
+        }
+        // On Linux just asking Vulkan for its cards wakes a sleeping NVIDIA card (2 s before the
+        // first frame); OpenGL stays on the integrated one.
+        #[cfg(target_os = "linux")]
+        if std::env::var_os("WGPU_BACKEND").is_none() {
+            setup.instance_descriptor.backends = eframe::wgpu::Backends::GL;
+        }
     }
     let options = eframe::NativeOptions {
         wgpu_options,
@@ -69,6 +80,9 @@ fn main() -> eframe::Result {
         })),
         ..Default::default()
     };
+    if std::env::var_os("TRATTO_BENCH").is_some() {
+        println!("T run_native {:.0}", platform::now_ms());
+    }
     eframe::run_native("Tratto", options, Box::new(|cc| Ok(Box::new(app::App::new(cc, store)))))
 }
 

@@ -343,15 +343,18 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
         Kind::Ink(i) | Kind::Highlighter(i) => {
             let hl = matches!(el.kind, Kind::Highlighter(_));
             let color = with_alpha(color_or(&i.color, DARK), alpha * if hl { 0.45 } else { 1.0 });
+            // Zoomed out, points closer than a pixel or two only add vertices.
+            let thinned = env.pixel.filter(|px| *px > 0.5).map(|px| crate::ink::thin_points(&i.points, 1.5 * px));
+            let points = thinned.as_deref().unwrap_or(&i.points);
             // Thinner than a device pixel (far zoomed out): its centre line, much faster.
             if let Some(px) = env.pixel
                 && i.size <= px
-                && i.points.len() > 3
+                && points.len() > 3
             {
-                let pts: Vec<f64> = i.points.chunks_exact(3).flat_map(|p| [p[0] as f64, p[1] as f64]).collect();
+                let pts: Vec<f64> = points.chunks_exact(3).flat_map(|p| [p[0] as f64, p[1] as f64]).collect();
                 out.push(Prim::Stroke { path: Path::polyline(&pts), width: (if env.hairline { px } else { i.size }) as f32, color, round: false, dash: None });
             } else {
-                let outline = stroke_outline(&i.points, i.size.max(MIN_SIZE), hl);
+                let outline = stroke_outline(points, i.size.max(MIN_SIZE), hl);
                 out.push(Prim::Fill { path: Path::smooth_outline(&outline), color });
             }
         }
