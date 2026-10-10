@@ -1,5 +1,7 @@
 //! Board geometry: boxes, rotation, hit testing, scaling and connectors.
 
+use std::f64::consts::{FRAC_PI_2, PI};
+
 use crate::model::{El, EraseMark, Kind, Line, Route, ShapeKind};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -212,8 +214,65 @@ pub fn shape_polygon(kind: ShapeKind, w: f64, h: f64, custom: Option<&[f32]>) ->
             })
             .collect(),
         Polygon => custom.unwrap_or(&[]).iter().enumerate().map(|(i, &v)| v as f64 * if i % 2 == 1 { h } else { w }).collect(),
+        Pill => {
+            let r = (h / 2.0).min(w / 2.0);
+            let mut p = arc(w - r, h / 2.0, r, r, -FRAC_PI_2, FRAC_PI_2, 12);
+            p.extend(arc(r, h / 2.0, r, r, FRAC_PI_2, 3.0 * FRAC_PI_2, 12));
+            p
+        }
+        Cylinder => {
+            let ry = (h * 0.12).min(w * 0.25);
+            let mut p = arc(w / 2.0, ry, w / 2.0, ry, PI, 2.0 * PI, 16);
+            p.extend(arc(w / 2.0, h - ry, w / 2.0, ry, 0.0, PI, 16));
+            p
+        }
+        Document => {
+            let a = h * 0.07;
+            let mut p = vec![0.0, 0.0, w, 0.0];
+            p.extend((0..=16).flat_map(|i| {
+                let t = i as f64 / 16.0;
+                [w * (1.0 - t), h - a + a * (std::f64::consts::TAU * t).sin()]
+            }));
+            p
+        }
+        Speech => {
+            let b = h * 0.8;
+            let r = (w.min(b) * 0.16).max(0.0);
+            let mut p = arc(w - r, r, r, r, -FRAC_PI_2, 0.0, 6);
+            p.extend(arc(w - r, b - r, r, r, 0.0, FRAC_PI_2, 6));
+            p.extend([w * 0.38, b, w * 0.16, h, w * 0.22, b]);
+            p.extend(arc(r, b - r, r, r, FRAC_PI_2, PI, 6));
+            p.extend(arc(r, r, r, r, PI, 3.0 * FRAC_PI_2, 6));
+            p
+        }
+        Chevron => vec![0.0, 0.0, w * 0.75, 0.0, w, h / 2.0, w * 0.75, h, 0.0, h, w * 0.25, h / 2.0],
+        Trapezoid => vec![w * 0.2, 0.0, w * 0.8, 0.0, w, h, 0.0, h],
+        Process => vec![0.0, 0.0, w, 0.0, w, h, 0.0, h],
         Rect | Ellipse => return None,
     })
+}
+
+/// Points along an elliptic arc from angle `a0` to `a1`, as flat [x, y, …].
+fn arc(cx: f64, cy: f64, rx: f64, ry: f64, a0: f64, a1: f64, n: usize) -> Vec<f64> {
+    (0..=n).flat_map(|i| {
+        let a = a0 + (a1 - a0) * i as f64 / n as f64;
+        [cx + rx * a.cos(), cy + ry * a.sin()]
+    }).collect()
+}
+
+/// Lines drawn inside some shapes: the rim of a cylinder's top, a process box's side bars.
+pub fn shape_details(kind: ShapeKind, w: f64, h: f64) -> Vec<Vec<f64>> {
+    match kind {
+        ShapeKind::Cylinder => {
+            let ry = (h * 0.12).min(w * 0.25);
+            vec![arc(w / 2.0, ry, w / 2.0, ry, 0.0, PI, 16)]
+        }
+        ShapeKind::Process => {
+            let d = (w * 0.1).min(h * 0.4);
+            vec![vec![d, 0.0, d, h], vec![w - d, 0.0, w - d, h]]
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Point in the element's unrotated local space, with (0, 0) at its top-left.

@@ -835,6 +835,12 @@ pub mod picture {
         add(520.0, 330.0, 300.0, Kind::Widget(Widget::Checklist { title: "Prima della riunione".into(), items: vec![CheckItem { text: "Preparare le slide".into(), done: true }, CheckItem { text: "Prenotare la sala".into(), done: false }, CheckItem { text: String::new(), done: false }] }));
         add(860.0, 20.0, 220.0, Kind::Widget(Widget::Counter { label: "Idee raccolte".into(), value: 12 }));
         add(860.0, 260.0, 300.0, Kind::Code(Code { code: "SELECT nome, COUNT(*)\nFROM idee\nWHERE voti > 3 -- le migliori\nGROUP BY nome;".into(), language: "sql".into(), light: true, font_size: 13.0 }));
+        for (i, k) in [ShapeKind::Pill, ShapeKind::Process, ShapeKind::Document, ShapeKind::Cylinder, ShapeKind::Speech, ShapeKind::Chevron, ShapeKind::Trapezoid].into_iter().enumerate() {
+            let shape = Shape { shape: k, fill: "#E3F1FF".into(), stroke: "#1971C2".into(), stroke_width: 2.0, radius: 0.0, dash: false, points: None, text: Some(["Inizio", "Calcolo", "Report", "Dati", "Ciao!", "Fase", "Filtro"][i].into()), font: None };
+            let mut el = El::new(Kind::Shape(shape));
+            (el.x, el.y, el.w, el.h) = (20.0 + i as f64 * 115.0, 500.0, 100.0, 80.0);
+            els.push(Arc::new(el));
+        }
         for (i, route) in [Route::Straight, Route::Elbow, Route::Curved].into_iter().enumerate() {
             let y = 470.0 + i as f64 * 45.0;
             let line = Line { points: vec![0.0, 0.0, 300.0, 40.0], stroke: "#1E1E1E".into(), stroke_width: 2.0, dash: i == 2, arrow_start: i == 1, arrow_end: true, from: None, to: None, tape: false, route, label: Some(["Sì", "Poi", "Forse"][i].into()) };

@@ -20,6 +20,17 @@ pub enum ShapeKind {
     ArrowRight,
     ArrowLeft,
     Polygon,
+    /// Flowchart start and end: a rectangle with round ends.
+    Pill,
+    /// Database.
+    Cylinder,
+    /// A page with a wavy bottom.
+    Document,
+    Speech,
+    Chevron,
+    Trapezoid,
+    /// Predefined process: a box with a bar at each side.
+    Process,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

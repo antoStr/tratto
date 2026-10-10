@@ -50,6 +50,13 @@ fn shape_name(k: ShapeKind) -> &'static str {
         ShapeKind::ArrowRight => "Freccia a destra",
         ShapeKind::ArrowLeft => "Freccia a sinistra",
         ShapeKind::Polygon => "Poligono",
+        ShapeKind::Pill => "Inizio e fine",
+        ShapeKind::Cylinder => "Database",
+        ShapeKind::Document => "Documento",
+        ShapeKind::Speech => "Fumetto",
+        ShapeKind::Chevron => "Gallone",
+        ShapeKind::Trapezoid => "Trapezio",
+        ShapeKind::Process => "Processo predefinito",
     }
 }
 

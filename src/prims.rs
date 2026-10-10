@@ -407,7 +407,12 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
             }
             if s.stroke_width > 0.0 && s.stroke != "transparent" {
                 let sw = s.stroke_width as f32;
-                out.push(Prim::Stroke { path, width: sw, color: with_alpha(color_or(&s.stroke, DARK), alpha), round: true, dash: s.dash.then_some([sw * 3.0, sw * 2.2]) });
+                let color = with_alpha(color_or(&s.stroke, DARK), alpha);
+                let dash = s.dash.then_some([sw * 3.0, sw * 2.2]);
+                out.push(Prim::Stroke { path, width: sw, color, round: true, dash });
+                for d in crate::geom::shape_details(s.shape, el.w, el.h) {
+                    out.push(Prim::Stroke { path: Path::polyline(&d), width: sw, color, round: true, dash });
+                }
             }
             if s.text.as_ref().is_some_and(|t| !t.is_empty()) && !editing {
                 let t = text::shape_text_layout(el, s);

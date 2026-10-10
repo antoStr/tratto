@@ -12,7 +12,7 @@ use crate::ui::{self, Theme, icon, icon_button};
 const ICON: f32 = 22.0;
 const BTN: f32 = 40.0;
 
-pub const SHAPES: [(ShapeTool, &str, Option<&str>); 14] = [
+pub const SHAPES: [(ShapeTool, &str, Option<&str>); 21] = [
     (ShapeTool::Kind(ShapeKind::Rect), "Rettangolo", Some("R")),
     (ShapeTool::RoundRect, "Rettangolo arrotondato", None),
     (ShapeTool::Kind(ShapeKind::Ellipse), "Ellisse", Some("O")),
@@ -27,6 +27,13 @@ pub const SHAPES: [(ShapeTool, &str, Option<&str>); 14] = [
     (ShapeTool::Kind(ShapeKind::Plus), "Croce", None),
     (ShapeTool::Kind(ShapeKind::ArrowRight), "Freccia a destra", None),
     (ShapeTool::Kind(ShapeKind::ArrowLeft), "Freccia a sinistra", None),
+    (ShapeTool::Kind(ShapeKind::Pill), "Inizio e fine", None),
+    (ShapeTool::Kind(ShapeKind::Process), "Processo predefinito", None),
+    (ShapeTool::Kind(ShapeKind::Document), "Documento", None),
+    (ShapeTool::Kind(ShapeKind::Cylinder), "Database", None),
+    (ShapeTool::Kind(ShapeKind::Speech), "Fumetto", None),
+    (ShapeTool::Kind(ShapeKind::Chevron), "Gallone", None),
+    (ShapeTool::Kind(ShapeKind::Trapezoid), "Trapezio", None),
 ];
 
 /// The paths a connector can take, as FigJam offers them.
@@ -52,6 +59,19 @@ pub fn shape_icon(ui: &Ui, tool: ShapeTool, c: Pos2, size: f32, color: Color32) 
         }
         ShapeTool::Kind(ShapeKind::Parallelogram) => {
             ui.painter().add(egui::Shape::closed_line(vec![p(7.0, 5.0), p(22.0, 5.0), p(17.0, 19.0), p(2.0, 19.0)], st));
+            return;
+        }
+        // The newer shapes draw their own outline, scaled into the icon.
+        ShapeTool::Kind(k @ (ShapeKind::Pill | ShapeKind::Process | ShapeKind::Document | ShapeKind::Cylinder | ShapeKind::Speech | ShapeKind::Chevron | ShapeKind::Trapezoid)) => {
+            let (w, h) = if matches!(k, ShapeKind::Cylinder) { (16.0, 19.0) } else { (20.0, 15.0) };
+            let o = p(12.0 - w as f32 / 2.0, 12.0 - h as f32 / 2.0);
+            let at = |q: &[f64]| q.chunks_exact(2).map(|v| o + vec2(v[0] as f32 * s, v[1] as f32 * s)).collect::<Vec<_>>();
+            if let Some(poly) = crate::geom::shape_polygon(k, w, h, None) {
+                ui.painter().add(egui::Shape::closed_line(at(&poly), st));
+            }
+            for d in crate::geom::shape_details(k, w, h) {
+                ui.painter().add(egui::Shape::line(at(&d), st));
+            }
             return;
         }
         ShapeTool::Kind(k) => match k {

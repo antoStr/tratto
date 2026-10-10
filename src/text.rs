@@ -265,6 +265,13 @@ fn shape_text_room(kind: ShapeKind) -> (f64, f64) {
         Parallelogram => (0.62, 0.0),
         ArrowRight | ArrowLeft => (0.5, 0.0),
         Rect | Polygon => (0.86, 0.0),
+        Process => (0.7, 0.0),
+        Pill => (0.78, 0.0),
+        Cylinder => (0.8, 0.06),
+        Document => (0.84, -0.04),
+        Speech => (0.8, -0.08),
+        Chevron => (0.5, 0.0),
+        Trapezoid => (0.64, 0.0),
     }
 }
 
