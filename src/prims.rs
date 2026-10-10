@@ -538,7 +538,25 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
         Kind::Text(t) => {
             if !editing {
                 let layout = text::text_layout(el, t);
-                out.push(Prim::Text { placed: place_lines(&layout.lines, text::text_font(t), t.font_size, t.align, el.w, 0.0, 0.0), color: with_alpha(color_or(&t.color, DARK), alpha) });
+                let color = with_alpha(color_or(&t.color, DARK), alpha);
+                let f = text::text_font(t);
+                out.push(Prim::Text { placed: place_lines(&layout.lines, f, t.font_size, t.align, el.w, 0.0, 0.0), color });
+                if t.strike {
+                    let lh = t.font_size * LINE_HEIGHT;
+                    let mut p = Path::default();
+                    for (i, line) in layout.lines.iter().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+                        let lw = text::measure(f.face, line.trim_end(), t.font_size);
+                        let x = match t.align {
+                            Align::Left => 0.0,
+                            Align::Center => (el.w - lw) / 2.0,
+                            Align::Right => el.w - lw,
+                        };
+                        let y = (i as f64 * lh + lh * 0.56) as f32;
+                        p.move_to(x as f32, y);
+                        p.line_to((x + lw) as f32, y);
+                    }
+                    out.push(Prim::Stroke { path: p, width: (t.font_size * 0.07) as f32, color, round: false, dash: None });
+                }
             }
         }
         Kind::Sticky(s) => {

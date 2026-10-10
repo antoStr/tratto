@@ -21,7 +21,7 @@ fn el(kind: Kind, x: f64, y: f64, w: f64, h: f64) -> El {
 fn text(x: f64, y: f64, s: &str, size: f64, bold: bool, color: &str, align: Align, w: Option<f64>) -> El {
     let f = text::font(FontKind::Sans, bold, false).face;
     let lay = layout_text(s, f, size, w);
-    el(Kind::Text(Text { text: s.into(), color: color.into(), font_size: size, font: FontKind::Sans, align, bold, italic: false, fixed_width: w.is_some() }), x, y, w.unwrap_or(lay.width).ceil() + 1.0, lay.height)
+    el(Kind::Text(Text { text: s.into(), color: color.into(), font_size: size, font: FontKind::Sans, align, bold, italic: false, fixed_width: w.is_some(), strike: false }), x, y, w.unwrap_or(lay.width).ceil() + 1.0, lay.height)
 }
 
 /// Text whose box is centred on (cx, cy).

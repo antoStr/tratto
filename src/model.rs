@@ -169,6 +169,8 @@ pub struct Text {
     /// When false the box grows with the text; when true it wraps at `w`.
     #[serde(default)]
     pub fixed_width: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strike: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

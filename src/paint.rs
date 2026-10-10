@@ -830,7 +830,7 @@ pub mod picture {
         add(440.0, 200.0, 140.0, 40.0, Kind::Line(Line { points: vec![0.0, 40.0, 140.0, 0.0], stroke: "#E03131".into(), stroke_width: 3.0, dash: false, arrow_start: false, arrow_end: true, from: None, to: None, tape: false, route: crate::model::Route::Straight, label: None }));
         add(600.0, 200.0, 140.0, 40.0, Kind::Line(Line { points: vec![0.0, 20.0, 140.0, 20.0], stroke: "#FFB3C7".into(), stroke_width: 28.0, dash: false, arrow_start: false, arrow_end: false, from: None, to: None, tape: true, route: crate::model::Route::Straight, label: None }));
         add(40.0, 300.0, 220.0, 220.0, Kind::Sticky(Sticky { text: "Una nota adesiva con un po' di testo".into(), color: "#FFF3A3".into(), font: FontKind::Hand, align: Align::Center, author: Some("Anto".into()), hide_author: false }));
-        add(300.0, 300.0, 0.0, 0.0, Kind::Text(Text { text: "Titolo in grassetto\nseconda riga".into(), color: "#1E1E1E".into(), font_size: 24.0, font: FontKind::Sans, align: Align::Left, bold: true, italic: false, fixed_width: false }));
+        add(300.0, 300.0, 0.0, 0.0, Kind::Text(Text { text: "Titolo in grassetto\nseconda riga".into(), color: "#1E1E1E".into(), font_size: 24.0, font: FontKind::Sans, align: Align::Left, bold: true, italic: false, fixed_width: false, strike: false }));
         add(300.0, 400.0, 64.0, 64.0, Kind::Stamp { emoji: "🎉".into() });
         add(400.0, 400.0, 64.0, 64.0, Kind::Stamp { emoji: "👍".into() });
         add(520.0, 300.0, 220.0, 160.0, Kind::Section { fill: "#E3F1FF".into() });

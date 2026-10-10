@@ -227,6 +227,56 @@ pub fn fit_text(el: &mut El) {
     }
 }
 
+/// The marker a paragraph starts with, if it is a list item: "• " or "12. ".
+fn list_marker(line: &str) -> Option<(usize, Option<u32>)> {
+    if line.starts_with("• ") {
+        return Some(("• ".len(), None));
+    }
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    (digits > 0 && digits <= 4 && line[digits..].starts_with(". ")).then(|| (digits + 2, line[..digits].parse().ok()))
+}
+
+/// Turns every paragraph into a list item (bullets, or numbers in order), or back into plain
+/// paragraphs when they all already are items of that kind.
+pub fn toggle_list(text: &str, numbered: bool) -> String {
+    let paras: Vec<&str> = text.split('\n').collect();
+    let is_kind = |p: &str| list_marker(p).is_some_and(|(_, n)| n.is_some() == numbered);
+    let all = paras.iter().all(|p| is_kind(p));
+    paras
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let body = list_marker(p).map_or(*p, |(len, _)| &p[len..]);
+            match (all, numbered) {
+                (true, _) => body.to_string(),
+                (false, true) => format!("{}. {body}", i + 1),
+                (false, false) => format!("• {body}"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// After Enter at char `at` (just past the new line): a list carries on with the next marker,
+/// or ends when the item left behind was empty. Returns the new text and where the cursor goes.
+pub fn continue_list(text: &str, at: usize) -> Option<(String, usize)> {
+    let chars: Vec<char> = text.chars().collect();
+    if at == 0 || at > chars.len() || chars[at - 1] != '\n' {
+        return None;
+    }
+    let start = chars[..at - 1].iter().rposition(|c| *c == '\n').map_or(0, |i| i + 1);
+    let prev: String = chars[start..at - 1].iter().collect();
+    let (len, n) = list_marker(&prev)?;
+    if prev.len() == len {
+        // An empty item: Enter ends the list there.
+        let out: String = chars[..start].iter().chain(chars[at..].iter()).collect();
+        return Some((out, start));
+    }
+    let marker = n.map_or("• ".to_string(), |n| format!("{}. ", n + 1));
+    let out: String = chars[..at].iter().copied().chain(marker.chars()).chain(chars[at..].iter().copied()).collect();
+    Some((out, at + marker.chars().count()))
+}
+
 pub fn show_author(s: &Sticky) -> bool {
     s.author.as_ref().is_some_and(|a| !a.is_empty()) && !s.hide_author
 }
@@ -405,6 +455,20 @@ pub fn glyph_path(face: usize, glyph: u16) -> Rc<Path> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lists_toggle_and_carry_on() {
+        use super::{continue_list, toggle_list};
+        assert_eq!(toggle_list("pane\nlatte", false), "• pane\n• latte");
+        assert_eq!(toggle_list("• pane\n• latte", false), "pane\nlatte");
+        assert_eq!(toggle_list("• pane\nlatte", true), "1. pane\n2. latte");
+        // Enter after an item starts the next one, numbers counting up.
+        assert_eq!(continue_list("• pane\n", 7), Some(("• pane\n• ".into(), 9)));
+        assert_eq!(continue_list("9. uova\n", 8), Some(("9. uova\n10. ".into(), 12)));
+        // Enter on an empty item ends the list.
+        assert_eq!(continue_list("• pane\n• \n", 10), Some(("• pane\n".into(), 7)));
+        assert_eq!(continue_list("pane\n", 5), None);
+    }
+
     use super::*;
 
     #[test]

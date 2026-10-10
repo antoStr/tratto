@@ -1198,7 +1198,7 @@ impl Editor {
     pub(crate) fn start_text(&mut self, p: Pt) {
         let t = self.prefs.text.clone();
         let font_size = self.world_size(t.font_size);
-        let mut el = self.base(El::new(Kind::Text(Text { text: String::new(), color: t.color, font_size, font: t.font, align: Align::Left, bold: false, italic: false, fixed_width: false })));
+        let mut el = self.base(El::new(Kind::Text(Text { text: String::new(), color: t.color, font_size, font: t.font, align: Align::Left, bold: false, italic: false, fixed_width: false, strike: false })));
         (el.x, el.y, el.w, el.h) = (p.x, p.y - font_size * LINE_HEIGHT / 2.0, font_size / 6.0, font_size * LINE_HEIGHT);
         self.board.stop_capturing();
         let id = el.id.clone();
@@ -1562,7 +1562,7 @@ impl Editor {
         let long = text.chars().count() > 80;
         let f = text::font(t.font, false, false).face;
         let layout = text::layout_text(&text, f, font_size, long.then_some(640.0 / self.cam.z));
-        let mut el = self.base(El::new(Kind::Text(Text { text, color: t.color, font_size, font: t.font, align: Align::Left, bold: false, italic: false, fixed_width: long })));
+        let mut el = self.base(El::new(Kind::Text(Text { text, color: t.color, font_size, font: t.font, align: Align::Left, bold: false, italic: false, fixed_width: long, strike: false })));
         (el.x, el.y, el.w, el.h) = (c.x - layout.width / 2.0, c.y - layout.height / 2.0, layout.width, layout.height);
         self.board.stop_capturing();
         self.selection = vec![el.id.clone()];

@@ -352,6 +352,44 @@ fn controls(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], t: &Theme) {
                 }
             }
             if types.iter().all(|k| *k == "text" || *k == "sticky") {
+                // Lists and strikethrough, as in FigJam's text.
+                let body = |e: &El| e.text().map(|x| x.text.clone()).or_else(|| e.sticky().map(|s| s.text.clone())).unwrap_or_default();
+                for (numbered, name, label) in [(false, "list", "Elenco puntato"), (true, "list-ordered", "Elenco numerato")] {
+                    let on = els.iter().all(|e| {
+                        let b = body(e);
+                        !b.is_empty() && crate::text::toggle_list(&b, numbered).len() < b.len()
+                    });
+                    if ui::icon_button(ui, name, label, None, vec2(B, B), 16.0, on, false).clicked() {
+                        ed.board.update(&ids, |el| {
+                            match &mut el.kind {
+                                Kind::Text(x) => x.text = crate::text::toggle_list(&x.text, numbered),
+                                Kind::Sticky(s) => s.text = crate::text::toggle_list(&s.text, numbered),
+                                _ => {}
+                            }
+                            crate::text::fit_text(el);
+                        });
+                    }
+                }
+                if only("text") {
+                    let strike = els.iter().all(|e| e.text().is_some_and(|x| x.strike));
+                    if ui::icon_button(ui, "strikethrough", "Barrato", None, vec2(B, B), 16.0, strike, false).clicked() {
+                        ed.board.update(&ids, |el| {
+                            if let Kind::Text(x) = &mut el.kind {
+                                x.strike = !strike;
+                            }
+                        });
+                    }
+                }
+                if only("sticky") {
+                    let wide = els.iter().all(|e| e.w > e.h * 1.5);
+                    if ui::icon_button(ui, "rectangle-horizontal", if wide { "Nota quadrata" } else { "Nota larga" }, None, vec2(B, B), 16.0, wide, false).clicked() {
+                        ed.board.update(&ids, |el| {
+                            let cx = el.x + el.w / 2.0;
+                            el.w = if wide { el.h } else { el.h * 2.0 };
+                            el.x = cx - el.w / 2.0;
+                        });
+                    }
+                }
                 let align = same(els, |e| e.text().map(|x| x.align).or_else(|| e.sticky().map(|s| s.align))).unwrap_or_default();
                 let (next, name) = match align {
                     Align::Left => (Align::Center, "text-align-start"),

@@ -716,9 +716,22 @@ impl BoardScreen {
                 job.wrap.max_width = if wrap { wrap_width } else { f32::INFINITY };
                 ui.fonts_mut(|f| f.layout_job(job))
             };
-            let resp = ui.add(edit.layouter(&mut layouter));
-            if resp.changed() {
+            let out = edit.layouter(&mut layouter).show(ui);
+            if out.response.changed() {
                 changed = true;
+                // Lists carry on with Enter (and end on an empty item), as in FigJam.
+                if !single
+                    && !is_table
+                    && code.is_none()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    && let Some(at) = out.cursor_range.map(|r| r.primary.index.0)
+                    && let Some((text, cursor)) = crate::text::continue_list(&self.ui.text, at)
+                {
+                    self.ui.text = text;
+                    let mut state = out.state.clone();
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(cursor))));
+                    state.store(ui.ctx(), Id::new("board-text"));
+                }
             }
             let (esc, ctrl_enter, enter) = ui.input(|i| (i.key_pressed(egui::Key::Escape), i.modifiers.command && i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Enter)));
             if esc || ctrl_enter || (single && enter) {
