@@ -69,7 +69,9 @@ pub fn shape_icon(ui: &Ui, tool: ShapeTool, c: Pos2, size: f32, color: Color32) 
             if let Some(poly) = crate::geom::shape_polygon(k, w, h, None) {
                 ui.painter().add(egui::Shape::closed_line(at(&poly), st));
             }
-            for d in crate::geom::shape_details(k, w, h) {
+            // Bars a little further in than on the board, or the icon reads as a thick frame.
+            let details = if k == ShapeKind::Process { vec![vec![4.5, 0.0, 4.5, h], vec![w - 4.5, 0.0, w - 4.5, h]] } else { crate::geom::shape_details(k, w, h) };
+            for d in details {
                 ui.painter().add(egui::Shape::line(at(&d), st));
             }
             return;
@@ -304,6 +306,7 @@ pub fn toolbar(ctx: &egui::Context, stage: Rect, ed: &mut Editor, st: &mut Board
         ui.painter().set(under, contact.as_shape(card.response.rect, egui::CornerRadius::same(16)));
     });
     let bar = resp.response.rect;
+    ctx.data_mut(|d| d.insert_temp(Id::new("toolbar-rect"), bar));
     if !ed.read_only {
         tray(ctx, bar, top, ed, &t);
     }
@@ -605,7 +608,13 @@ pub fn stamp_picker(ui: &mut Ui, value: Option<&str>) -> Option<String> {
 /// Bottom right, Whiteboard style: minimap on/off, zoom in, zoom level (menu), zoom out.
 pub fn view_controls(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     let t = ui::theme(ctx);
-    egui::Area::new(Id::new("view-controls")).pivot(egui::Align2::RIGHT_BOTTOM).fixed_pos(stage.max - vec2(16.0, 16.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+    // In the corner, unless the toolbar reaches it: then just above the toolbar, gliding there.
+    let bar = ctx.data(|d| d.get_temp::<Rect>(Id::new("toolbar-rect")));
+    let size = ctx.data(|d| d.get_temp::<egui::Vec2>(Id::new("view-controls-size"))).unwrap_or(vec2(40.0, 130.0));
+    let corner = stage.max - vec2(16.0, 16.0);
+    let clash = bar.is_some_and(|b| b.intersects(Rect::from_min_max(corner - size - vec2(8.0, 8.0), corner)));
+    let lift = ui::motion::spring(ctx, Id::new("view-controls-lift"), if clash { bar.map_or(0.0, |b| (corner.y - b.min.y + 12.0).max(0.0)) } else { 0.0 }, 0.3, 0.9);
+    let resp = egui::Area::new(Id::new("view-controls")).pivot(egui::Align2::RIGHT_BOTTOM).fixed_pos(corner - vec2(0.0, lift)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui::float_frame(&t).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
@@ -631,6 +640,7 @@ pub fn view_controls(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
             });
         });
     });
+    ctx.data_mut(|d| d.insert_temp(Id::new("view-controls-size"), resp.response.rect.size()));
 }
 
 /// Zoom menu entries, shared by the Design panel and the zoom controls.

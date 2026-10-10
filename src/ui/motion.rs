@@ -53,6 +53,19 @@ pub fn appear(ctx: &Context, id: Id, shown: bool) -> f32 {
     presence(ctx, id, shown)
 }
 
+/// Appears afresh whenever `key` changes (a new selection, a new element under the pointer).
+pub fn entering(ctx: &Context, slot: Id, key: impl std::hash::Hash) -> f32 {
+    use std::hash::Hasher;
+    let mut h = std::hash::DefaultHasher::new();
+    key.hash(&mut h);
+    let key = slot.with(h.finish());
+    if ctx.data(|d| d.get_temp::<Id>(slot.with("key"))) != Some(key) {
+        ctx.data_mut(|d| d.insert_temp(slot.with("key"), key));
+        reset(ctx, slot);
+    }
+    appear(ctx, slot, true)
+}
+
 /// Forgets a spring, so the next `appear` starts from nothing again.
 pub fn reset(ctx: &Context, id: Id) {
     ctx.data_mut(|d| d.remove::<Spring>(id));

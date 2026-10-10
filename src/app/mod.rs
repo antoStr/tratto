@@ -21,6 +21,7 @@ use crate::ui::{self, Theme};
 pub struct Toast {
     text: String,
     error: bool,
+    born: f64,
     until: f64,
 }
 
@@ -30,10 +31,12 @@ pub struct Toasts(Vec<Toast>);
 
 impl Toasts {
     pub fn info(&mut self, text: impl Into<String>) {
-        self.0.push(Toast { text: text.into(), error: false, until: crate::platform::now_ms() + 3500.0 });
+        let now = crate::platform::now_ms();
+        self.0.push(Toast { text: text.into(), error: false, born: now, until: now + 3500.0 });
     }
     pub fn error(&mut self, text: impl Into<String>) {
-        self.0.push(Toast { text: text.into(), error: true, until: crate::platform::now_ms() + 6000.0 });
+        let now = crate::platform::now_ms();
+        self.0.push(Toast { text: text.into(), error: true, born: now, until: now + 6000.0 });
     }
     pub fn show(&mut self, ctx: &egui::Context) {
         let now = crate::platform::now_ms();
@@ -41,10 +44,18 @@ impl Toasts {
         if self.0.is_empty() {
             return;
         }
-        ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
         let t = ui::theme(ctx);
-        egui::Area::new(Id::new("toasts")).anchor(egui::Align2::CENTER_BOTTOM, [0.0, -88.0]).order(egui::Order::Tooltip).interactable(false).show(ctx, |ui| {
-            for toast in self.0.iter().rev().take(3) {
+        // Each message rises in on a spring, the older ones glide up to make room, and it fades
+        // away at the end.
+        let mut y = 0.0;
+        for toast in self.0.iter().rev().take(3) {
+            let id = Id::new(("toast", toast.born.to_bits()));
+            let k = ui::motion::appear(ctx, id, true);
+            let out = ((toast.until - now) / 220.0).clamp(0.0, 1.0) as f32;
+            let lift = ui::motion::spring(ctx, id.with("y"), y, 0.32, 0.86);
+            let resp = egui::Area::new(id).anchor(egui::Align2::CENTER_BOTTOM, [0.0, -88.0 - lift + (1.0 - k.min(1.0)) * 16.0]).order(egui::Order::Tooltip).interactable(false).show(ctx, |ui| {
+                ui.set_opacity((k * out).clamp(0.0, 1.0));
                 ui::menu_frame(&t).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         if toast.error {
@@ -54,9 +65,9 @@ impl Toasts {
                         ui.label(RichText::new(&toast.text).color(t.menu_text));
                     });
                 });
-                ui.add_space(6.0);
-            }
-        });
+            });
+            y += resp.response.rect.height() + 6.0;
+        }
     }
 }
 
@@ -317,7 +328,7 @@ mod picture {
             }
             screen.as_mut().unwrap().ui(ui, &mut toasts, &mut dialogs);
         });
-        harness.run_steps(4);
+        harness.run_steps(40);
         harness.render().unwrap().save(path).unwrap();
     }
 }

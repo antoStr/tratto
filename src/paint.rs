@@ -222,11 +222,14 @@ pub struct Painter {
     /// Vertices and indices of the last frame: the next one reserves them at once instead of
     /// growing (and copying) a big buffer many times.
     pub last_len: (usize, usize),
+    /// Every element id seen so far, and when the new ones arrived: they pop in.
+    known: std::collections::HashSet<String>,
+    born: HashMap<String, f64>,
 }
 
 impl Painter {
     pub fn new(images: Images) -> Painter {
-        Painter { cache: HashMap::new(), erased: HashMap::new(), zoom_at: (0.0, 0.0), glyphs: HashMap::new(), fill: FillTessellator::new(), stroke: StrokeTessellator::new(), images, frame: 0, last_len: (0, 0) }
+        Painter { cache: HashMap::new(), erased: HashMap::new(), zoom_at: (0.0, 0.0), glyphs: HashMap::new(), fill: FillTessellator::new(), stroke: StrokeTessellator::new(), images, frame: 0, last_len: (0, 0), known: Default::default(), born: HashMap::new() }
     }
 
     /// Paints the elements that are on screen; returns whether any visible element is.
@@ -249,6 +252,20 @@ impl Painter {
             self.zoom_at = (z, now);
         }
         let settled = now - self.zoom_at.1 > 150.0;
+        // Things added after the board opened (here or by someone else) pop in, like in FigJam.
+        // Strokes and lines are left alone: they were already seen while being drawn.
+        for el in els {
+            if !self.known.contains(&el.id) {
+                self.known.insert(el.id.clone());
+                if self.frame > 2 && !matches!(el.kind, Kind::Ink(_) | Kind::Highlighter(_) | Kind::Line(_) | Kind::Comment { .. }) {
+                    self.born.insert(el.id.clone(), now);
+                }
+            }
+        }
+        if !self.born.is_empty() {
+            self.born.retain(|_, t| now - *t < POP_MS);
+            ctx.request_repaint();
+        }
         for el in els {
             if el.hidden || !intersects(&aabb(el), &f.view) {
                 continue;
@@ -276,12 +293,21 @@ impl Painter {
             };
             // screen = (o + v) · z + cam + origin, computed in f64 so far-away boards stay exact.
             let (ax, ay) = (built.ox * z + f.cam.x + f.origin.x as f64, built.oy * z + f.cam.y + f.origin.y as f64);
-            let place = |p: [f32; 2]| pos2((p[0] as f64 * z + ax) as f32, (p[1] as f64 * z + ay) as f32);
+            // Popping in: a quick grow with a little overshoot, and a fade, about its centre.
+            let (k, fade) = self.born.get(&el.id).map_or((1.0, 1.0), |t| {
+                let t = ((now - t) / POP_MS).clamp(0.0, 1.0) as f32;
+                (0.86 + 0.14 * egui::emath::easing::back_out(t), egui::emath::easing::cubic_out((t / 0.6).min(1.0)))
+            });
+            let (cx, cy) = ((el.x + el.w / 2.0 - built.ox) * z + ax, (el.y + el.h / 2.0 - built.oy) * z + ay);
+            let place = |p: [f32; 2]| {
+                let (x, y) = (p[0] as f64 * z + ax, p[1] as f64 * z + ay);
+                if k == 1.0 { pos2(x as f32, y as f32) } else { pos2((cx + (x - cx) * k as f64) as f32, (cy + (y - cy) * k as f64) as f32) }
+            };
             for part in &built.parts {
                 match &part.image {
                     None => {
                         let base = mesh.vertices.len() as u32;
-                        mesh.vertices.extend(part.pos.iter().zip(&part.col).map(|(&p, &c)| Vertex { pos: place(p), uv: WHITE_UV, color: c }));
+                        mesh.vertices.extend(part.pos.iter().zip(&part.col).map(|(&p, &c)| Vertex { pos: place(p), uv: WHITE_UV, color: if fade < 1.0 { c.gamma_multiply(fade) } else { c } }));
                         mesh.indices.extend(part.idx.iter().map(|i| i + base));
                         len = (len.0 + part.pos.len(), len.1 + part.idx.len());
                     }
@@ -317,6 +343,8 @@ impl Painter {
             let now = self.frame;
             self.cache.retain(|_, e| now - e.used < 600);
             self.erased.retain(|_, e| now - e.used < 600);
+            let present: std::collections::HashSet<&str> = els.iter().map(|e| e.id.as_str()).collect();
+            self.known.retain(|id| present.contains(id.as_str()));
         }
         if !settled && self.erased.values().any(|e| e.zoom != z) {
             ctx.request_repaint_after(std::time::Duration::from_millis(160));
@@ -488,6 +516,9 @@ impl Painter {
         self.cache.clear();
     }
 }
+
+/// How long something new takes to pop in.
+const POP_MS: f64 = 320.0;
 
 /// Curves are flattened to within a third of a device pixel at the deepest zoom of the level.
 fn tolerance(bucket: i32, ppp: f32) -> f32 {

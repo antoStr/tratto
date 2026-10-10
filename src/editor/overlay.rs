@@ -116,7 +116,8 @@ impl Editor {
             }
         }
 
-        // Hover outline (Figma style).
+        // Hover outline (Figma style), fading in.
+        let ctx = painter.ctx().clone();
         let g = &self.gesture;
         let quiet = g.is_none();
         if let Some(h) = &self.hover
@@ -124,8 +125,13 @@ impl Editor {
             && !self.selection.contains(h)
             && let Some(el) = self.current(h)
         {
-            self.outline_el(&mut out, &el, accent, if quiet { 1.5 } else { 2.0 });
+            let a = crate::ui::motion::entering(&ctx, egui::Id::new("hover-outline"), h).clamp(0.0, 1.0);
+            self.outline_el(&mut out, &el, accent.gamma_multiply(a), if quiet { 1.5 } else { 2.0 });
         }
+        // A new selection: its frame fades in and the handles grow into place with a little give.
+        let ks = crate::ui::motion::entering(&ctx, egui::Id::new("selection-in"), &self.selection);
+        let k = k * (0.5 + 0.5 * ks);
+        let accent_in = accent.gamma_multiply(ks.clamp(0.0, 1.0));
 
         // Selection.
         let sel = self.selected();
@@ -142,7 +148,7 @@ impl Editor {
                 && !single_line
             {
                 let pts: Vec<Pos2> = corners_of(b, rot, 0.0).iter().map(|p| self.sp(p.x, p.y)).collect();
-                out.push(Shape::closed_line(pts, Stroke::new(1.0, accent)));
+                out.push(Shape::closed_line(pts, Stroke::new(1.0, accent_in)));
                 if let Some(&(_, r)) = handles.iter().find(|(h, _)| *h == Handle::Rot) {
                     // The knob hangs from the top edge, or from the top-right corner when the "+" take the top.
                     let from = if handles.iter().any(|(h, _)| *h == Handle::AddN) { Handle::Ne } else { Handle::N };
@@ -161,8 +167,8 @@ impl Editor {
                         if !quiet {
                             continue;
                         }
-                        // FigJam's "+": a filled dot that grows when the pointer is on it.
-                        let r = if self.hover_handle == Some(h) { 9.0 } else { 7.0 } * k;
+                        // FigJam's "+": a filled dot that grows on a spring when the pointer is on it.
+                        let r = crate::ui::motion::spring(&ctx, egui::Id::new(("add-handle", h as u8)), if self.hover_handle == Some(h) { 9.0 } else { 7.0 }, 0.25, 0.6) * k;
                         out.push(Shape::circle_filled(p, r, accent));
                         let st = Stroke::new(1.5, Color32::WHITE);
                         out.push(Shape::line_segment([p - vec2(r * 0.45, 0.0), p + vec2(r * 0.45, 0.0)], st));
@@ -310,11 +316,30 @@ impl Editor {
 
     /// Other people's cursors with their name, or what they are typing (cursor chat).
     fn cursor_shapes(&self, painter: &Painter, out: &mut Vec<Shape>) {
-        for (_, s) in &self.presence.peers {
+        let ctx = painter.ctx();
+        let dt = ctx.input(|i| i.stable_dt).clamp(0.0, 0.1) as f64;
+        for (key, s) in &self.presence.peers {
             let (Some(x), Some(y)) = (s["cursor"]["x"].as_f64(), s["cursor"]["y"].as_f64()) else { continue };
             if !x.is_finite() || !y.is_finite() {
                 continue;
             }
+            // Positions arrive a few times a second: the cursor glides to each one, as in Figma,
+            // in board units so it does not lag behind when you move the view.
+            let id = egui::Id::new(("peer-cursor", key));
+            let (x, y) = match ctx.data(|d| d.get_temp::<(f64, f64)>(id)) {
+                Some((px, py)) => {
+                    let k = 1.0 - (-dt / 0.07).exp();
+                    let (nx, ny) = (px + (x - px) * k, py + (y - py) * k);
+                    if (x - nx).hypot(y - ny) * self.cam.z < 0.3 {
+                        (x, y)
+                    } else {
+                        ctx.request_repaint();
+                        (nx, ny)
+                    }
+                }
+                None => (x, y),
+            };
+            ctx.data_mut(|d| d.insert_temp(id, (x, y)));
             let p = self.sp(x, y);
             let color = peer_color(s);
             let on = if is_dark(&hex(color)) { Color32::WHITE } else { DARK };
