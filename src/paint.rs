@@ -437,7 +437,7 @@ impl Painter {
                     let size = placed.k * text::faces()[placed.face].upem;
                     // Text a few pixels tall cannot be read: a faint bar per line shows it is there,
                     // for a handful of vertices instead of hundreds per word.
-                    if size * 0.33 / tol < 8.0 {
+                    if size * 0.33 / tol < 6.0 {
                         let faint = color.gamma_multiply(0.45);
                         let mut lines: Vec<(f32, f32, f32)> = Vec::new();
                         for &(_, gx, gy) in &placed.glyphs {

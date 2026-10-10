@@ -968,11 +968,14 @@ mod tests {
         let board = store.create("Prova condivisione", None).unwrap();
         let doc = Doc::new();
         let mut b = crate::doc::Board::new(doc.clone(), Arc::new(|| {}));
+        // TRATTO_TEMPLATE=meeting shares another template (by id).
+        let tpl = std::env::var("TRATTO_TEMPLATE").ok().and_then(|id| crate::templates::TEMPLATES.iter().find(|t| t.id == id)).unwrap_or(&crate::templates::TEMPLATES[0]);
         b.transact(|e| {
-            for el in (crate::templates::TEMPLATES[0].build)() {
+            for el in (tpl.build)() {
                 e.put(&el);
             }
         });
+        let mut votes = String::new();
         let tunnel = std::env::var("TRATTO_TUNNEL").is_ok().then(cloudflared);
         let share = Share::start(store, &board, "Prova condivisione", doc.clone(), Access::Edit, false, tunnel, Arc::new(|| {})).unwrap();
         let start = Instant::now();
@@ -1019,6 +1022,14 @@ mod tests {
                 }
             }
             b.refresh();
+            // Widget state, to see guests' clicks arrive.
+            let now: String = b.all().iter().filter_map(|e| e.widget()).map(|w| format!("{w:?}")).collect();
+            if now != votes {
+                if !votes.is_empty() {
+                    println!("WIDGETS {now}");
+                }
+                votes = now;
+            }
             if b.len() != seen {
                 println!("ELEMENTS {} (guests online: {})", b.len(), v.guests.iter().filter(|g| g.2).count());
                 seen = b.len();
