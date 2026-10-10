@@ -171,6 +171,7 @@ struct Built {
 struct Key {
     bucket: i32,
     editing: bool,
+    cell: Option<(usize, usize)>,
     /// Exact zoom, for elements that keep a size on screen (section titles, comment pins).
     zoom: u64,
     thin: bool,
@@ -192,6 +193,7 @@ pub struct Frame<'a> {
     pub view: BBox,
     pub pixels_per_point: f32,
     pub editing: Option<&'a str>,
+    pub editing_cell: Option<(usize, usize)>,
 }
 
 type GlyphMesh = Rc<(Vec<[f32; 2]>, Vec<u32>)>;
@@ -258,14 +260,15 @@ impl Painter {
                 continue;
             }
             let zoom_bound = matches!(el.kind, Kind::Section { .. } | Kind::Comment { .. });
-            let key = Key { bucket, editing: f.editing == Some(el.id.as_str()), zoom: if zoom_bound { z.to_bits() } else { 0 }, thin: el.ink().is_some_and(|i| i.size <= pixel) };
+            let editing = f.editing == Some(el.id.as_str());
+            let key = Key { bucket, editing, cell: if editing { f.editing_cell } else { None }, zoom: if zoom_bound { z.to_bits() } else { 0 }, thin: el.ink().is_some_and(|i| i.size <= pixel) };
             let built = match self.cache.get_mut(&el.id) {
                 Some(e) if Arc::ptr_eq(&e.el, el) && e.key == key => {
                     e.used = self.frame;
                     e.built.clone()
                 }
                 _ => {
-                    let env = Env { zoom: z, pixel: Some(pixel), hairline: false, editing: f.editing, comments: true };
+                    let env = Env { zoom: z, pixel: Some(pixel), hairline: false, editing: f.editing, comments: true, editing_cell: f.editing_cell };
                     let built = Rc::new(self.build(el, &env, tolerance(bucket, f.pixels_per_point)));
                     self.cache.insert(el.id.clone(), Entry { el: el.clone(), key, built: built.clone(), used: self.frame });
                     built
@@ -343,7 +346,7 @@ impl Painter {
             let (w, h) = ((want[2] - want[0]).min(4096.0), (want[3] - want[1]).min(4096.0));
             let area = [want[0], want[1], want[0] + w, want[1] + h];
             let t = tiny_skia::Transform::from_row(k as f32, 0.0, 0.0, k as f32, (-area[0]) as f32, (-area[1]) as f32);
-            let env = Env { zoom: z, pixel: Some(1.0 / k), hairline: false, editing: f.editing, comments: true };
+            let env = Env { zoom: z, pixel: Some(1.0 / k), hairline: false, editing: f.editing, comments: true, editing_cell: f.editing_cell };
             if let Some(mut pm) = tiny_skia::Pixmap::new(w as u32, h as u32) {
                 let images = &self.images;
                 crate::raster::draw_element(&mut pm, el, &env, t, &|key| images.pixmap(key));
@@ -808,6 +811,45 @@ pub mod picture {
         }).collect()
     }
 
+    /// Tables, code and widgets, to look at: `TRATTO_SHOT=out.png cargo test figjam_picture`.
+    #[test]
+    fn figjam_picture() {
+        use crate::model::*;
+        let Ok(path) = std::env::var("TRATTO_SHOT") else { return };
+        let mut els = Vec::new();
+        let mut add = |x: f64, y: f64, w: f64, kind: Kind| {
+            let mut el = El::new(kind);
+            (el.x, el.y, el.w) = (x, y, w);
+            crate::text::fit_text(&mut el);
+            el.z = els.len() as f64;
+            els.push(Arc::new(el));
+        };
+        let mut t = Table::new(3, 3);
+        for (i, s) in ["Attività", "Chi", "Quando", "Bozza", "Anna", "Lunedì", "Revisione con il gruppo di lavoro", "Marco", "Giovedì"].iter().enumerate() {
+            t.cells[i / 3][i % 3].text = s.to_string();
+        }
+        t.cells[2][2].fill = Some("#C9F2C7".into());
+        add(20.0, 20.0, 0.0, Kind::Table(t));
+        add(20.0, 250.0, 460.0, Kind::Code(Code { code: "// Somma dei primi n numeri\nfn somma(n: u64) -> u64 {\n    (1..=n).sum() // 1 + 2 + … + n\n}\n\nlet totale = somma(10);\nprintln!(\"{totale}\");".into(), language: "rust".into(), light: false, font_size: 14.0 }));
+        add(520.0, 20.0, 300.0, Kind::Widget(Widget::Poll { question: "Dove andiamo a pranzo?".into(), options: vec![PollOption { text: "Pizzeria".into(), votes: vec!["a".into(), "b".into()] }, PollOption { text: "Sushi".into(), votes: vec!["c".into()] }, PollOption { text: "Insalate".into(), votes: vec![] }] }));
+        add(520.0, 330.0, 300.0, Kind::Widget(Widget::Checklist { title: "Prima della riunione".into(), items: vec![CheckItem { text: "Preparare le slide".into(), done: true }, CheckItem { text: "Prenotare la sala".into(), done: false }, CheckItem { text: String::new(), done: false }] }));
+        add(860.0, 20.0, 220.0, Kind::Widget(Widget::Counter { label: "Idee raccolte".into(), value: 12 }));
+        add(860.0, 260.0, 300.0, Kind::Code(Code { code: "SELECT nome, COUNT(*)\nFROM idee\nWHERE voti > 3 -- le migliori\nGROUP BY nome;".into(), language: "sql".into(), light: true, font_size: 13.0 }));
+        let meta = BoardMeta::default();
+        let mut painter = Painter::new(Images::new(None));
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 620.0)).wgpu().build_ui(move |ui| {
+            let rect = ui.max_rect();
+            let cam = Camera { x: 0.0, y: 0.0, z: 1.0 };
+            let view = BBox { x: 0.0, y: 0.0, w: rect.width() as f64, h: rect.height() as f64 };
+            let mut shapes = Vec::new();
+            background(&mut shapes, rect, &cam, &meta, 1.0);
+            painter.paint(ui.ctx(), &mut shapes, &els, &Frame { cam, origin: rect.min, view, pixels_per_point: 1.0, editing: None, editing_cell: None });
+            ui.painter().extend(shapes);
+        });
+        harness.run();
+        harness.render().unwrap().save(path).unwrap();
+    }
+
     /// Draws the sample to an image to look at: `TRATTO_SHOT=out.png cargo test picture -- --nocapture`.
     #[test]
     fn sample_board_picture() {
@@ -822,7 +864,7 @@ pub mod picture {
             let view = BBox { x: -cam.x / cam.z, y: -cam.y / cam.z, w: rect.width() as f64 / cam.z, h: rect.height() as f64 / cam.z };
             let mut shapes = Vec::new();
             background(&mut shapes, rect, &cam, &meta, 1.0);
-            painter.paint(ui.ctx(), &mut shapes, &els, &Frame { cam, origin: rect.min, view, pixels_per_point: 1.0, editing: None });
+            painter.paint(ui.ctx(), &mut shapes, &els, &Frame { cam, origin: rect.min, view, pixels_per_point: 1.0, editing: None, editing_cell: None });
             ui.painter().extend(shapes);
         });
         harness.run();

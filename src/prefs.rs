@@ -149,6 +149,8 @@ pub struct Prefs {
     pub text_scale: f32,
     /// Background of new boards.
     pub new_board: BoardMeta,
+    /// Language of the next code block.
+    pub code_language: String,
 }
 
 pub const DEFAULT_ACCENT: &str = "#0D99FF";
@@ -184,6 +186,7 @@ impl Default for Prefs {
             focus: false,
             text_scale: 1.0,
             new_board: BoardMeta::default(),
+            code_language: "javascript".into(),
         }
     }
 }

@@ -211,6 +211,12 @@ pub fn text_layout(el: &El, t: &Text) -> Layout {
 
 /// Fits a text box to its text: a self-sizing box fits the text, a fixed-width one only grows taller.
 pub fn fit_text(el: &mut El) {
+    match &el.kind {
+        Kind::Table(_) => return crate::table::fit(el),
+        Kind::Code(_) => return crate::code::fit(el),
+        Kind::Widget(_) => return crate::widgets::fit(el),
+        _ => {}
+    }
     let Kind::Text(t) = &el.kind else { return };
     let l = text_layout(el, t);
     let (fixed, min_w) = (t.fixed_width, t.font_size / 6.0);

@@ -79,6 +79,62 @@ fn tool_button(ui: &mut Ui, ed: &mut Editor, tool: Tool, name: &str, label: &str
 }
 
 /// A bar of the colour the tool will use under its icon, like Office's font-colour button.
+/// FigJam's "+": code, widgets, pictures and templates, in a light card of big tiles.
+fn more_tools(ui: &mut Ui, ed: &mut Editor, t: &Theme, top: bool) {
+    let r = icon_button(ui, "plus", "Altri strumenti", None, vec2(BTN, BTN), ICON, false, false);
+    egui::Popup::menu(&r).frame(ui::float_frame(t).inner_margin(egui::Margin::same(8))).align(if top { egui::RectAlign::BOTTOM } else { egui::RectAlign::TOP }).gap(10.0).show(|ui| {
+        use crate::model::{CheckItem, PollOption, Widget};
+        ui.label(egui::RichText::new("Aggiungi").font(ui::medium(11.0)).color(t.text2));
+        ui.add_space(4.0);
+        let items: [(&str, &str, &str); 6] = [
+            ("code", "Blocco di codice", "Codice con i colori della sintassi"),
+            ("chart-column", "Sondaggio", "Ognuno vota un'opzione"),
+            ("list-checks", "Lista di cose da fare", "Caselle da spuntare insieme"),
+            ("hash", "Contatore", "Un numero con + e −"),
+            ("image-plus", "Immagine", "Dal computer"),
+            ("layout-template", "Modelli", "Brainstorming, Kanban e altri"),
+        ];
+        egui::Grid::new("more-tools").spacing(vec2(6.0, 6.0)).show(ui, |ui| {
+            for (i, (icon_name, label, hint)) in items.into_iter().enumerate() {
+                if tile(ui, icon_name, label, hint, t).clicked() {
+                    match i {
+                        0 => ed.insert_code(),
+                        1 => ed.insert_widget(Widget::Poll { question: String::new(), options: (1..=3).map(|n| PollOption { text: format!("Opzione {n}"), votes: Vec::new() }).collect() }),
+                        2 => ed.insert_widget(Widget::Checklist { title: String::new(), items: (0..3).map(|_| CheckItem { text: String::new(), done: false }).collect() }),
+                        3 => ed.insert_widget(Widget::Counter { label: String::new(), value: 0 }),
+                        4 => ed.requests.push(crate::editor::Request::InsertImage),
+                        _ => {
+                            ed.prefs.left_panel = true;
+                            ed.prefs.focus = false;
+                            ed.requests.push(crate::editor::Request::Templates);
+                        }
+                    }
+                }
+                if i % 2 == 1 {
+                    ui.end_row();
+                }
+            }
+        });
+    });
+}
+
+/// A big tile of the "+" card: icon on a tinted square, name and a line about it.
+fn tile(ui: &mut Ui, name: &str, label: &str, hint: &str, t: &Theme) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(vec2(216.0, 48.0), Sense::click());
+    let k = ui::motion::hover(ui.ctx(), resp.id, resp.hovered());
+    let s = ui::motion::press(ui.ctx(), resp.id, resp.is_pointer_button_down_on());
+    let r2 = Rect::from_center_size(r.center(), r.size() * s);
+    ui.painter().rect_filled(r2, 10.0, t.hover.gamma_multiply(k));
+    let sq = Rect::from_min_size(r2.min + vec2(6.0, 6.0), vec2(36.0, 36.0));
+    ui.painter().rect_filled(sq, 9.0, t.selected);
+    icon(ui, name, sq.center(), 18.0, if t.dark { Color32::WHITE } else { ui::mix(t.brand, 0.75, Color32::BLACK) });
+    ui.painter().text(pos2(sq.max.x + 10.0, r2.center().y - 7.0), egui::Align2::LEFT_CENTER, label, ui::medium(12.0), t.text);
+    ui.painter().text(pos2(sq.max.x + 10.0, r2.center().y + 8.0), egui::Align2::LEFT_CENTER, hint, egui::FontId::proportional(11.0), t.text2);
+    ui::focus_ring(ui, &resp, r);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    resp
+}
+
 /// FigJam's marker drawer: pen, highlighter and washi tape drawn as the real things, in the colour
 /// they will draw with. They peek out of the toolbar, rise a little under the pointer and stand
 /// up when chosen, on springs.
@@ -209,12 +265,11 @@ pub fn toolbar(ctx: &egui::Context, stage: Rect, ed: &mut Editor, st: &mut Board
                 tool_button(ui, ed, Tool::Line, "minus", "Linea", Some("L"));
                 tool_button(ui, ed, Tool::Text, "type", "Testo", Some("T"));
                 tool_button(ui, ed, Tool::Section, "square-dashed-top-solid", "Sezione", Some("Maiusc+S"));
+                tool_button(ui, ed, Tool::Table, "table", "Tabella", None);
                 sep(ui, &t);
                 tool_button(ui, ed, Tool::Stamp, "smile", "Reazioni", None);
                 tool_button(ui, ed, Tool::Comment, "message-circle", "Commento", Some("C"));
-                if icon_button(ui, "image-plus", "Inserisci immagine", Some("I"), vec2(BTN, BTN), ICON, false, false).clicked() {
-                    ed.requests.push(crate::editor::Request::InsertImage);
-                }
+                more_tools(ui, ed, &t, top);
                 sep(ui, &t);
                 laser_button(ui, ed);
             });
@@ -629,7 +684,7 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
         let (w, h) = ((mw * ppp) as u32, (mh * ppp) as u32);
         let b = BBox { x: -fit.x / fit.k, y: -fit.y / fit.k, w: mw / fit.k, h: mh / fit.k };
         let els = ed.board.paint_order().to_vec();
-        let env = crate::prims::Env { zoom: fit.k, pixel: Some(1.0 / (fit.k * ppp)), hairline: true, editing: None, comments: false };
+        let env = crate::prims::Env { zoom: fit.k, pixel: Some(1.0 / (fit.k * ppp)), hairline: true, editing: None, comments: false, editing_cell: None };
         let bg = crate::model::color_or(&ed.board.meta().background, Color32::from_gray(0xF5));
         let images = &ed.painter.images;
         if let Some(pm) = crate::raster::render(&els, Some(bg), w, h, b, &env, &|k| images.pixmap(k)) {

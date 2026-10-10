@@ -40,6 +40,7 @@ pub enum Tool {
     Section,
     Tape,
     Comment,
+    Table,
 }
 
 /// Selection handles. `Add*` are FigJam's "+" beside a shape or sticky: click for a connected
@@ -145,6 +146,8 @@ pub fn peer_color(s: &Value) -> Color32 {
 /// Things the board asks of the UI around it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
+    /// Show the templates in the left panel.
+    Templates,
     /// Context menu at a screen position.
     Menu(Pos2),
     Export { selection: bool },
@@ -213,6 +216,8 @@ pub struct Editor {
     pub selection: Vec<String>,
     /// Element whose text is being typed.
     pub editing: Option<String>,
+    /// For a table: the cell being typed in.
+    pub editing_cell: Option<(usize, usize)>,
     /// Comment whose thread is open.
     pub comment: Option<String>,
     pub read_only: bool,
@@ -239,6 +244,8 @@ pub struct Editor {
     /// times a second.
     pub(crate) preview: HashMap<String, Arc<El>>,
     pub(crate) hover: Option<String>,
+    /// The pointer is over something clickable in a widget.
+    pub(crate) hot: bool,
     pub(crate) hover_handle: Option<Handle>,
     pub(crate) space: bool,
     pub(crate) eraser_at: Option<Pos2>,
@@ -284,7 +291,7 @@ fn votable(el: &El) -> bool {
 
 /// Elements with text to type into: text, stickies, shapes, section titles.
 pub fn writable(el: &El) -> bool {
-    !el.locked && matches!(el.kind, Kind::Text(_) | Kind::Sticky(_) | Kind::Shape(_) | Kind::Section { .. })
+    !el.locked && matches!(el.kind, Kind::Text(_) | Kind::Sticky(_) | Kind::Shape(_) | Kind::Section { .. } | Kind::Table(_) | Kind::Code(_))
 }
 
 impl Editor {
@@ -300,6 +307,7 @@ impl Editor {
             pen: 0,
             selection: Vec::new(),
             editing: None,
+            editing_cell: None,
             comment: None,
             read_only: false,
             following: None,
@@ -315,6 +323,7 @@ impl Editor {
             gesture: None,
             preview: HashMap::new(),
             hover: None,
+            hot: false,
             hover_handle: None,
             space: false,
             eraser_at: None,
@@ -1817,14 +1826,115 @@ impl Editor {
             Kind::Sticky(s) => s.text = value.chars().take(4000).collect(),
             Kind::Shape(s) => s.text = Some(value.chars().take(4000).collect()),
             Kind::Section { .. } => next.name = Some(value.chars().take(80).collect()),
+            Kind::Code(c) => c.code = value.chars().take(100_000).collect(),
+            Kind::Table(t) => {
+                let (r, c) = self.editing_cell.unwrap_or((0, 0));
+                let Some(cell) = t.cells.get_mut(r).and_then(|row| row.get_mut(c)) else { return };
+                cell.text = value.chars().take(10_000).collect();
+            }
             _ => return,
         }
         text::fit_text(&mut next);
         self.board.put([next]);
     }
 
+    /// Starts typing in an element; for a table, in the cell under `p` (or the first one).
+    pub fn edit_at(&mut self, el: &El, p: Option<Pt>) {
+        self.editing_cell = el.table().map(|t| p.and_then(|p| {
+            let l = to_local(el, p.x, p.y);
+            t.cell_at(l.x, l.y)
+        }).unwrap_or((0, 0)));
+        self.editing = Some(el.id.clone());
+    }
+
+    /// Moves the text box to the next (or previous) cell of the table being typed in.
+    pub fn next_cell(&mut self, back: bool) {
+        let (Some(id), Some((r, c))) = (self.editing.clone(), self.editing_cell) else { return };
+        let Some(t) = self.board.get(&id).and_then(|e| e.table().cloned()) else { return };
+        let (rows, cols) = (t.rows.len(), t.cols.len());
+        let i = r * cols + c;
+        let n = if back { i.checked_sub(1) } else { Some(i + 1) };
+        match n {
+            Some(n) if n < rows * cols => self.editing_cell = Some((n / cols, n % cols)),
+            // Tab in the last cell adds a row, like FigJam.
+            Some(_) if !back => {
+                self.board.update(&[id], |el| {
+                    if let Kind::Table(t) = &mut el.kind {
+                        t.insert_row(rows);
+                    }
+                    text::fit_text(el);
+                });
+                self.editing_cell = Some((rows, 0));
+            }
+            _ => {}
+        }
+    }
+
+    /// Puts a new element in the middle of the view (or at `p`), selected.
+    fn insert_here(&mut self, el: El, p: Option<Pt>, edit: bool) {
+        let mut el = self.base(el);
+        text::fit_text(&mut el);
+        let c = p.unwrap_or_else(|| self.viewport_center());
+        (el.x, el.y) = (c.x - el.w / 2.0, c.y - el.h / 2.0);
+        self.board.stop_capturing();
+        let id = el.id.clone();
+        self.board.put([el.clone()]);
+        self.board.stop_capturing();
+        self.set_tool(Tool::Select);
+        self.selection = vec![id];
+        if edit {
+            self.edit_at(&el, None);
+        }
+    }
+
+    /// A 3 × 3 table sized for the current zoom, its first row a header.
+    pub fn insert_table(&mut self, p: Option<Pt>) {
+        let k = self.world_size(1.0);
+        let mut t = Table::new(3, 3);
+        t.font_size *= k;
+        t.cols.iter_mut().for_each(|c| *c *= k);
+        self.insert_here(El::new(Kind::Table(t)), p, false);
+    }
+
+    pub fn insert_code(&mut self) {
+        let k = self.world_size(1.0);
+        let mut el = El::new(Kind::Code(Code { code: String::new(), language: self.prefs.code_language.clone(), light: false, font_size: 14.0 * k }));
+        el.w = 520.0 * k;
+        self.insert_here(el, None, true);
+    }
+
+    pub fn insert_widget(&mut self, w: Widget) {
+        let mut el = El::new(Kind::Widget(w));
+        el.w = WIDGET_W;
+        self.insert_here(el, None, false);
+        // Its texts are edited in the side panel.
+        self.prefs.right_panel = true;
+        self.prefs.focus = false;
+    }
+
+    /// A click on a widget's button, box or option: does what it says.
+    pub(crate) fn try_widget(&mut self, p: Pt) -> bool {
+        if self.read_only {
+            return false;
+        }
+        let Some(hit) = self.hit_element(p, 2.0).filter(|e| e.widget().is_some()) else { return false };
+        let l = to_local(&hit, p.x, p.y);
+        let Some(hot) = crate::widgets::hot_at(&hit, l.x, l.y) else { return false };
+        let voter = self.voter.clone();
+        self.board.stop_capturing();
+        self.board.update(&[hit.id.clone()], |el| {
+            if let Kind::Widget(w) = &mut el.kind {
+                crate::widgets::press(w, hot, &voter);
+            }
+            text::fit_text(el);
+        });
+        self.board.stop_capturing();
+        true
+    }
+
     /// Leaves the text being edited; an empty new text box goes away.
     pub fn stop_editing(&mut self) {
+        self.editing_cell = None;
         let Some(id) = self.editing.take() else { return };
         self.board.stop_capturing();
         if let Some(el) = self.board.get(&id)

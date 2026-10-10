@@ -284,6 +284,9 @@ impl Editor {
         if self.try_vote(p, m.shift || m.alt) {
             return;
         }
+        if tool == Tool::Select && self.try_widget(p) {
+            return;
+        }
 
         match tool {
             Tool::Select | Tool::Lasso => {
@@ -362,6 +365,7 @@ impl Editor {
                 return;
             }
             Tool::Sticky => return self.start_sticky(p),
+            Tool::Table => return self.insert_table(Some(p)),
             Tool::Stamp => {
                 // Clicking an existing element picks it up instead of stacking another stamp on it.
                 if let Some(hit) = self.hit_element(p, 6.0) {
@@ -400,9 +404,14 @@ impl Editor {
         let Some(g) = &mut self.gesture else {
             if self.input.kind != Some(PointerKind::Touch) || !self.input.down {
                 let h = if matches!(self.tool, Tool::Select | Tool::Lasso) { self.hit_handle(s, self.input.kind == Some(PointerKind::Pen)) } else { None };
-                let hov = if self.tool == Tool::Select && h.is_none() { self.hit_element(p, 4.0).map(|e| e.id.clone()) } else { None };
+                let hit = if self.tool == Tool::Select && h.is_none() { self.hit_element(p, 4.0) } else { None };
+                self.hot = !self.read_only
+                    && hit.as_ref().is_some_and(|e| {
+                        let l = crate::geom::to_local(e, p.x, p.y);
+                        crate::widgets::hot_at(e, l.x, l.y).is_some()
+                    });
                 self.hover_handle = h;
-                self.hover = hov;
+                self.hover = hit.map(|e| e.id.clone());
             }
             return;
         };
@@ -605,7 +614,12 @@ impl Editor {
         if let Some(hit) = self.hit_element(p, 6.0).filter(|e| writable(e)) {
             self.set_tool_keep(Tool::Select);
             self.selection = vec![hit.id.clone()];
-            self.editing = Some(hit.id.clone());
+            self.edit_at(&hit, Some(p));
+        } else if let Some(hit) = self.hit_element(p, 6.0).filter(|e| e.widget().is_some() && !e.locked) {
+            // Widgets are written in the side panel.
+            self.selection = vec![hit.id.clone()];
+            self.prefs.right_panel = true;
+            self.prefs.focus = false;
         }
     }
 
@@ -725,7 +739,7 @@ impl Editor {
                     if el.is_comment() {
                         self.comment = Some(el.id.clone());
                     } else if writable(&el) {
-                        self.editing = Some(el.id.clone());
+                        self.edit_at(&el, None);
                     }
                 }
                 return;
@@ -811,6 +825,9 @@ impl Editor {
         if self.space || self.tool == Tool::Hand {
             return CursorIcon::Grab;
         }
+        if self.hot && self.tool == Tool::Select {
+            return CursorIcon::PointingHand;
+        }
         if let Some(h) = self.hover_handle {
             return match h {
                 Handle::N | Handle::S => CursorIcon::ResizeVertical,
@@ -823,7 +840,7 @@ impl Editor {
             };
         }
         match self.tool {
-            Tool::Pen | Tool::Highlighter | Tool::Shape | Tool::Line | Tool::Arrow | Tool::Lasso | Tool::Laser | Tool::Stamp | Tool::Sticky | Tool::Section | Tool::Tape => CursorIcon::Crosshair,
+            Tool::Pen | Tool::Highlighter | Tool::Shape | Tool::Line | Tool::Arrow | Tool::Lasso | Tool::Laser | Tool::Stamp | Tool::Sticky | Tool::Section | Tool::Tape | Tool::Table => CursorIcon::Crosshair,
             Tool::Comment => CursorIcon::Cell,
             Tool::Eraser => CursorIcon::None,
             Tool::Text => CursorIcon::Text,

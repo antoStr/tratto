@@ -357,6 +357,23 @@ pub fn scale_element(el: &El, from: BBox, to: BBox) -> El {
             next.x = ncx - s / 2.0;
             next.y = ncy - s / 2.0;
         }
+        // Tables widen their columns; code and widgets take the new width; all of them then
+        // grow or shrink in height to fit what they hold.
+        Kind::Table(t) => {
+            let k = if el.w > 0.01 { w / el.w } else { 1.0 };
+            for c in &mut t.cols {
+                *c = (*c * k).max(24.0);
+            }
+            crate::text::fit_text(&mut next);
+            next.y = ncy - next.h / 2.0;
+            next.x = ncx - next.w / 2.0;
+        }
+        Kind::Code(_) | Kind::Widget(_) => {
+            next.w = w.max(160.0);
+            crate::text::fit_text(&mut next);
+            next.y = ncy - next.h / 2.0;
+            next.x = ncx - next.w / 2.0;
+        }
         _ => {}
     }
     if !el.erase.is_empty() {

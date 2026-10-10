@@ -2,6 +2,7 @@
 
 mod app;
 mod assets;
+mod code;
 mod doc;
 mod editor;
 mod export;
@@ -19,11 +20,13 @@ mod raster;
 mod share;
 #[cfg(not(target_arch = "wasm32"))]
 mod store;
+mod table;
 mod templates;
 mod text;
 mod ui;
 #[cfg(not(target_arch = "wasm32"))]
 mod updates;
+mod widgets;
 #[cfg(target_arch = "wasm32")]
 mod guest;
 

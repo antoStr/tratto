@@ -154,6 +154,140 @@ pub struct Sticky {
     pub hide_author: bool,
 }
 
+/// A table: rows × columns of text cells. `cols` are the column widths; `rows` the row heights,
+/// which grow to fit their tallest cell. The element's size is their sum.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Table {
+    pub cols: Vec<f64>,
+    pub rows: Vec<f64>,
+    /// `cells[row][col]`.
+    pub cells: Vec<Vec<Cell>>,
+    /// First row in bold on a tinted background.
+    #[serde(default)]
+    pub header: bool,
+    #[serde(default)]
+    pub font: FontKind,
+    #[serde(default = "cell_font_size")]
+    pub font_size: f64,
+}
+
+fn cell_font_size() -> f64 {
+    16.0
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Cell {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<String>,
+}
+
+pub const TABLE_ROW: f64 = 44.0;
+pub const TABLE_COL: f64 = 160.0;
+pub const CELL_PAD: f64 = 10.0;
+
+impl Table {
+    pub fn new(rows: usize, cols: usize) -> Table {
+        Table { cols: vec![TABLE_COL; cols], rows: vec![TABLE_ROW; rows], cells: vec![vec![Cell::default(); cols]; rows], header: true, font: FontKind::Sans, font_size: cell_font_size() }
+    }
+    /// Left edge of each column and top edge of each row, plus the far edge.
+    pub fn col_edges(&self) -> Vec<f64> {
+        std::iter::once(0.0).chain(self.cols.iter().scan(0.0, |x, w| {
+            *x += w;
+            Some(*x)
+        })).collect()
+    }
+    pub fn row_edges(&self) -> Vec<f64> {
+        std::iter::once(0.0).chain(self.rows.iter().scan(0.0, |y, h| {
+            *y += h;
+            Some(*y)
+        })).collect()
+    }
+    /// Cell under a point in the table's own coordinates.
+    pub fn cell_at(&self, x: f64, y: f64) -> Option<(usize, usize)> {
+        let c = self.col_edges().windows(2).position(|e| x >= e[0] && x < e[1])?;
+        let r = self.row_edges().windows(2).position(|e| y >= e[0] && y < e[1])?;
+        Some((r, c))
+    }
+    pub fn insert_row(&mut self, at: usize) {
+        let at = at.min(self.rows.len());
+        self.rows.insert(at, TABLE_ROW);
+        self.cells.insert(at, vec![Cell::default(); self.cols.len()]);
+    }
+    pub fn insert_col(&mut self, at: usize) {
+        let at = at.min(self.cols.len());
+        self.cols.insert(at, TABLE_COL);
+        for row in &mut self.cells {
+            row.insert(at.min(row.len()), Cell::default());
+        }
+    }
+    pub fn remove_row(&mut self, at: usize) {
+        if self.rows.len() > 1 && at < self.rows.len() {
+            self.rows.remove(at);
+            self.cells.remove(at);
+        }
+    }
+    pub fn remove_col(&mut self, at: usize) {
+        if self.cols.len() > 1 && at < self.cols.len() {
+            self.cols.remove(at);
+            for row in &mut self.cells {
+                if at < row.len() {
+                    row.remove(at);
+                }
+            }
+        }
+    }
+}
+
+/// A block of code, in a monospaced font with its syntax coloured.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Code {
+    pub code: String,
+    /// One of `crate::code::LANGUAGES` (empty: plain text).
+    #[serde(default)]
+    pub language: String,
+    #[serde(default)]
+    pub light: bool,
+    #[serde(default = "code_font_size")]
+    pub font_size: f64,
+}
+
+fn code_font_size() -> f64 {
+    14.0
+}
+
+/// FigJam-style widgets: small interactive tools living on the board.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "widget", rename_all = "camelCase")]
+pub enum Widget {
+    /// Everyone votes for one option (voters are device ids).
+    Poll { question: String, options: Vec<PollOption> },
+    Checklist { title: String, items: Vec<CheckItem> },
+    Counter { label: String, value: i64 },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PollOption {
+    pub text: String,
+    #[serde(default)]
+    pub votes: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckItem {
+    pub text: String,
+    #[serde(default)]
+    pub done: bool,
+}
+
+pub const WIDGET_W: f64 = 320.0;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Kind {
@@ -170,6 +304,9 @@ pub enum Kind {
     Section { fill: String },
     /// A comment pin: its point is (x, y); w and h are 0.
     Comment { thread: Vec<CommentMsg> },
+    Table(Table),
+    Code(Code),
+    Widget(Widget),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -222,6 +359,9 @@ impl El {
             Kind::Stamp { .. } => "stamp",
             Kind::Section { .. } => "section",
             Kind::Comment { .. } => "comment",
+            Kind::Table(_) => "table",
+            Kind::Code(_) => "code",
+            Kind::Widget(_) => "widget",
         }
     }
 
@@ -267,6 +407,24 @@ impl El {
             _ => None,
         }
     }
+    pub fn table(&self) -> Option<&Table> {
+        match &self.kind {
+            Kind::Table(t) => Some(t),
+            _ => None,
+        }
+    }
+    pub fn code(&self) -> Option<&Code> {
+        match &self.kind {
+            Kind::Code(c) => Some(c),
+            _ => None,
+        }
+    }
+    pub fn widget(&self) -> Option<&Widget> {
+        match &self.kind {
+            Kind::Widget(w) => Some(w),
+            _ => None,
+        }
+    }
     pub fn is_ink(&self) -> bool {
         matches!(self.kind, Kind::Ink(_) | Kind::Highlighter(_))
     }
@@ -309,6 +467,22 @@ impl El {
             Kind::Section { .. } => true,
             Kind::Image { file_id } => valid_file_id(file_id),
             Kind::Stamp { emoji } => emoji.len() <= 16,
+            Kind::Table(t) => {
+                let cells = t.rows.len() * t.cols.len();
+                (1..=200).contains(&t.rows.len())
+                    && (1..=50).contains(&t.cols.len())
+                    && t.cells.len() == t.rows.len()
+                    && t.cells.iter().all(|r| r.len() == t.cols.len() && r.iter().all(|c| c.text.len() <= 20_000 && c.fill.as_ref().is_none_or(|f| f.len() <= 32)))
+                    && cells <= 5000
+                    && t.cols.iter().chain(&t.rows).all(|v| v.is_finite() && *v > 0.0)
+                    && num(t.font_size)
+            }
+            Kind::Code(c) => c.code.len() < 200_000 && c.language.len() <= 32 && num(c.font_size),
+            Kind::Widget(w) => match w {
+                Widget::Poll { question, options } => question.len() <= 1000 && options.len() <= 50 && options.iter().all(|o| o.text.len() <= 1000 && o.votes.len() <= 1000 && o.votes.iter().all(|v| v.len() <= 64)),
+                Widget::Checklist { title, items } => title.len() <= 1000 && items.len() <= 200 && items.iter().all(|i| i.text.len() <= 2000),
+                Widget::Counter { label, .. } => label.len() <= 1000,
+            },
         }
     }
 }

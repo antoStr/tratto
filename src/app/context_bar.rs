@@ -136,6 +136,97 @@ fn controls(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], t: &Theme) {
                 });
             }
         }
+        if only("table") {
+            gap(ui, &mut sep);
+            let one = els.len() == 1;
+            let mut change = |ui: &mut Ui, name: &str, label: &str, f: fn(&mut crate::model::Table)| {
+                if ui::icon_button(ui, name, label, None, vec2(B, B), 16.0, false, false).clicked() {
+                    ed.board.update(&ids, |el| {
+                        if let Kind::Table(t) = &mut el.kind {
+                            f(t);
+                        }
+                        crate::text::fit_text(el);
+                    });
+                }
+            };
+            if one {
+                ui.label(egui::RichText::new("Righe").color(t.text2));
+                change(ui, "minus", "Togli l'ultima riga", |t| t.remove_row(t.rows.len() - 1));
+                change(ui, "plus", "Aggiungi una riga", |t| t.insert_row(t.rows.len()));
+                gap(ui, &mut sep);
+                ui.label(egui::RichText::new("Colonne").color(t.text2));
+                change(ui, "minus", "Togli l'ultima colonna", |t| t.remove_col(t.cols.len() - 1));
+                change(ui, "plus", "Aggiungi una colonna", |t| t.insert_col(t.cols.len()));
+                gap(ui, &mut sep);
+            }
+            let header = els.iter().all(|e| e.table().is_some_and(|t| t.header));
+            if ui::icon_button(ui, "panels-top-left", if header { "Riga normale in cima" } else { "Prima riga come intestazione" }, None, vec2(B, B), 16.0, header, false).clicked() {
+                ed.board.update(&ids, |el| {
+                    if let Kind::Table(t) = &mut el.kind {
+                        t.header = !header;
+                    }
+                    crate::text::fit_text(el);
+                });
+            }
+        }
+        if only("code") {
+            gap(ui, &mut sep);
+            let lang = same(els, |e| e.code().map(|c| c.language.clone())).unwrap_or_default();
+            if let Some(l) = super::panels::language_picker(ui, &lang, t) {
+                ed.prefs.code_language = l.clone();
+                ed.board.update(&ids, |el| {
+                    if let Kind::Code(c) = &mut el.kind {
+                        c.language = l.clone();
+                    }
+                });
+            }
+            let light = els.iter().all(|e| e.code().is_some_and(|c| c.light));
+            if ui::icon_button(ui, if light { "moon" } else { "sun" }, if light { "Tema scuro" } else { "Tema chiaro" }, None, vec2(B, B), 16.0, false, false).clicked() {
+                ed.board.update(&ids, |el| {
+                    if let Kind::Code(c) = &mut el.kind {
+                        c.light = !light;
+                    }
+                });
+            }
+            if els.len() == 1 && ui::icon_button(ui, "copy", "Copia il codice", None, vec2(B, B), 16.0, false, false).clicked() {
+                ui.ctx().copy_text(els[0].code().map(|c| c.code.clone()).unwrap_or_default());
+            }
+        }
+        if only("widget") && els.len() == 1 {
+            gap(ui, &mut sep);
+            if ui::button(ui, "Modifica", ui::Kind::Ghost, Some("pencil"), false, true).clicked() {
+                ed.prefs.right_panel = true;
+                ed.prefs.focus = false;
+            }
+            let reset: Option<(&str, fn(&mut crate::model::Widget))> = match els[0].widget() {
+                Some(crate::model::Widget::Poll { .. }) => Some(("Azzera i voti", |w| {
+                    if let crate::model::Widget::Poll { options, .. } = w {
+                        options.iter_mut().for_each(|o| o.votes.clear());
+                    }
+                })),
+                Some(crate::model::Widget::Checklist { .. }) => Some(("Togli le spunte", |w| {
+                    if let crate::model::Widget::Checklist { items, .. } = w {
+                        items.iter_mut().for_each(|i| i.done = false);
+                    }
+                })),
+                Some(crate::model::Widget::Counter { .. }) => Some(("Azzera", |w| {
+                    if let crate::model::Widget::Counter { value, .. } = w {
+                        *value = 0;
+                    }
+                })),
+                None => None,
+            };
+            if let Some((label, f)) = reset
+                && ui::icon_button(ui, "refresh-cw", label, None, vec2(B, B), 16.0, false, false).clicked()
+            {
+                ed.board.update(&ids, |el| {
+                    if let Kind::Widget(w) = &mut el.kind {
+                        f(w);
+                    }
+                    crate::text::fit_text(el);
+                });
+            }
+        }
         if only("section") {
             gap(ui, &mut sep);
             let cur = same(els, |e| if let Kind::Section { fill } = &e.kind { Some(fill.clone()) } else { None });

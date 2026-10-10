@@ -28,6 +28,9 @@ pub fn type_label(el: &El) -> &'static str {
         Kind::Stamp { .. } => "Reazione",
         Kind::Section { .. } => "Sezione",
         Kind::Comment { .. } => "Commento",
+        Kind::Table(_) => "Tabella",
+        Kind::Code(_) => "Blocco di codice",
+        Kind::Widget(ref w) => crate::widgets::kind_name(w),
     }
 }
 
@@ -76,6 +79,8 @@ pub fn element_label(el: &El) -> String {
         .into(),
         Kind::Shape(s) => or(first_line(s.text.as_deref().unwrap_or("")), shape_name(s.shape)),
         Kind::Stamp { emoji } => crate::assets::stamp(emoji).map_or(format!("Reazione {emoji}"), |s| s.name.to_string()),
+        Kind::Code(c) => or(first_line(&c.code), "Blocco di codice"),
+        Kind::Widget(crate::model::Widget::Poll { question: t, .. } | crate::model::Widget::Checklist { title: t, .. } | crate::model::Widget::Counter { label: t, .. }) => or(first_line(t), type_label(el)),
         _ => type_label(el).into(),
     }
 }
@@ -94,6 +99,11 @@ fn type_icon(el: &El) -> &'static str {
         Kind::Stamp { .. } => "smile",
         Kind::Section { .. } => "square-dashed-top-solid",
         Kind::Comment { .. } => "message-circle",
+        Kind::Table(_) => "table",
+        Kind::Code(_) => "code",
+        Kind::Widget(crate::model::Widget::Poll { .. }) => "chart-column",
+        Kind::Widget(crate::model::Widget::Checklist { .. }) => "list-checks",
+        Kind::Widget(crate::model::Widget::Counter { .. }) => "hash",
     }
 }
 
@@ -806,6 +816,65 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
             }
         }
     });
+    if let Some(e) = single.as_ref().filter(|e| !e.locked) {
+        match &e.kind {
+            Kind::Widget(_) => widget_props(ui, ed, e),
+            Kind::Code(c) => {
+                let c = c.clone();
+                section(ui, Some("Codice"), |ui| {
+                    if let Some(l) = language_picker(ui, &c.language, t) {
+                        ed.prefs.code_language = l.clone();
+                        apply(ed, &mut |el| {
+                            if let Kind::Code(x) = &mut el.kind {
+                                x.language = l.clone();
+                            }
+                        });
+                    }
+                    let mut light = c.light;
+                    if ui::segmented(ui, &mut light, &[(false, "Scuro"), (true, "Chiaro")], ui.available_width()) {
+                        apply(ed, &mut |el| {
+                            if let Kind::Code(x) = &mut el.kind {
+                                x.light = light;
+                            }
+                        });
+                    }
+                    if let Some(v) = ui::number_field(ui, Id::new("pcode"), "Aa", "Dimensione del testo", Some(c.font_size.round()), 0, 90.0) {
+                        apply(ed, &mut |el| {
+                            if let Kind::Code(x) = &mut el.kind {
+                                x.font_size = v.clamp(4.0, 400.0);
+                            }
+                            crate::text::fit_text(el);
+                        });
+                    }
+                });
+            }
+            Kind::Table(tb) => {
+                let tb = tb.clone();
+                section(ui, Some("Tabella"), |ui| {
+                    ui::hint(ui, &format!("{} righe × {} colonne. Doppio clic su una cella per scrivere, Tab per passare alla successiva.", tb.rows.len(), tb.cols.len()));
+                    let mut f = tb.font;
+                    if super::toolbar::font_picker(ui, &mut f, ui.available_width(), t) {
+                        apply(ed, &mut |el| {
+                            if let Kind::Table(x) = &mut el.kind {
+                                x.font = f;
+                            }
+                            crate::text::fit_text(el);
+                        });
+                    }
+                    let mut header = tb.header;
+                    if ui::switch(ui, &mut header, "Prima riga come intestazione") {
+                        apply(ed, &mut |el| {
+                            if let Kind::Table(x) = &mut el.kind {
+                                x.header = header;
+                            }
+                            crate::text::fit_text(el);
+                        });
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
     if only("section") {
         section(ui, Some("Sezione"), |ui| {
             if let Some(e) = &single {
@@ -1163,6 +1232,138 @@ pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
     });
 }
 
+/// While code is typed: its language and its theme, above the block.
+fn code_tools(ctx: &egui::Context, stage: Rect, ed: &mut Editor, el: &El, code: &crate::model::Code) {
+    let t = ui::theme(ctx);
+    let a = ed.to_screen(el.x, el.y) + stage.min.to_vec2();
+    let y = if a.y - 40.0 >= stage.min.y + 8.0 { a.y - 40.0 } else { a.y + 8.0 };
+    let id = el.id.clone();
+    egui::Area::new(Id::new("code-tools")).fixed_pos(pos2(a.x.max(stage.min.x + 8.0), y)).order(egui::Order::Foreground).show(ctx, |ui| {
+        ui::float_frame(&t).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if let Some(lang) = language_picker(ui, &code.language, &t) {
+                    ed.prefs.code_language = lang.clone();
+                    ed.board.update(std::slice::from_ref(&id), |el| {
+                        if let Kind::Code(c) = &mut el.kind {
+                            c.language = lang.clone();
+                        }
+                    });
+                    ui.memory_mut(|m| m.request_focus(Id::new("board-text")));
+                }
+                let light = code.light;
+                if small_icon_button(ui, if light { "moon" } else { "sun" }, if light { "Tema scuro" } else { "Tema chiaro" }, false).clicked() {
+                    ed.board.update(std::slice::from_ref(&id), |el| {
+                        if let Kind::Code(c) = &mut el.kind {
+                            c.light = !light;
+                        }
+                    });
+                    ui.memory_mut(|m| m.request_focus(Id::new("board-text")));
+                }
+            });
+        });
+    });
+}
+
+/// The language of a code block, as a dropdown.
+pub fn language_picker(ui: &mut Ui, current: &str, t: &Theme) -> Option<String> {
+    let name = crate::code::language_name(current);
+    let g = ui.painter().layout_no_wrap(name.to_string(), ui::medium(11.0), t.text);
+    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 32.0, 24.0), Sense::click());
+    let k = ui::motion::hover(ui.ctx(), resp.id, resp.hovered());
+    ui.painter().rect_filled(rect, ui::RADIUS, t.hover.gamma_multiply(k.max(0.5)));
+    ui.painter().galley(pos2(rect.min.x + 8.0, rect.center().y - g.size().y / 2.0), g, t.text);
+    ui::icon(ui, "chevron-down", rect.right_center() - vec2(10.0, 0.0), 12.0, t.icon2);
+    let resp = ui::tip(resp, "Linguaggio", None);
+    let mut picked = None;
+    egui::Popup::menu(&resp).frame(ui::menu_frame(t)).show(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+            for (id, label) in crate::code::LANGUAGES {
+                if ui::menu_item(ui, (id == current).then_some("check"), label, None, false).clicked() {
+                    picked = Some(id.to_string());
+                }
+            }
+        });
+    });
+    picked
+}
+
+/// What a widget says: its question or title and its options or items, edited in the panel.
+fn widget_props(ui: &mut Ui, ed: &mut Editor, el: &El) {
+    let Some(mut w) = el.widget().cloned() else { return };
+    let mut changed = false;
+    let field = |ui: &mut Ui, text: &mut String, hint: &str, width: f32| ui.add(egui::TextEdit::singleline(text).hint_text(hint).desired_width(width)).changed();
+    match &mut w {
+        Widget::Poll { question, options } => {
+            section(ui, Some("Domanda"), |ui| {
+                changed |= ui.add(egui::TextEdit::multiline(question).hint_text("Fai una domanda").desired_rows(2).desired_width(f32::INFINITY)).changed();
+            });
+            section(ui, Some("Opzioni"), |ui| {
+                let mut remove = None;
+                for (i, o) in options.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        changed |= field(ui, &mut o.text, &format!("Opzione {}", i + 1), ui.available_width() - 30.0);
+                        if small_icon_button(ui, "x", "Togli l'opzione", false).clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = remove {
+                    options.remove(i);
+                    changed = true;
+                }
+                if options.len() < 50 && ui::button(ui, "Aggiungi un'opzione", ui::Kind::Secondary, Some("plus"), false, true).clicked() {
+                    options.push(PollOption { text: String::new(), votes: Vec::new() });
+                    changed = true;
+                }
+            });
+        }
+        Widget::Checklist { title, items } => {
+            section(ui, Some("Titolo"), |ui| {
+                changed |= field(ui, title, "Titolo della lista", f32::INFINITY);
+            });
+            section(ui, Some("Cose da fare"), |ui| {
+                let mut remove = None;
+                for (i, it) in items.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        if small_icon_button(ui, "check", if it.done { "Togli la spunta" } else { "Spunta" }, it.done).clicked() {
+                            it.done = !it.done;
+                            changed = true;
+                        }
+                        changed |= field(ui, &mut it.text, "Cosa da fare", ui.available_width() - 30.0);
+                        if small_icon_button(ui, "x", "Togli", false).clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = remove {
+                    items.remove(i);
+                    changed = true;
+                }
+                if items.len() < 200 && ui::button(ui, "Aggiungi", ui::Kind::Secondary, Some("plus"), false, true).clicked() {
+                    items.push(CheckItem { text: String::new(), done: false });
+                    changed = true;
+                }
+            });
+        }
+        Widget::Counter { label, value } => {
+            section(ui, Some("Contatore"), |ui| {
+                changed |= field(ui, label, "Cosa contiamo?", f32::INFINITY);
+                if let Some(v) = ui::number_field(ui, Id::new("pcounter"), "#", "Valore", Some(*value as f64), 0, 120.0) {
+                    *value = v.round().clamp(-999_999.0, 999_999.0) as i64;
+                    changed = true;
+                }
+            });
+        }
+    }
+    if changed {
+        ed.board.update(std::slice::from_ref(&el.id), |e| {
+            e.kind = Kind::Widget(w.clone());
+            crate::text::fit_text(e);
+        });
+    }
+}
+
 /* ---------------- context menu ---------------- */
 
 /// Right-click menu of the board and of the layers panel; returns true once something was chosen.
@@ -1277,6 +1478,12 @@ pub fn selection_menu(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi) -> bool {
 /// Bar over the text being typed: font, plus bold and italic for text boxes.
 pub fn text_tools(ctx: &egui::Context, stage: Rect, ed: &mut Editor, el: &El) {
     let t = ui::theme(ctx);
+    if el.table().is_some() {
+        return;
+    }
+    if let Some(code) = el.code() {
+        return code_tools(ctx, stage, ed, el, code);
+    }
     let b = frame_box(el);
     let a = ed.to_screen(b.x, b.y) + stage.min.to_vec2();
     let below = ed.to_screen(b.x, b.bottom()) + stage.min.to_vec2();

@@ -488,7 +488,7 @@ impl BoardScreen {
         let ppp = ctx.pixels_per_point();
         crate::paint::background(&mut shapes, stage, &ed.cam, &ed.board.meta(), ppp);
         let els = ed.paint_list();
-        let frame = Frame { cam: ed.cam, origin: stage.min, view: ed.view(), pixels_per_point: ppp, editing: ed.editing.as_deref() };
+        let frame = Frame { cam: ed.cam, origin: stage.min, view: ed.view(), pixels_per_point: ppp, editing: ed.editing.as_deref(), editing_cell: ed.editing_cell };
         let editing = ed.editing.clone();
         let frame = Frame { editing: editing.as_deref(), ..frame };
         let on_screen = ed.painter.paint(&ctx, &mut shapes, &els, &frame);
@@ -535,6 +535,7 @@ impl BoardScreen {
                 }
                 Request::Paste(text) => self.paste(&ctx, &text, toasts),
                 Request::Shortcuts => self.ui.shortcuts = true,
+                Request::Templates => self.ui.left_tab = super::board::LeftTab::Templates,
             }
         }
         // Files dropped on the window: pictures go on the board where they land.
@@ -579,13 +580,24 @@ impl BoardScreen {
             ed.editing = None;
             return;
         };
-        if self.ui.text_for.as_deref() != Some(id.as_str()) {
-            self.ui.text_for = Some(id.clone());
+        // A table reloads the text box for each cell.
+        if let Some(tb) = el.table() {
+            let (r, c) = ed.editing_cell.unwrap_or((0, 0));
+            ed.editing_cell = Some((r.min(tb.rows.len() - 1), c.min(tb.cols.len() - 1)));
+        }
+        let key = format!("{id}/{:?}", ed.editing_cell);
+        if self.ui.text_for.as_deref() != Some(key.as_str()) {
+            self.ui.text_for = Some(key);
             self.ui.text = match &el.kind {
                 Kind::Text(x) => x.text.clone(),
                 Kind::Sticky(s) => s.text.clone(),
                 Kind::Shape(s) => s.text.clone().unwrap_or_default(),
                 Kind::Section { .. } => el.name.clone().unwrap_or_default(),
+                Kind::Code(c) => c.code.clone(),
+                Kind::Table(tb) => {
+                    let (r, c) = ed.editing_cell.unwrap_or((0, 0));
+                    tb.cells[r][c].text.clone()
+                }
                 _ => String::new(),
             };
             ed.board.stop_capturing();
@@ -616,6 +628,25 @@ impl BoardScreen {
                 let r = Rect::from_min_size(p + vec2(st.left as f32 * z, st.top as f32 * z), vec2(st.width as f32 * z, h));
                 (r, FontId::new(st.size as f32 * z, family(crate::text::font(s.font.unwrap_or_default(), false, false).face)), crate::text::shape_text_color(s), crate::model::Align::Center, false, true)
             }
+            Kind::Table(tb) => {
+                let (r, c) = ed.editing_cell.unwrap_or((0, 0));
+                let (x, y, cw, _) = crate::table::cell_box(tb, r, c);
+                let pad = crate::model::CELL_PAD;
+                let f = crate::table::cell_font(tb, r);
+                let lines = crate::table::cell_lines(tb, r, c).len().max(1) as f32;
+                let size = tb.font_size as f32;
+                let rect = Rect::from_min_size(p + vec2((x + pad) as f32 * z, (y + pad) as f32 * z), vec2(((cw - pad * 2.0) as f32 * z).max(8.0), lines * size * 1.3 * z));
+                let dark = tb.cells[r][c].fill.as_deref().is_some_and(crate::model::is_dark);
+                (rect, FontId::new(size * z, family(f.face)), if dark { Color32::WHITE } else { crate::model::DARK }, crate::model::Align::Left, false, true)
+            }
+            Kind::Code(c) => {
+                let l = crate::code::layout(&el, c);
+                let left = l.pad + l.gutter;
+                let top = crate::code::code_top(&l, c.font_size, 0);
+                let rect = Rect::from_min_size(p + vec2(left as f32 * z, top as f32 * z), vec2(((el.w - left - l.pad) as f32 * z).max(8.0), (l.lines.len() as f64 * l.line_h) as f32 * z));
+                let mono = crate::text::font(crate::model::FontKind::Mono, false, false);
+                (rect, FontId::new(c.font_size as f32 * z, family(mono.face)), crate::code::color(crate::code::Tok::Plain, c.light), crate::model::Align::Left, false, true)
+            }
             Kind::Section { .. } => {
                 let tb = crate::text::section_title_box(&el, ed.cam.z);
                 let a = ed.to_screen(tb.x, tb.y) + stage.min.to_vec2();
@@ -633,14 +664,44 @@ impl BoardScreen {
         };
         let mut changed = false;
         let mut finish = false;
+        let mut tab = None;
+        // Code is coloured while it is typed, with the same rows as when it is drawn.
+        let code = el.code().map(|c| (c.language.clone(), c.light, (c.font_size * 1.55) as f32 * z));
+        let is_table = el.table().is_some();
         egui::Area::new(Id::new("board-text-area")).fixed_pos(rect.min).order(egui::Order::Middle).show(ctx, |ui| {
             ui.set_min_size(rect.size());
+            if is_table {
+                tab = ui.input_mut(|i| {
+                    if i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab) {
+                        Some(true)
+                    } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                });
+            }
             let edit = if single { egui::TextEdit::singleline(&mut self.ui.text) } else { egui::TextEdit::multiline(&mut self.ui.text) };
             let mut edit = edit.id(Id::new("board-text")).font(font.clone()).text_color(color).frame(egui::Frame::NONE).horizontal_align(halign).desired_width(rect.width()).margin(egui::Margin::ZERO).lock_focus(true);
             if single {
                 edit = edit.background_color(t.bg).frame(egui::Frame::new().fill(t.bg).stroke(Stroke::new(1.0, t.brand)).corner_radius(4).inner_margin(egui::Margin::symmetric(6, 2)));
             }
             let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
+                if let Some((lang, light, line_h)) = &code {
+                    let mut job = egui::text::LayoutJob::default();
+                    let mut in_block = false;
+                    let fmt = |c: Color32| egui::TextFormat { font_id: font.clone(), color: c, line_height: Some(*line_h), ..Default::default() };
+                    for (i, line) in text.as_str().split('\n').enumerate() {
+                        if i > 0 {
+                            job.append("\n", 0.0, fmt(color));
+                        }
+                        for (tok, piece) in crate::code::tokens(lang, line, &mut in_block) {
+                            job.append(piece, 0.0, fmt(crate::code::color(tok, *light)));
+                        }
+                    }
+                    job.wrap.max_width = wrap_width;
+                    return ui.fonts_mut(|f| f.layout_job(job));
+                }
                 let mut job = egui::text::LayoutJob::simple(text.as_str().to_string(), font.clone(), color, if wrap { wrap_width } else { f32::INFINITY });
                 job.halign = halign;
                 job.wrap.max_width = if wrap { wrap_width } else { f32::INFINITY };
@@ -658,6 +719,9 @@ impl BoardScreen {
         if changed {
             let text = self.ui.text.clone();
             self.editor.set_text(&id, text);
+        }
+        if let Some(back) = tab {
+            self.editor.next_cell(back);
         }
         if finish {
             self.editor.stop_editing();
