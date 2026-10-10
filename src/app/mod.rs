@@ -306,6 +306,31 @@ mod picture {
         println!("BOARD {id}");
     }
 
+    /// The board list as a picture: `TRATTO_SHOT=out.png cargo test home_picture`.
+    #[test]
+    fn home_picture() {
+        let Ok(path) = std::env::var("TRATTO_SHOT") else { return };
+        let dark = std::env::var("TRATTO_DARK").is_ok();
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        for name in ["Riunione di lunedì", "Idee per il progetto", "Mappa del sito", "Retrospettiva"] {
+            store.create(name, None).unwrap();
+        }
+        let mut home: Option<home::Home> = None;
+        let (mut toasts, mut dialogs, mut prefs) = (Toasts::default(), dialogs::Dialogs::default(), Prefs::default());
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).wgpu().build_ui(move |ui| {
+            let ctx = ui.ctx().clone();
+            if home.is_none() {
+                ui::install_fonts(&ctx);
+                ui::setup(&ctx, Theme::new(dark, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
+                home = Some(home::Home::new(&store));
+                return;
+            }
+            home.as_mut().unwrap().ui(ui, &store, &mut prefs, &mut toasts, &mut dialogs);
+        });
+        harness.run_steps(40);
+        harness.render().unwrap().save(path).unwrap();
+    }
+
     /// The whole board screen as a picture: `TRATTO_SHOT=out.png cargo test app::picture -- --nocapture`.
     #[test]
     fn board_screen_picture() {

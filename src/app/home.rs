@@ -236,14 +236,15 @@ impl Home {
         let (rect, _) = ui.allocate_exact_size(vec2(240.0, 206.0), Sense::hover());
         let thumb_rect = Rect::from_min_size(rect.min, vec2(240.0, 150.0));
         let thumb = ui.interact(thumb_rect, Id::new(("open", &b.id)), Sense::click());
-        ui.painter().rect_filled(thumb_rect, ui::RADIUS, t.bg2);
+        let (r, k) = lift(ui, thumb_rect, &thumb, &t);
+        ui.painter().rect_filled(r, 8.0, t.bg2);
         match self.thumb(ui.ctx(), store, b) {
             Some(tex) => {
-                ui.painter().image(tex.id(), thumb_rect.shrink(1.0), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                ui.painter().add(egui::epaint::RectShape::filled(r.shrink(1.0), 7.0, Color32::WHITE).with_texture(tex.id(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))));
             }
-            None => icon(ui, "pen-line", thumb_rect.center(), 24.0, t.text3),
+            None => icon(ui, "pen-line", r.center(), 24.0, t.text3),
         }
-        ui.painter().rect_stroke(thumb_rect, ui::RADIUS, Stroke::new(if thumb.hovered() { 2.0 } else { 1.0 }, if thumb.hovered() { t.brand } else { t.border }), egui::StrokeKind::Inside);
+        ui.painter().rect_stroke(r, 8.0, Stroke::new(1.0 + 0.5 * k, ui::blend(t.border, t.brand, k)), egui::StrokeKind::Inside);
         if ui::tip(thumb, &format!("Apri {}", b.title), None).clicked() {
             action = Some(Action::Open { id: b.id.clone(), template: None });
         }
@@ -325,13 +326,26 @@ fn side_item(ui: &mut Ui, name: &str, label: &str, current: bool) -> egui::Respo
     resp
 }
 
+/// A card under the pointer rises a little on a soft shadow, as on macOS; returns where to draw
+/// it and how far it has risen (0 to 1).
+fn lift(ui: &Ui, rect: Rect, resp: &egui::Response, t: &ui::Theme) -> (Rect, f32) {
+    let k = ui::motion::spring(ui.ctx(), resp.id.with("lift"), if resp.hovered() { 1.0 } else { 0.0 }, 0.28, 0.85).max(0.0);
+    let s = ui::motion::press(ui.ctx(), resp.id, resp.is_pointer_button_down_on());
+    // Pressed, it gives a little (press() goes from 1 down to 0.94).
+    let pressed = (1.0 - s) / 0.06;
+    let r = Rect::from_center_size(rect.center() - vec2(0.0, 3.0 * k), rect.size() * (1.0 + 0.012 * k - 0.02 * pressed));
+    if k > 0.01 {
+        let shadow = egui::Shadow { offset: [0, (6.0 + 6.0 * k) as i8], blur: (14.0 + 10.0 * k) as u8, spread: 0, color: Color32::from_black_alpha(((if t.dark { 90.0 } else { 34.0 }) * k.min(1.0)) as u8) };
+        ui.painter().add(shadow.as_shape(r, 8.0));
+    }
+    (r, k.min(1.0))
+}
+
 fn template_card(ui: &mut Ui, tpl: Option<&Template>, name: &str, desc: &str) -> egui::Response {
     let t = ui::theme(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(180.0, 170.0), Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect.expand(4.0), ui::RADIUS + 2, t.hover);
-    }
-    super::panels::template_art(ui, tpl, Rect::from_min_size(rect.min, vec2(180.0, 112.0)));
+    let (art, _) = lift(ui, Rect::from_min_size(rect.min, vec2(180.0, 112.0)), &resp, &t);
+    super::panels::template_art(ui, tpl, art);
     ui.painter().text(rect.min + vec2(2.0, 124.0), egui::Align2::LEFT_CENTER, name, ui::medium(11.0), t.text);
     let g = ui.painter().layout(desc.to_string(), egui::FontId::proportional(10.0), t.text2, 176.0);
     ui.painter().galley(rect.min + vec2(2.0, 134.0), g, t.text2);

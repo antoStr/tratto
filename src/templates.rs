@@ -180,7 +180,33 @@ fn flow() -> Vec<El> {
     ])
 }
 
-pub static TEMPLATES: [Template; 7] = [
+/// A meeting: the agenda to tick, a quick poll, the actions in a table and room for notes.
+fn meeting() -> Vec<El> {
+    let fitted = |mut e: El| {
+        text::fit_text(&mut e);
+        e
+    };
+    let mut table = Table::new(4, 3);
+    for (c, h) in ["Azione", "Chi", "Entro"].iter().enumerate() {
+        table.cells[0][c].text = h.to_string();
+    }
+    table.cols = vec![240.0, 140.0, 120.0];
+    let agenda = Widget::Checklist { title: "Ordine del giorno".into(), items: ["Com'è andata la settimana", "Novità", "Decisioni da prendere", "Prossimi passi"].iter().map(|s| CheckItem { text: s.to_string(), done: false }).collect() };
+    let poll = Widget::Poll { question: "Quando ci rivediamo?".into(), options: ["Lunedì", "Mercoledì", "Venerdì"].iter().map(|s| PollOption { text: s.to_string(), votes: Vec::new() }).collect() };
+    finish(vec![
+        text(-560.0, -360.0, "Riunione", 40.0, true, DARK_C, Align::Left, None),
+        fitted(el(Kind::Widget(agenda), -560.0, -280.0, WIDGET_W, 0.0)),
+        fitted(el(Kind::Widget(poll), -560.0, 60.0, WIDGET_W, 0.0)),
+        text(-200.0, -280.0, "Azioni", 20.0, true, DARK_C, Align::Left, None),
+        fitted(el(Kind::Table(table), -200.0, -240.0, 0.0, 0.0)),
+        text(-200.0, 20.0, "Appunti", 20.0, true, DARK_C, Align::Left, None),
+        sticky(-200.0, 60.0, "#FFF3A3", ""),
+        sticky(20.0, 60.0, "#C7E5FF", ""),
+        sticky(240.0, 60.0, "#C9F2C7", ""),
+    ])
+}
+
+pub static TEMPLATES: [Template; 8] = [
     Template { id: "brainstorm", name: "Brainstorming", description: "Un tema al centro e tante note attorno per raccogliere idee.", build: brainstorm },
     Template { id: "kanban", name: "Kanban", description: "Tre colonne: da fare, in corso, fatto.", build: kanban },
     Template { id: "swot", name: "Analisi SWOT", description: "Punti di forza, punti deboli, opportunità e minacce.", build: swot },
@@ -188,6 +214,7 @@ pub static TEMPLATES: [Template; 7] = [
     Template { id: "mindmap", name: "Mappa mentale", description: "Un'idea centrale con sei rami da sviluppare.", build: mindmap },
     Template { id: "week", name: "Planner settimanale", description: "Sette colonne, da lunedì a domenica.", build: week },
     Template { id: "flow", name: "Diagramma di flusso", description: "Inizio, passo, decisione e due esiti collegati da frecce.", build: flow },
+    Template { id: "meeting", name: "Riunione", description: "Ordine del giorno da spuntare, un sondaggio, le azioni in tabella.", build: meeting },
 ];
 
 #[cfg(test)]

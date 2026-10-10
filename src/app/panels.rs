@@ -1557,7 +1557,7 @@ pub fn text_tools(ctx: &egui::Context, stage: Rect, ed: &mut Editor, el: &El) {
 pub fn template_art(ui: &Ui, tpl: Option<&Template>, rect: Rect) {
     let t = ui::theme(ui.ctx());
     let Some(tpl) = tpl else {
-        ui.painter().rect_filled(rect, ui::RADIUS, t.bg2);
+        ui.painter().rect(rect, 8.0, t.bg2, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
         icon(ui, "plus", rect.center(), 20.0, t.text3);
         return;
     };
@@ -1575,7 +1575,7 @@ pub fn template_art(ui: &Ui, tpl: Option<&Template>, rect: Rect) {
         Some(tex)
     });
     if let Some(tex) = tex {
-        ui.painter().image(tex.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        ui.painter().add(egui::epaint::RectShape::filled(rect, 8.0, Color32::WHITE).with_texture(tex.id(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))));
     }
-    ui.painter().rect_stroke(rect, ui::RADIUS, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+    ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
 }
