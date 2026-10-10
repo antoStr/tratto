@@ -488,7 +488,11 @@ impl BoardScreen {
         let ppp = ctx.pixels_per_point();
         crate::paint::background(&mut shapes, stage, &ed.cam, &ed.board.meta(), ppp);
         let els = ed.paint_list();
-        let frame = Frame { cam: ed.cam, origin: stage.min, view: ed.view(), pixels_per_point: ppp, editing: ed.editing.as_deref(), editing_cell: ed.editing_cell };
+        // What lies entirely under a panel is not drawn: the panels are opaque.
+        let seen = rect.expand(GAP);
+        let (a, b) = (ed.cam.to_world((seen.min.x - stage.min.x) as f64, (seen.min.y - stage.min.y) as f64), ed.cam.to_world((seen.max.x - stage.min.x) as f64, (seen.max.y - stage.min.y) as f64));
+        let view = crate::geom::BBox { x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y };
+        let frame = Frame { cam: ed.cam, origin: stage.min, view, pixels_per_point: ppp, editing: ed.editing.as_deref(), editing_cell: ed.editing_cell };
         let editing = ed.editing.clone();
         let frame = Frame { editing: editing.as_deref(), ..frame };
         let on_screen = ed.painter.paint(&ctx, &mut shapes, &els, &frame);

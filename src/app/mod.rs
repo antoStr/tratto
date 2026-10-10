@@ -348,6 +348,7 @@ mod picture {
                 let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), Some("flow".into())).unwrap();
                 b.editor.selection = vec![b.editor.board.all().iter().find(|e| e.shape().is_some()).unwrap().id.clone()];
                 b.editor.tool = if std::env::var_os("TRATTO_SELECT").is_some() { crate::editor::Tool::Select } else { crate::editor::Tool::Pen };
+                b.editor.prefs.focus = std::env::var_os("TRATTO_FOCUS").is_some();
                 screen = Some(b);
                 return;
             }
