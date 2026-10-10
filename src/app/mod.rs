@@ -1,6 +1,7 @@
 //! The desktop app: the board list and the open board, with theme, settings and messages.
 
 pub mod board;
+pub mod context_bar;
 pub mod dialogs;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod home;
@@ -310,7 +311,7 @@ mod picture {
                 ui::setup(&ctx, Theme::new(dark, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
                 let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), Some("flow".into())).unwrap();
                 b.editor.selection = vec![b.editor.board.all().iter().find(|e| e.shape().is_some()).unwrap().id.clone()];
-                b.editor.tool = crate::editor::Tool::Pen;
+                b.editor.tool = if std::env::var_os("TRATTO_SELECT").is_some() { crate::editor::Tool::Select } else { crate::editor::Tool::Pen };
                 screen = Some(b);
                 return;
             }

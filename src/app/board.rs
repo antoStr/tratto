@@ -504,6 +504,7 @@ impl BoardScreen {
         super::live::comment_thread(&ctx, &mut self.editor, &mut self.ui);
         super::live::cursor_chat(&ctx, &mut self.editor, &mut self.ui);
         let mut action = action_from_panel;
+        super::context_bar::context_bar(&ctx, rect, &mut self.editor);
         super::toolbar::toolbar(&ctx, rect, &mut self.editor, &mut self.ui);
         super::live::top_bars(&ctx, rect, &mut self.editor);
         if !self.editor.prefs.focus {
