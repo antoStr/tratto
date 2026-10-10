@@ -1478,7 +1478,7 @@ pub fn selection_menu(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi) -> bool {
 /// Bar over the text being typed: font, plus bold and italic for text boxes.
 pub fn text_tools(ctx: &egui::Context, stage: Rect, ed: &mut Editor, el: &El) {
     let t = ui::theme(ctx);
-    if el.table().is_some() {
+    if el.table().is_some() || el.is_line() {
         return;
     }
     if let Some(code) = el.code() {

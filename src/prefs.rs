@@ -151,6 +151,8 @@ pub struct Prefs {
     pub new_board: BoardMeta,
     /// Language of the next code block.
     pub code_language: String,
+    /// Path of new connectors and lines.
+    pub route: crate::model::Route,
 }
 
 pub const DEFAULT_ACCENT: &str = "#0D99FF";
@@ -187,6 +189,7 @@ impl Default for Prefs {
             text_scale: 1.0,
             new_board: BoardMeta::default(),
             code_language: "javascript".into(),
+            route: crate::model::Route::Straight,
         }
     }
 }

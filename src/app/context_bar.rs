@@ -262,6 +262,19 @@ fn controls(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], t: &Theme) {
                 });
             }
         }
+        if only("line") && !els.iter().any(|e| e.line().is_some_and(|l| l.tape)) {
+            let route = same(els, |e| e.line().map(|l| l.route));
+            for (r, name, label) in super::toolbar::ROUTES {
+                if ui::icon_button(ui, name, label, None, vec2(B, B), 16.0, route == Some(r), false).clicked() {
+                    ed.prefs.route = r;
+                    ed.board.update(&ids, |el| {
+                        if let Kind::Line(l) = &mut el.kind {
+                            l.route = r;
+                        }
+                    });
+                }
+            }
+        }
         if only("line") {
             let all = |f: fn(&crate::model::Line) -> bool| els.iter().all(|e| e.line().is_some_and(f));
             let (start, end, dash) = (all(|l| l.arrow_start), all(|l| l.arrow_end), all(|l| l.dash));

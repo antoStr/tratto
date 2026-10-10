@@ -57,7 +57,7 @@ fn sticky(x: f64, y: f64, color: &str, s: &str) -> El {
 
 fn line(x1: f64, y1: f64, x2: f64, y2: f64, arrow: bool) -> El {
     let (x0, y0) = (x1.min(x2), y1.min(y2));
-    let l = Line { points: vec![(x1 - x0) as f32, (y1 - y0) as f32, (x2 - x0) as f32, (y2 - y0) as f32], stroke: "#757575".into(), stroke_width: 2.0, dash: false, arrow_start: false, arrow_end: arrow, from: None, to: None, tape: false };
+    let l = Line { points: vec![(x1 - x0) as f32, (y1 - y0) as f32, (x2 - x0) as f32, (y2 - y0) as f32], stroke: "#757575".into(), stroke_width: 2.0, dash: false, arrow_start: false, arrow_end: arrow, from: None, to: None, tape: false, route: crate::model::Route::Straight, label: None };
     el(Kind::Line(l), x0, y0, (x2 - x1).abs(), (y2 - y1).abs())
 }
 

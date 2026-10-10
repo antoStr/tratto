@@ -29,6 +29,13 @@ pub const SHAPES: [(ShapeTool, &str, Option<&str>); 14] = [
     (ShapeTool::Kind(ShapeKind::ArrowLeft), "Freccia a sinistra", None),
 ];
 
+/// The paths a connector can take, as FigJam offers them.
+pub const ROUTES: [(crate::model::Route, &str, &str); 3] = [
+    (crate::model::Route::Straight, "route-straight", "Dritta"),
+    (crate::model::Route::Elbow, "route-elbow", "A gomito"),
+    (crate::model::Route::Curved, "route-curved", "Curva"),
+];
+
 /// The icon of a shape choice.
 pub fn shape_icon(ui: &Ui, tool: ShapeTool, c: Pos2, size: f32, color: Color32) {
     let s = size / 24.0;
@@ -394,6 +401,14 @@ fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) {
                             });
                             sep(ui, t);
                             color_pop(ui, "Riempimento", &mut p.shape_style.fill, true, false, top, t);
+                        }
+                        if tool != Tool::Shape {
+                            for (r, name, label) in ROUTES {
+                                if icon_button(ui, name, label, None, vec2(28.0, 28.0), 16.0, p.route == r, false).clicked() {
+                                    p.route = r;
+                                }
+                            }
+                            sep(ui, t);
                         }
                         color_pop(ui, "Contorno", &mut p.shape_style.stroke, false, true, top, t);
                         sep(ui, t);

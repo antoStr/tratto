@@ -117,6 +117,28 @@ pub struct Line {
     /// Washi tape: a striped band `stroke_width` wide instead of a line.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tape: bool,
+    #[serde(default, skip_serializing_if = "Route::is_straight")]
+    pub route: Route,
+    /// Text in the middle of the line, on a small card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// The path a connector takes between its ends, like FigJam's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Route {
+    #[default]
+    Straight,
+    /// Right angles, rounded.
+    Elbow,
+    Curved,
+}
+
+impl Route {
+    pub fn is_straight(&self) -> bool {
+        *self == Route::Straight
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -457,7 +479,7 @@ impl El {
         }
         match &self.kind {
             Kind::Ink(i) | Kind::Highlighter(i) => i.points.len() >= 3 && i.points.len() < 200_000 && num(i.size) && i.points.iter().all(|v| v.is_finite()),
-            Kind::Line(l) => l.points.len() == 4 && l.points.iter().all(|v| v.is_finite()) && num(l.stroke_width) && opt_id(&l.from) && opt_id(&l.to),
+            Kind::Line(l) => l.points.len() == 4 && l.points.iter().all(|v| v.is_finite()) && num(l.stroke_width) && opt_id(&l.from) && opt_id(&l.to) && l.label.as_ref().is_none_or(|t| t.len() <= 1000),
             Kind::Comment { thread } => thread.len() <= 500 && thread.iter().all(|m| m.text.len() <= 4000 && m.author.len() <= 64 && num(m.t)),
             Kind::Shape(s) => {
                 num(s.stroke_width) && num(s.radius) && s.text.as_ref().is_none_or(|t| t.len() < 10_000) && s.points.as_ref().is_none_or(|p| p.len() <= 2000 && p.iter().all(|v| v.is_finite()))

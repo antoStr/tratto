@@ -594,6 +594,7 @@ impl BoardScreen {
                 Kind::Shape(s) => s.text.clone().unwrap_or_default(),
                 Kind::Section { .. } => el.name.clone().unwrap_or_default(),
                 Kind::Code(c) => c.code.clone(),
+                Kind::Line(l) => l.label.clone().unwrap_or_default(),
                 Kind::Table(tb) => {
                     let (r, c) = ed.editing_cell.unwrap_or((0, 0));
                     tb.cells[r][c].text.clone()
@@ -638,6 +639,14 @@ impl BoardScreen {
                 let rect = Rect::from_min_size(p + vec2((x + pad) as f32 * z, (y + pad) as f32 * z), vec2(((cw - pad * 2.0) as f32 * z).max(8.0), lines * size * 1.3 * z));
                 let dark = tb.cells[r][c].fill.as_deref().is_some_and(crate::model::is_dark);
                 (rect, FontId::new(size * z, family(f.face)), if dark { Color32::WHITE } else { crate::model::DARK }, crate::model::Align::Left, false, true)
+            }
+            Kind::Line(l) => {
+                let (mx, my) = crate::geom::route_mid(l);
+                let c = ed.to_screen(el.x + mx, el.y + my) + stage.min.to_vec2();
+                let size = crate::prims::label_size(l) as f32 * z;
+                let w = (size * 10.0).clamp(120.0, 360.0);
+                let rect = Rect::from_center_size(c, vec2(w, size * 1.4));
+                (rect, FontId::new(size.max(11.0), family(crate::text::font(crate::model::FontKind::Sans, false, false).face)), t.text, crate::model::Align::Center, true, false)
             }
             Kind::Code(c) => {
                 let l = crate::code::layout(&el, c);

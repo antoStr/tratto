@@ -5,7 +5,7 @@ use egui::Color32;
 
 use crate::geom::{MIN_SIZE, shape_polygon};
 use crate::ink::stroke_outline;
-use crate::model::{Align, DARK, El, FontKind, Kind, Line, Shape, ShapeKind, color_or, is_dark};
+use crate::model::{Align, DARK, El, FontKind, Kind, Line, Route, Shape, ShapeKind, color_or, is_dark};
 use crate::text::{self, LINE_HEIGHT, Placed, STICKY_PAD, place_lines};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -221,6 +221,46 @@ pub fn arrow_head(x1: f64, y1: f64, x2: f64, y2: f64, width: f64) -> [f64; 6] {
 }
 
 /// Where the line body ends so it doesn't poke through the arrow tips.
+/// Size of a line's label: grows a little with the line.
+pub fn label_size(l: &Line) -> f64 {
+    13.0 + l.stroke_width * 1.2
+}
+
+/// `a` moved towards `b` by `d`.
+fn toward(a: (f64, f64), b: (f64, f64), d: f64) -> (f64, f64) {
+    let (ux, uy) = unit(a, b);
+    (a.0 + ux * d, a.1 + uy * d)
+}
+
+/// Unit vector from `a` to `b` (zero if they meet).
+fn unit(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let l = dx.hypot(dy);
+    if l < 1e-9 { (0.0, 0.0) } else { (dx / l, dy / l) }
+}
+
+/// A polyline whose corners are rounded with radius `r` (less where segments are short).
+fn rounded_polyline(pts: &[(f64, f64)], r: f64) -> Path {
+    let mut p = Path::default();
+    p.move_to(pts[0].0 as f32, pts[0].1 as f32);
+    for i in 1..pts.len() - 1 {
+        let (a, c, b) = (pts[i - 1], pts[i], pts[i + 1]);
+        let (la, lb) = ((c.0 - a.0).hypot(c.1 - a.1), (b.0 - c.0).hypot(b.1 - c.1));
+        let k = r.min(la / 2.0).min(lb / 2.0);
+        if k < 0.01 {
+            p.line_to(c.0 as f32, c.1 as f32);
+            continue;
+        }
+        let s = toward(c, a, k);
+        let e = toward(c, b, k);
+        p.line_to(s.0 as f32, s.1 as f32);
+        p.quad_to(c.0 as f32, c.1 as f32, e.0 as f32, e.1 as f32);
+    }
+    let last = pts[pts.len() - 1];
+    p.line_to(last.0 as f32, last.1 as f32);
+    p
+}
+
 pub fn line_ends(l: &Line) -> [f64; 4] {
     let [x1, y1, x2, y2] = [0, 1, 2, 3].map(|i| l.points[i] as f64);
     let len = (x2 - x1).hypot(y2 - y1);
@@ -429,17 +469,65 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
                 tape(l, alpha, &mut out);
                 return out;
             }
-            let [sx, sy, ex, ey] = line_ends(l);
             let color = with_alpha(color_or(&l.stroke, DARK), alpha);
             let sw = l.stroke_width as f32;
-            out.push(Prim::Stroke { path: Path::polyline(&[sx, sy, ex, ey]), width: sw, color, round: true, dash: l.dash.then_some([sw * 3.0, sw * 2.2]) });
+            let dash = l.dash.then_some([sw * 3.0, sw * 2.2]);
             let [x1, y1, x2, y2] = [0, 1, 2, 3].map(|i| l.points[i] as f64);
-            for (on, head) in [(l.arrow_end, arrow_head(x1, y1, x2, y2, l.stroke_width)), (l.arrow_start, arrow_head(x2, y2, x1, y1, l.stroke_width))] {
+            let back = head_length(l.stroke_width) * 0.6;
+            // Each end's direction, for its arrow head: where the path comes from.
+            let (from_end, from_start) = match l.route {
+                Route::Straight => {
+                    let [sx, sy, ex, ey] = line_ends(l);
+                    out.push(Prim::Stroke { path: Path::polyline(&[sx, sy, ex, ey]), width: sw, color, round: true, dash });
+                    ((x1, y1), (x2, y2))
+                }
+                Route::Elbow => {
+                    let mut pts = crate::geom::elbow(x1, y1, x2, y2);
+                    let (first, last) = (pts[1], pts[pts.len() - 2]);
+                    let n = pts.len();
+                    if l.arrow_end {
+                        pts[n - 1] = toward(pts[n - 1], last, back);
+                    }
+                    if l.arrow_start {
+                        pts[0] = toward(pts[0], first, back);
+                    }
+                    out.push(Prim::Stroke { path: rounded_polyline(&pts, (l.stroke_width * 4.0).max(10.0)), width: sw, color, round: true, dash });
+                    (last, first)
+                }
+                Route::Curved => {
+                    let mut c = crate::geom::curve(x1, y1, x2, y2);
+                    let (c1, c2) = (c[1], c[2]);
+                    if l.arrow_end {
+                        let (dx, dy) = unit(c[3], c2);
+                        (c[3], c[2]) = ((c[3].0 + dx * back, c[3].1 + dy * back), (c[2].0 + dx * back, c[2].1 + dy * back));
+                    }
+                    if l.arrow_start {
+                        let (dx, dy) = unit(c[0], c1);
+                        (c[0], c[1]) = ((c[0].0 + dx * back, c[0].1 + dy * back), (c[1].0 + dx * back, c[1].1 + dy * back));
+                    }
+                    let mut p = Path::default();
+                    p.move_to(c[0].0 as f32, c[0].1 as f32);
+                    p.cubic_to(c[1].0 as f32, c[1].1 as f32, c[2].0 as f32, c[2].1 as f32, c[3].0 as f32, c[3].1 as f32);
+                    out.push(Prim::Stroke { path: p, width: sw, color, round: true, dash });
+                    (c2, c1)
+                }
+            };
+            for (on, head) in [(l.arrow_end, arrow_head(from_end.0, from_end.1, x2, y2, l.stroke_width)), (l.arrow_start, arrow_head(from_start.0, from_start.1, x1, y1, l.stroke_width))] {
                 if on {
                     let path = Path::polygon(&head);
                     out.push(Prim::Fill { path: path.clone(), color });
                     out.push(Prim::Stroke { path, width: head_stroke(l.stroke_width) as f32, color, round: true, dash: None });
                 }
+            }
+            // FigJam's label: the text on a small white card in the middle of the line.
+            if let Some(label) = l.label.as_ref().filter(|s| !s.trim().is_empty() && !editing) {
+                let (mx, my) = crate::geom::route_mid(l);
+                let size = label_size(l);
+                let f = text::font(FontKind::Sans, false, false);
+                let lay = text::layout_text(label, f.face, size, Some(size * 16.0));
+                let (bw, bh) = (lay.width + size * 0.9, lay.height + size * 0.45);
+                out.push(Prim::Fill { path: Path::round_rect((mx - bw / 2.0) as f32, (my - bh / 2.0) as f32, bw as f32, bh as f32, [(size * 0.35) as f32; 4]), color: with_alpha(Color32::WHITE, alpha) });
+                out.push(Prim::Text { placed: place_lines(&lay.lines, f, size, Align::Center, lay.width, my - lay.height / 2.0, mx - lay.width / 2.0), color: with_alpha(color_or(&l.stroke, DARK), alpha) });
             }
         }
         Kind::Text(t) => {

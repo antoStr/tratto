@@ -1,6 +1,6 @@
 //! Board geometry: boxes, rotation, hit testing, scaling and connectors.
 
-use crate::model::{El, EraseMark, Kind, Line, ShapeKind};
+use crate::model::{El, EraseMark, Kind, Line, Route, ShapeKind};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Pt {
@@ -276,7 +276,7 @@ pub fn hit_test(el: &El, x: f64, y: f64, tol: f64, ignore_erase: bool) -> bool {
         // Only the border: the inside is free for selecting and drawing what the section holds.
         Kind::Section { .. } => in_box(tol) && !(p.x > tol && p.y > tol && p.x < el.w - tol && p.y < el.h - tol),
         Kind::Ink(i) | Kind::Highlighter(i) => in_box(i.size + tol) && near_polyline(&i.points, 3, p.x, p.y, i.size / 2.0 + tol, false),
-        Kind::Line(l) => near_polyline(&l.points, 2, p.x, p.y, l.stroke_width / 2.0 + tol, false),
+        Kind::Line(l) => near_polyline(&route_points(l), 2, p.x, p.y, l.stroke_width / 2.0 + tol, false),
         Kind::Shape(s) => {
             // Text inside makes the whole shape clickable, as if it were filled.
             let filled = s.fill != "transparent" || s.text.as_ref().is_some_and(|t| !t.is_empty());
@@ -392,6 +392,64 @@ pub fn scale_marks(marks: &[EraseMark], kx: f64, ky: f64) -> Vec<EraseMark> {
 }
 
 /* ---------------- lines and connectors ---------------- */
+
+/// A line's path in its own coordinates, as flat [x, y, …]: its two ends when straight, the
+/// corners of an elbow, or points along a curve.
+pub fn route_points(l: &Line) -> Vec<f64> {
+    let [x1, y1, x2, y2] = [0, 1, 2, 3].map(|i| l.points[i] as f64);
+    match l.route {
+        Route::Straight => vec![x1, y1, x2, y2],
+        Route::Elbow => elbow(x1, y1, x2, y2).into_iter().flat_map(|(x, y)| [x, y]).collect(),
+        Route::Curved => {
+            let c = curve(x1, y1, x2, y2);
+            (0..=24).flat_map(|i| {
+                let (x, y) = bezier(&c, i as f64 / 24.0);
+                [x, y]
+            }).collect()
+        }
+    }
+}
+
+/// Right angles between two points: across, up or down, across (or the other way round when the
+/// line runs mostly up or down), meeting half-way.
+pub fn elbow(x1: f64, y1: f64, x2: f64, y2: f64) -> Vec<(f64, f64)> {
+    if (x2 - x1).abs() >= (y2 - y1).abs() {
+        let m = (x1 + x2) / 2.0;
+        vec![(x1, y1), (m, y1), (m, y2), (x2, y2)]
+    } else {
+        let m = (y1 + y2) / 2.0;
+        vec![(x1, y1), (x1, m), (x2, m), (x2, y2)]
+    }
+}
+
+/// A smooth S between two points: it leaves and arrives along the line's main direction.
+pub fn curve(x1: f64, y1: f64, x2: f64, y2: f64) -> [(f64, f64); 4] {
+    let (dx, dy) = (x2 - x1, y2 - y1);
+    if dx.abs() >= dy.abs() {
+        [(x1, y1), (x1 + dx * 0.5, y1), (x2 - dx * 0.5, y2), (x2, y2)]
+    } else {
+        [(x1, y1), (x1, y1 + dy * 0.5), (x2, y2 - dy * 0.5), (x2, y2)]
+    }
+}
+
+pub fn bezier(c: &[(f64, f64); 4], t: f64) -> (f64, f64) {
+    let u = 1.0 - t;
+    let (a, b, d, e) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+    (a * c[0].0 + b * c[1].0 + d * c[2].0 + e * c[3].0, a * c[0].1 + b * c[1].1 + d * c[2].1 + e * c[3].1)
+}
+
+/// Middle of a line's path, where its label sits.
+pub fn route_mid(l: &Line) -> (f64, f64) {
+    let [x1, y1, x2, y2] = [0, 1, 2, 3].map(|i| l.points[i] as f64);
+    match l.route {
+        Route::Straight => ((x1 + x2) / 2.0, (y1 + y2) / 2.0),
+        Route::Elbow => {
+            let p = elbow(x1, y1, x2, y2);
+            ((p[1].0 + p[2].0) / 2.0, (p[1].1 + p[2].1) / 2.0)
+        }
+        Route::Curved => bezier(&curve(x1, y1, x2, y2), 0.5),
+    }
+}
 
 /// The two ends of a line in board coordinates.
 pub fn line_world_ends(el: &El, l: &Line) -> (Pt, Pt) {
@@ -536,7 +594,7 @@ pub mod tests {
         El { w, h, ..base(Kind::Ink(Ink { points, color: "#000".into(), size })) }
     }
     pub fn line(points: Vec<f32>, width: f64) -> El {
-        base(Kind::Line(Line { points, stroke: "#000000".into(), stroke_width: width, dash: false, arrow_start: false, arrow_end: false, from: None, to: None, tape: false }))
+        base(Kind::Line(Line { points, stroke: "#000000".into(), stroke_width: width, dash: false, arrow_start: false, arrow_end: false, from: None, to: None, tape: false, route: crate::model::Route::Straight, label: None }))
     }
 
     #[test]
