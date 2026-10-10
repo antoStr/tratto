@@ -128,6 +128,24 @@ impl Editor {
             let a = crate::ui::motion::entering(&ctx, egui::Id::new("hover-outline"), h).clamp(0.0, 1.0);
             self.outline_el(&mut out, &el, accent.gamma_multiply(a), if quiet { 1.5 } else { 2.0 });
         }
+        // The "+" of a shape or note under the pointer, fading in: a click grows the diagram.
+        if let Some(id) = &self.hover_adds
+            && quiet
+            && self.tool == Tool::Select
+            && !self.read_only
+            && !self.selection.contains(id)
+            && let Some(el) = self.current(id)
+        {
+            let a = crate::ui::motion::entering(&ctx, egui::Id::new("hover-adds"), id).clamp(0.0, 1.0);
+            for (h, p) in self.add_handles(&el) {
+                let p = p + o;
+                let r = crate::ui::motion::spring(&ctx, egui::Id::new(("hover-add", h as u8)), if self.hover_handle == Some(h) { 9.0 } else { 6.5 }, 0.25, 0.6) * k;
+                out.push(Shape::circle_filled(p, r, accent.gamma_multiply(a)));
+                let st = Stroke::new(1.5, Color32::WHITE.gamma_multiply(a));
+                out.push(Shape::line_segment([p - vec2(r * 0.45, 0.0), p + vec2(r * 0.45, 0.0)], st));
+                out.push(Shape::line_segment([p - vec2(0.0, r * 0.45), p + vec2(0.0, r * 0.45)], st));
+            }
+        }
         // A new selection: its frame fades in and the handles grow into place with a little give.
         let ks = crate::ui::motion::entering(&ctx, egui::Id::new("selection-in"), &self.selection);
         let k = k * (0.5 + 0.5 * ks);
@@ -163,6 +181,17 @@ impl Editor {
             if quiet || matches!(g, Some(Gesture::Resize { .. } | Gesture::Rotate { .. } | Gesture::Endpoint { .. })) {
                 for &(h, p) in &handles {
                     let p = p + o;
+                    if h == Handle::AddRow || h == Handle::AddCol {
+                        if !quiet {
+                            continue;
+                        }
+                        let r = crate::ui::motion::spring(&ctx, egui::Id::new(("table-add", h as u8)), if self.hover_handle == Some(h) { 9.0 } else { 7.5 }, 0.25, 0.7) * k;
+                        out.push(circle(p, r, Color32::WHITE, Stroke::new(1.0, accent)));
+                        let st = Stroke::new(1.5, accent);
+                        out.push(Shape::line_segment([p - vec2(r * 0.45, 0.0), p + vec2(r * 0.45, 0.0)], st));
+                        out.push(Shape::line_segment([p - vec2(0.0, r * 0.45), p + vec2(0.0, r * 0.45)], st));
+                        continue;
+                    }
                     if h.is_add() {
                         if !quiet {
                             continue;

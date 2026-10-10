@@ -20,6 +20,7 @@ mod raster;
 mod share;
 #[cfg(not(target_arch = "wasm32"))]
 mod store;
+mod style;
 mod table;
 mod templates;
 mod text;

@@ -281,7 +281,7 @@ fn rgba(r: u8, g: u8, b: u8, a: f64) -> Color32 {
     Color32::from_rgba_unmultiplied(r, g, b, (a.clamp(0.0, 1.0) * 255.0).round() as u8)
 }
 
-/// The outline of a shape, in its local coordinates.
+/// The outline of a shape, in its local coordinates: corners rounded by its radius, as in Figma.
 pub fn shape_path(el: &El, s: &Shape) -> Path {
     let (w, h) = (el.w as f32, el.h as f32);
     match s.shape {
@@ -290,8 +290,44 @@ pub fn shape_path(el: &El, s: &Shape) -> Path {
             Path::round_rect(0.0, 0.0, w, h, [r; 4])
         }
         ShapeKind::Ellipse => Path::ellipse(w / 2.0, h / 2.0, w / 2.0, h / 2.0),
-        k => Path::polygon(&shape_polygon(k, el.w, el.h, s.points.as_deref()).unwrap_or_default()),
+        k => rounded_polygon(&shape_polygon(k, el.w, el.h, s.points.as_deref()).unwrap_or_default(), s.radius),
     }
+}
+
+/// Whether a shape's corners can be rounded (an ellipse has none).
+pub fn has_corners(k: ShapeKind) -> bool {
+    !matches!(k, ShapeKind::Ellipse | ShapeKind::Pill)
+}
+
+/// A closed polygon (flat [x, y, …]) with every corner rounded into an arc of radius `r`; where
+/// the sides are too short for it, as round as they allow.
+pub fn rounded_polygon(pts: &[f64], r: f64) -> Path {
+    let n = pts.len() / 2;
+    if n < 3 || r <= 0.0 {
+        return Path::polygon(pts);
+    }
+    let at = |i: usize| (pts[(i % n) * 2], pts[(i % n) * 2 + 1]);
+    let mut p = Path::default();
+    for i in 0..n {
+        let (a, c, b) = (at(i + n - 1), at(i), at(i + 1));
+        let (ua, ub) = (unit(c, a), unit(c, b));
+        let (la, lb) = ((a.0 - c.0).hypot(a.1 - c.1), (b.0 - c.0).hypot(b.1 - c.1));
+        // How far from the corner the arc starts: r / tan(half the corner's angle).
+        let angle = (ua.0 * ub.0 + ua.1 * ub.1).clamp(-1.0, 1.0).acos();
+        let cut = if angle > 1e-3 && angle < std::f64::consts::PI - 1e-3 { r / (angle / 2.0).tan() } else { 0.0 };
+        let k = cut.min(la / 2.0).min(lb / 2.0);
+        let (s, e) = ((c.0 + ua.0 * k, c.1 + ua.1 * k), (c.0 + ub.0 * k, c.1 + ub.1 * k));
+        if i == 0 {
+            p.move_to(s.0 as f32, s.1 as f32);
+        } else {
+            p.line_to(s.0 as f32, s.1 as f32);
+        }
+        if k > 0.01 {
+            p.quad_to(c.0 as f32, c.1 as f32, e.0 as f32, e.1 as f32);
+        }
+    }
+    p.close();
+    p
 }
 
 /// Washi tape: a translucent striped band with torn (zigzag) ends.
@@ -416,8 +452,7 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
             }
             if s.text.as_ref().is_some_and(|t| !t.is_empty()) && !editing {
                 let t = text::shape_text_layout(el, s);
-                let f = text::font(s.font.unwrap_or_default(), false, false);
-                out.push(Prim::Text { placed: place_lines(&t.layout.lines, f, t.size, Align::Center, t.width, t.top, t.left), color: with_alpha(text::shape_text_color(s), alpha) });
+                out.push(Prim::Text { placed: place_lines(&t.layout.lines, text::shape_font(s), t.size, s.align.unwrap_or(Align::Center), t.width, t.top, t.left), color: with_alpha(text::shape_text_color(s), alpha) });
             }
         }
         Kind::Comment { thread } => {
@@ -560,8 +595,9 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
             }
         }
         Kind::Sticky(s) => {
-            out.push(Prim::Shadow { x: 0.0, y: 0.0, w, h, radius: 4.0, blur: 10.0, dy: 3.0, color: rgba(0, 0, 0, 0.14 * alpha) });
-            out.push(Prim::Fill { path: Path::round_rect(0.0, 0.0, w, h, [4.0; 4]), color: with_alpha(color_or(&s.color, Color32::from_rgb(0xFF, 0xF3, 0xA3)), alpha) });
+            let r = (s.radius.unwrap_or(4.0) as f32).clamp(0.0, w.min(h) / 2.0);
+            out.push(Prim::Shadow { x: 0.0, y: 0.0, w, h, radius: r, blur: 10.0, dy: 3.0, color: rgba(0, 0, 0, 0.14 * alpha) });
+            out.push(Prim::Fill { path: Path::round_rect(0.0, 0.0, w, h, [r; 4]), color: with_alpha(color_or(&s.color, Color32::from_rgb(0xFF, 0xF3, 0xA3)), alpha) });
             let dark = is_dark(&s.color);
             if text::show_author(s) {
                 let size = el.h * 0.055;
@@ -574,8 +610,7 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
             if !editing && !s.text.is_empty() {
                 let (layout, size) = text::sticky_layout(el, s);
                 let top = (el.h - text::author_band(el, s) - layout.height) / 2.0;
-                let color = if dark { Color32::WHITE } else { DARK };
-                out.push(Prim::Text { placed: place_lines(&layout.lines, text::font(s.font, false, false), size, s.align, el.w - STICKY_PAD * 2.0, top, STICKY_PAD), color: with_alpha(color, alpha) });
+                out.push(Prim::Text { placed: place_lines(&layout.lines, text::sticky_font(s), size, s.align, el.w - STICKY_PAD * 2.0, top, STICKY_PAD), color: with_alpha(text::sticky_text_color(s), alpha) });
             }
         }
         Kind::Image { file_id } => out.push(Prim::Image { key: ImageKey::File(file_id.clone()), x: 0.0, y: 0.0, w, h, alpha: alpha as f32 }),

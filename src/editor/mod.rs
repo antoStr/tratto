@@ -62,6 +62,9 @@ pub enum Handle {
     AddE,
     AddS,
     AddW,
+    /// A table's "+" under its last row and after its last column.
+    AddRow,
+    AddCol,
 }
 
 impl Handle {
@@ -169,7 +172,9 @@ pub(crate) struct Draw {
     /// Board coordinates, flat [x, y, pressure, …].
     pts: Vec<f64>,
     snap: Option<RulerSnap>,
-    filter: OneEuro,
+    /// Tremor smoothing for pens and fingers; a mouse goes straight (it doesn't tremble, and
+    /// smoothing it only rounds off the small loops of handwriting).
+    filter: Option<OneEuro>,
     /// Smoothed pen pressure; None until the first sample.
     pressure: Option<f64>,
     use_pressure: bool,
@@ -192,7 +197,10 @@ pub(crate) enum Gesture {
     /// `tap`: started with the pen's barrel button, which opens the menu when not dragged.
     Lasso { poly: Vec<f64>, tap: Option<Pos2> },
     Marquee { start: Pt, cur: Pt, base: Vec<String> },
-    Move { start: Pt, orig: Vec<El>, bbox: BBox, cands: Vec<BBox>, moved: bool, s0: Pos2 },
+    /// `edit`: released without moving, start writing in this element (in this cell of a table).
+    Move { start: Pt, orig: Vec<El>, bbox: BBox, cands: Vec<BBox>, moved: bool, s0: Pos2, edit: Option<(String, Option<(usize, usize)>)> },
+    /// Dragging the line after column `col` of a table.
+    ColWidth { col: usize, orig: El, start: Pt },
     Resize { handle: Handle, start: Pt, orig: Vec<El>, frame: BBox, rotation: f64 },
     Rotate { c: Pt, a0: f64, orig: Vec<El> },
     Endpoint { which: usize, orig: El },
@@ -247,6 +255,10 @@ pub struct Editor {
     /// The pointer is over something clickable in a widget.
     pub(crate) hot: bool,
     pub(crate) hover_handle: Option<Handle>,
+    /// The pointer is on a column line of the selected table.
+    pub(crate) hover_col: bool,
+    /// Shape or note under the pointer whose "+" show without selecting it, as in FigJam.
+    pub(crate) hover_adds: Option<String>,
     pub(crate) space: bool,
     pub(crate) eraser_at: Option<Pos2>,
     pub(crate) guides: Vec<[f64; 4]>,
@@ -325,6 +337,8 @@ impl Editor {
             hover: None,
             hot: false,
             hover_handle: None,
+            hover_col: false,
+            hover_adds: None,
             space: false,
             eraser_at: None,
             guides: Vec::new(),
@@ -551,6 +565,13 @@ impl Editor {
             let d = 22.0 / z;
             list.extend([at(Handle::AddN, c.x, b.y - d), at(Handle::AddE, b.right() + d, c.y), at(Handle::AddS, c.x, b.bottom() + d), at(Handle::AddW, b.x - d, c.y)]);
         }
+        if let Some(e) = one.filter(|e| e.table().is_some()) {
+            // FigJam's "+" to grow a table: a row under it, a column beside it.
+            let d = 18.0 / z;
+            let _ = e;
+            list.push(at(Handle::AddRow, c.x, b.bottom() + d));
+            list.push(at(Handle::AddCol, b.right() + d, c.y));
+        }
         if one.is_some_and(|e| e.is_section()) {
             return list;
         }
@@ -583,6 +604,92 @@ impl Editor {
             }
         }
         best
+    }
+
+    /// The four "+" beside a shape or note, in canvas coordinates.
+    pub fn add_handles(&self, el: &El) -> Vec<(Handle, Pos2)> {
+        let (b, rot) = (frame(el), el.rotation);
+        let z = self.cam.z;
+        if b.w * z <= 24.0 || b.h * z <= 24.0 {
+            return Vec::new();
+        }
+        let c = b.center();
+        let d = 22.0 / z;
+        [(Handle::AddN, c.x, b.y - d), (Handle::AddE, b.right() + d, c.y), (Handle::AddS, c.x, b.bottom() + d), (Handle::AddW, b.x - d, c.y)]
+            .into_iter()
+            .map(|(h, x, y)| {
+                let p = rotate(x, y, c.x, c.y, rot);
+                (h, self.to_screen(p.x, p.y))
+            })
+            .collect()
+    }
+
+    /// Whether "+" can grow a diagram from this element.
+    pub fn can_branch(el: &El) -> bool {
+        matches!(el.kind, Kind::Shape(_) | Kind::Sticky(_)) && editable(el)
+    }
+
+    /// The "+" of the element under the pointer (not selected) at a screen point.
+    pub(crate) fn hit_hover_add(&self, s: Pos2, touch: bool) -> Option<(Handle, Arc<El>)> {
+        let id = self.hover_adds.as_ref()?;
+        if self.read_only || self.selection.contains(id) {
+            return None;
+        }
+        let el = self.current(id)?;
+        let r = if touch { 18.0 } else { 10.0 };
+        self.add_handles(&el).into_iter().map(|(h, p)| (h, p.distance(s))).filter(|(_, d)| *d <= r).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(h, _)| (h, el.clone()))
+    }
+
+    /// Keeps the "+" of the shape or note under the pointer, while the pointer stays on it or
+    /// on its way to one of them.
+    pub(crate) fn track_hover_adds(&mut self, s: Pos2, hit: Option<&Arc<El>>) {
+        if self.read_only || self.tool != Tool::Select {
+            self.hover_adds = None;
+            return;
+        }
+        if let Some(h) = hit.filter(|e| Editor::can_branch(e)) {
+            self.hover_adds = Some(h.id.clone());
+            return;
+        }
+        let keep = self.hover_adds.as_ref().and_then(|id| self.current(id)).is_some_and(|el| {
+            let p = self.to_world(s);
+            let l = to_local(&el, p.x, p.y);
+            let m = 40.0 / self.cam.z;
+            l.x > -m && l.y > -m && l.x < el.w + m && l.y < el.h + m
+        });
+        if !keep {
+            self.hover_adds = None;
+        }
+    }
+
+    /// The selected table and the column whose right-hand line is under a screen point.
+    pub(crate) fn column_line_at(&self, s: Pos2) -> Option<(Arc<El>, usize)> {
+        let [one] = self.selected().try_into().ok()?;
+        let t = one.table()?;
+        if one.locked || self.read_only {
+            return None;
+        }
+        let p = self.to_world(s);
+        let l = to_local(&one, p.x, p.y);
+        if l.y < 0.0 || l.y > one.h {
+            return None;
+        }
+        let reach = 4.0 / self.cam.z;
+        let edges = t.col_edges();
+        (1..edges.len() - 1).find(|&i| (l.x - edges[i]).abs() <= reach).map(|i| (one.clone(), i - 1))
+    }
+
+    /// A table grows by a row or a column from its "+".
+    pub(crate) fn grow_table(&mut self, col: bool) {
+        let sel = self.selected();
+        let [one] = sel.as_slice() else { return };
+        self.board.stop_capturing();
+        self.board.update(&[one.id.clone()], |el| {
+            if let Kind::Table(t) = &mut el.kind {
+                if col { t.insert_col(t.cols.len()) } else { t.insert_row(t.rows.len()) }
+            }
+            text::fit_text(el);
+        });
     }
 
     pub fn inside_selection(&self, p: Pt) -> bool {
@@ -699,7 +806,7 @@ impl Editor {
             opacity: pen.opacity.clamp(0.05, 1.0),
             pts: Vec::new(),
             snap: ink::ruler_snapper(&self.ruler, s.x as f64, s.y as f64, size * self.cam.z / 2.0),
-            filter: OneEuro::new(self.prefs.ink_smoothing.cutoff()),
+            filter: (kind != PointerKind::Mouse || self.prefs.ink_smoothing == crate::prefs::Smoothing::High).then(|| OneEuro::new(self.prefs.ink_smoothing.cutoff())),
             pressure: None,
             use_pressure: kind == PointerKind::Pen && self.prefs.pressure && !hl,
             raw: None,
@@ -712,7 +819,10 @@ impl Editor {
         let cam = self.cam;
         let Some(Gesture::Draw(g)) = &mut self.gesture else { return };
         g.raw = Some(raw);
-        let s = g.filter.filter(raw.x as f64, raw.y as f64, t_ms);
+        let s = match &mut g.filter {
+            Some(f) => f.filter(raw.x as f64, raw.y as f64, t_ms),
+            None => pt(raw.x as f64, raw.y as f64),
+        };
         let mut pressure = -1.0;
         if g.use_pressure
             && let Some(f) = force
@@ -749,7 +859,7 @@ impl Editor {
             let flat: Vec<f32> = thin.iter().map(|&v| v as f32).collect();
             if let Some(r) = ink::recognize(&flat, 1.0 / z) {
                 let (color, size, op) = (g.color.clone(), g.size, g.opacity);
-                let shape = |kind: ShapeKind, points: Option<Vec<f32>>| Kind::Shape(Shape { shape: kind, fill: "transparent".into(), stroke: color.clone(), stroke_width: size, radius: 0.0, dash: false, points, text: None, font: None });
+                let shape = |kind: ShapeKind, points: Option<Vec<f32>>| Kind::Shape(Shape { shape: kind, fill: "transparent".into(), stroke: color.clone(), stroke_width: size, points, ..Default::default() });
                 el = match r {
                     Recognized::Line { x1, y1, x2, y2 } => {
                         let c = color.clone();
@@ -976,7 +1086,7 @@ impl Editor {
         let v = expand(self.view(), 200.0 / self.cam.z);
         let cands: Vec<BBox> = self.board.all().iter().filter(|e| !ids.contains(&e.id) && !e.hidden && intersects(&aabb(e), &v)).take(400).map(|e| frame_box(e)).collect();
         let bbox = union(orig.iter().map(frame_box)).unwrap_or_default();
-        self.gesture = Some(Gesture::Move { start: p, orig, bbox, cands, moved: false, s0: s });
+        self.gesture = Some(Gesture::Move { start: p, orig, bbox, cands, moved: false, s0: s, edit: None });
     }
 
     pub(crate) fn snap_move(&mut self, b: BBox, cands: &[BBox]) -> (f64, f64) {
@@ -1033,7 +1143,7 @@ impl Editor {
                     ShapeTool::Kind(k) => k,
                     ShapeTool::RoundRect => ShapeKind::Rect,
                 };
-                let shape = Shape { shape: kind, fill: self.prefs.shape_style.fill.clone(), stroke: style_stroke, stroke_width: style_width, radius: if round { self.world_size(16.0) } else { 0.0 }, dash: false, points: None, text: None, font: None };
+                let shape = Shape { shape: kind, fill: self.prefs.shape_style.fill.clone(), stroke: style_stroke, stroke_width: style_width, radius: if round { self.world_size(16.0) } else { 0.0 }, ..Default::default() };
                 let mut el = self.base(El::new(Kind::Shape(shape)));
                 (el.x, el.y) = (p.x, p.y);
                 el
@@ -1171,8 +1281,10 @@ impl Editor {
         }
     }
 
-    /// Click on a "+": a connected copy beside the element, on that side.
-    fn add_beside(&mut self, el: &El, side: Handle) {
+    /// Click on a "+": a connected copy beside the element, on that side. Clicked again, the
+    /// next copy goes beside the first instead of on it: branches, as for the outcomes of a
+    /// decision. The copy is ready to be written in.
+    pub fn add_beside(&mut self, el: &El, side: Handle) {
         let z = self.cam.z;
         let gap = (80.0 / z).max(el.w.min(el.h) * 0.5);
         let c = center(el);
@@ -1182,16 +1294,184 @@ impl Editor {
             Handle::AddS => (0.0, 1.0),
             _ => (-1.0, 0.0),
         };
-        let copy = self.sibling(el, c.x + dx * (el.w + gap), c.y + dy * (el.h + gap));
+        let (bx, by) = (c.x + dx * (el.w + gap), c.y + dy * (el.h + gap));
+        // Across the direction of the branch: fan out until there is room.
+        let (px, py) = (dy.abs(), dx.abs());
+        let step = if px > 0.0 { el.w + gap * 0.5 } else { el.h + gap * 0.5 };
+        let others: Vec<BBox> = self.board.all().iter().filter(|e| e.id != el.id && !e.is_line() && !e.is_section() && !e.hidden).map(|e| expand(frame_box(e), gap * 0.25)).collect();
+        let free = |x: f64, y: f64| {
+            let b = BBox { x: x - el.w / 2.0, y: y - el.h / 2.0, w: el.w, h: el.h };
+            !others.iter().any(|o| intersects(o, &b))
+        };
+        let (mut x, mut y) = (bx, by);
+        for k in [0.0, 1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 4.0, -4.0] {
+            let (tx, ty) = (bx + px * step * k, by + py * step * k);
+            if free(tx, ty) {
+                (x, y) = (tx, ty);
+                break;
+            }
+        }
+        let copy = self.sibling(el, x, y);
         let mut base = self.connector(c, Some(el.id.clone()), true);
         base.line_mut().unwrap().to = Some(copy.id.clone());
         let line = route_connector(&base, |id| if id == copy.id { Some(&copy) } else { self.board.get(id).map(|e| &**e) }).unwrap_or(base);
         self.board.stop_capturing();
-        let (id, sticky) = (copy.id.clone(), matches!(copy.kind, Kind::Sticky(_)));
+        let id = copy.id.clone();
         self.board.put([copy, line]);
+        self.set_tool_keep(Tool::Select);
         self.selection = vec![id.clone()];
-        if sticky {
-            self.editing = Some(id);
+        self.editing = Some(id.clone());
+        self.editing_cell = None;
+        self.reveal(&[id]);
+    }
+
+    /// The element that points to this one (the parent in a diagram), if any.
+    pub fn parent_of(&mut self, id: &str) -> Option<Arc<El>> {
+        let from = self.board.all().iter().find_map(|e| e.line().filter(|l| l.to.as_deref() == Some(id)).and_then(|l| l.from.clone()))?;
+        self.board.get(&from).cloned()
+    }
+
+    /// Tab in a diagram: a new node after this one (to the right, or the way the diagram runs);
+    /// Shift+Tab: one more beside it, from the same parent.
+    pub fn grow_diagram(&mut self, id: &str, sibling: bool) -> bool {
+        let Some(el) = self.board.get(id).cloned().filter(|e| Editor::can_branch(e)) else { return false };
+        self.stop_editing();
+        if sibling && let Some(parent) = self.parent_of(id) {
+            let side = Editor::side_towards(&parent, &el);
+            self.add_beside(&parent, side);
+        } else if sibling {
+            self.add_beside(&el, Handle::AddS);
+        } else {
+            let side = self.parent_of(id).map_or(Handle::AddE, |p| Editor::side_towards(&p, &el));
+            self.add_beside(&el, side);
+        }
+        true
+    }
+
+    /// Which side of `from` faces `to`.
+    fn side_towards(from: &El, to: &El) -> Handle {
+        let (a, b) = (center(from), center(to));
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        if dx.abs() >= dy.abs() {
+            if dx >= 0.0 { Handle::AddE } else { Handle::AddW }
+        } else if dy >= 0.0 {
+            Handle::AddS
+        } else {
+            Handle::AddN
+        }
+    }
+
+    /// "Riordina": the diagram that grows from `root` (following its arrows) laid out as a
+    /// tidy tree, each level in a column (or a row, when the diagram runs downwards), children
+    /// centred on their parent. Arrows follow.
+    pub fn tidy(&mut self, root: &str) {
+        let all = self.board.all().to_vec();
+        let get = |id: &str| all.iter().find(|e| e.id == id).cloned();
+        let Some(r) = get(root) else { return };
+        // Arrows out of each element, in the order their ends sit (so the layout keeps it).
+        let mut out: HashMap<String, Vec<Arc<El>>> = HashMap::new();
+        for l in all.iter().filter_map(|e| e.line()) {
+            if let (Some(f), Some(t)) = (&l.from, &l.to)
+                && let Some(to) = get(t).filter(|e| !e.is_line() && editable(e))
+            {
+                out.entry(f.clone()).or_default().push(to);
+            }
+        }
+        // Which way it runs: where the root's children mostly are.
+        let rc = center(&r);
+        let kids = out.get(root).cloned().unwrap_or_default();
+        let (sx, sy) = kids.iter().fold((0.0, 0.0), |(x, y), k| {
+            let c = center(k);
+            (x + (c.x - rc.x).abs(), y + (c.y - rc.y).abs())
+        });
+        let down = sy > sx;
+        for v in out.values_mut() {
+            v.sort_by(|a, b| if down { center(a).x.total_cmp(&center(b).x) } else { center(a).y.total_cmp(&center(b).y) });
+        }
+        // The tree: each element once, under the first parent that reaches it.
+        let mut tree: HashMap<String, Vec<Arc<El>>> = HashMap::new();
+        let mut seen: HashSet<String> = HashSet::from([root.to_string()]);
+        let mut queue = vec![r.clone()];
+        while let Some(n) = queue.pop() {
+            for k in out.get(&n.id).cloned().unwrap_or_default() {
+                if seen.insert(k.id.clone()) {
+                    tree.entry(n.id.clone()).or_default().push(k.clone());
+                    queue.insert(0, k);
+                }
+            }
+        }
+        if tree.is_empty() {
+            return;
+        }
+        // Sizes along the levels (main) and across them (cross).
+        let main = |e: &El| if down { e.h } else { e.w };
+        let cross = |e: &El| if down { e.w } else { e.h };
+        let gap_main = 90.0 / self.cam.z.max(0.25);
+        let gap_cross = 36.0 / self.cam.z.max(0.25);
+        fn span(id: &str, tree: &HashMap<String, Vec<Arc<El>>>, cross: &dyn Fn(&El) -> f64, gap: f64, own: f64) -> f64 {
+            match tree.get(id) {
+                Some(kids) => {
+                    let sum: f64 = kids.iter().map(|k| span(&k.id, tree, cross, gap, cross(k))).sum::<f64>() + gap * (kids.len() - 1) as f64;
+                    sum.max(own)
+                }
+                None => own,
+            }
+        }
+        // Each level starts after the widest element of the level before.
+        let mut depth_of: HashMap<String, usize> = HashMap::from([(root.to_string(), 0)]);
+        let mut levels: Vec<f64> = vec![main(&r)];
+        let mut order = vec![r.clone()];
+        let mut i = 0;
+        while i < order.len() {
+            let n = order[i].clone();
+            let d = depth_of[&n.id];
+            for k in tree.get(&n.id).cloned().unwrap_or_default() {
+                depth_of.insert(k.id.clone(), d + 1);
+                if levels.len() <= d + 1 {
+                    levels.push(0.0);
+                }
+                levels[d + 1] = levels[d + 1].max(main(&k));
+                order.push(k);
+            }
+            i += 1;
+        }
+        let mut start = vec![0.0; levels.len()];
+        let origin = if down { r.y } else { r.x };
+        start[0] = origin;
+        for d in 1..levels.len() {
+            start[d] = start[d - 1] + levels[d - 1] + gap_main;
+        }
+        let mut moved: Vec<El> = Vec::new();
+        let place = |id: &str, mid: f64, stack: &mut Vec<(String, f64)>| stack.push((id.to_string(), mid));
+        let mut stack: Vec<(String, f64)> = Vec::new();
+        place(root, if down { rc.x } else { rc.y }, &mut stack);
+        while let Some((id, mid)) = stack.pop() {
+            let Some(e) = get(&id) else { continue };
+            let d = depth_of[&id];
+            let mut next = (*e).clone();
+            if id != root {
+                // Centred in its level, at its place across.
+                let m0 = start[d] + (levels[d] - main(&e)) / 2.0;
+                if down {
+                    (next.x, next.y) = (mid - e.w / 2.0, m0);
+                } else {
+                    (next.x, next.y) = (m0, mid - e.h / 2.0);
+                }
+                moved.push(next);
+            }
+            if let Some(kids) = tree.get(&id) {
+                let total: f64 = kids.iter().map(|k| span(&k.id, &tree, &cross, gap_cross, cross(k))).sum::<f64>() + gap_cross * (kids.len() - 1) as f64;
+                let mut at = mid - total / 2.0;
+                for k in kids {
+                    let s = span(&k.id, &tree, &cross, gap_cross, cross(k));
+                    place(&k.id, at + s / 2.0, &mut stack);
+                    at += s + gap_cross;
+                }
+            }
+        }
+        if !moved.is_empty() {
+            self.board.stop_capturing();
+            self.board.put(moved);
         }
     }
 
@@ -1210,7 +1490,7 @@ impl Editor {
 
     pub(crate) fn start_sticky(&mut self, p: Pt) {
         let s = self.world_size(220.0);
-        let mut el = self.base(El::new(Kind::Sticky(Sticky { text: String::new(), color: self.prefs.sticky_color.clone(), font: FontKind::Sans, align: Align::Center, author: self.name.clone(), hide_author: false })));
+        let mut el = self.base(El::new(Kind::Sticky(Sticky { color: self.prefs.sticky_color.clone(), author: self.name.clone(), ..Default::default() })));
         (el.x, el.y, el.w, el.h) = (p.x - s / 2.0, p.y - s / 2.0, s, s);
         self.board.stop_capturing();
         let id = el.id.clone();
@@ -1412,6 +1692,7 @@ impl Editor {
         self.eraser_at = None;
         self.hover_handle = None;
         self.hover = None;
+        self.hover_adds = None;
     }
 
     fn prune(&mut self) {
@@ -1892,10 +2173,12 @@ impl Editor {
         }
     }
 
-    /// A 3 × 3 table sized for the current zoom, its first row a header.
+    /// A table (3 × 3 unless chosen otherwise in the tray) sized for the current zoom, its first
+    /// row a header.
     pub fn insert_table(&mut self, p: Option<Pt>) {
         let k = self.world_size(1.0);
-        let mut t = Table::new(3, 3);
+        let [rows, cols] = self.prefs.table_size;
+        let mut t = Table::new(rows.clamp(1, 20) as usize, cols.clamp(1, 12) as usize);
         t.font_size *= k;
         t.cols.iter_mut().for_each(|c| *c *= k);
         self.insert_here(El::new(Kind::Table(t)), p, false);
@@ -1903,7 +2186,7 @@ impl Editor {
 
     pub fn insert_code(&mut self) {
         let k = self.world_size(1.0);
-        let mut el = El::new(Kind::Code(Code { code: String::new(), language: self.prefs.code_language.clone(), light: false, font_size: 14.0 * k }));
+        let mut el = El::new(Kind::Code(Code { code: String::new(), language: self.prefs.code_language.clone(), light: false, font_size: 14.0 * k, radius: None }));
         el.w = 520.0 * k;
         self.insert_here(el, None, true);
     }
@@ -1993,4 +2276,70 @@ fn resize_text(orig: &El, mut next: El, h: Handle) -> El {
 pub fn pin_box(el: &El, z: f64) -> BBox {
     let s = crate::prims::COMMENT_PIN / z;
     BBox { x: el.x, y: el.y - s, w: s, h: s }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn editor() -> Editor {
+        let board = Board::new(yrs::Doc::new(), Arc::new(|| {}));
+        Editor::new(board, "b".into(), Painter::new(crate::paint::Images::new(None)), Prefs::default(), "v".into())
+    }
+
+    fn node(id: &str, x: f64, y: f64) -> El {
+        let mut el = El::new(Kind::Shape(Shape { fill: "#C7E5FF".into(), ..Default::default() }));
+        (el.id, el.x, el.y, el.w, el.h) = (id.into(), x, y, 160.0, 80.0);
+        el
+    }
+
+    fn arrows_from(ed: &mut Editor, id: &str) -> Vec<String> {
+        ed.board.all().iter().filter_map(|e| e.line()).filter(|l| l.from.as_deref() == Some(id)).filter_map(|l| l.to.clone()).collect()
+    }
+
+    #[test]
+    fn the_same_plus_twice_makes_two_branches() {
+        let mut ed = editor();
+        let root = node("root", 0.0, 0.0);
+        ed.board.put([root.clone()]);
+        ed.add_beside(&root, Handle::AddE);
+        let first = ed.selection[0].clone();
+        assert_eq!(ed.editing.as_deref(), Some(first.as_str()), "the new node is ready to write in");
+        ed.add_beside(&root, Handle::AddE);
+        let kids = arrows_from(&mut ed, "root");
+        assert_eq!(kids.len(), 2, "both joined to the root by an arrow");
+        let boxes: Vec<BBox> = kids.iter().map(|k| frame_box(ed.board.get(k).unwrap())).collect();
+        assert!(!intersects(&boxes[0], &boxes[1]), "side by side, not on top of each other: {boxes:?}");
+        assert!(boxes.iter().all(|b| b.x > 160.0), "to the right of the root");
+        // Tab from the first child goes on to the right; Shift+Tab adds a third branch.
+        assert!(ed.grow_diagram(&kids[0], false));
+        assert_eq!(arrows_from(&mut ed, &kids[0]).len(), 1);
+        assert!(ed.grow_diagram(&kids[0], true));
+        assert_eq!(arrows_from(&mut ed, "root").len(), 3);
+    }
+
+    #[test]
+    fn tidy_puts_each_level_in_a_column() {
+        let mut ed = editor();
+        let root = node("root", 0.0, 0.0);
+        ed.board.put([root.clone()]);
+        ed.add_beside(&root, Handle::AddE);
+        ed.add_beside(&root, Handle::AddE);
+        ed.add_beside(&root, Handle::AddS);
+        let kids = arrows_from(&mut ed, "root");
+        // Scatter them, then tidy.
+        let scattered: Vec<El> = kids.iter().enumerate().map(|(i, k)| El { x: 500.0 + i as f64 * 150.0, y: -300.0 + i as f64 * 200.0, ..(**ed.board.get(k).unwrap()).clone() }).collect();
+        ed.board.put(scattered);
+        ed.tidy("root");
+        let boxes: Vec<BBox> = kids.iter().map(|k| frame_box(ed.board.get(k).unwrap())).collect();
+        let x0 = boxes[0].x;
+        assert!(boxes.iter().all(|b| (b.x - x0).abs() < 1e-6 && b.x > 160.0), "one column right of the root: {boxes:?}");
+        for (i, a) in boxes.iter().enumerate() {
+            for b in &boxes[i + 1..] {
+                assert!(!intersects(a, b), "no overlaps: {boxes:?}");
+            }
+        }
+        let mid = boxes.iter().map(|b| b.center().y).sum::<f64>() / boxes.len() as f64;
+        assert!((mid - 40.0).abs() < 1.0, "centred on the root: {mid}");
+    }
 }

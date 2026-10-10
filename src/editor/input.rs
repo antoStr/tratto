@@ -18,6 +18,10 @@ pub struct InputState {
     touch_pointer: Option<u64>,
     down: bool,
     modifiers: Modifiers,
+    /// Tab grew a diagram this frame: egui must not also move the keyboard focus with it.
+    ate_tab: bool,
+    /// When the last frame's input was read: the moves of this frame are spread since then.
+    last_t: f64,
 }
 
 fn kind_of(touch: u64) -> PointerKind {
@@ -33,10 +37,23 @@ impl Editor {
     pub fn handle_input(&mut self, ctx: &egui::Context, hovered: bool, keys: bool, double_click: Option<Pos2>) {
         let events = ctx.input(|i| i.events.clone());
         let t = now();
+        // Every move of a frame arrives at once: each gets its own moment between the last frame
+        // and this one, so the smoothing filter sees the real pace of the pen.
+        let since = if self.input.last_t > 0.0 && t > self.input.last_t { self.input.last_t } else { t };
+        self.input.last_t = t;
+        let moves = events.iter().filter(|e| matches!(e, Event::PointerMoved(_) | Event::Touch { phase: TouchPhase::Move, .. })).count().max(1);
+        let mut nth = 0;
+        let at = |nth: &mut usize| {
+            *nth += 1;
+            since + (t - since) * (*nth as f64 / moves as f64)
+        };
         self.input.touch_began = None;
         for e in events {
             match e {
-                Event::Touch { id, phase, pos, force, .. } => self.on_touch(id.0, phase, pos, force, hovered, t),
+                Event::Touch { id, phase, pos, force, .. } => {
+                    let t = if phase == TouchPhase::Move { at(&mut nth) } else { t };
+                    self.on_touch(id.0, phase, pos, force, hovered, t)
+                }
                 Event::PointerButton { pos, button, pressed, modifiers } => {
                     self.input.modifiers = modifiers;
                     let s = self.screen_pt(pos);
@@ -76,6 +93,15 @@ impl Editor {
                 }
                 Event::PointerMoved(pos) => {
                     let m = ctx.input(|i| i.modifiers);
+                    let t = at(&mut nth);
+                    // Writing, erasing or drawing a lasso with the mouse: first the positions the
+                    // system folded into this move, so fast curves keep their shape.
+                    if self.input.kind == Some(PointerKind::Mouse) && matches!(self.gesture, Some(Gesture::Draw(_) | Gesture::Erase { .. } | Gesture::Lasso { .. })) {
+                        let ppp = ctx.pixels_per_point();
+                        for (x, y) in crate::pen::mouse_trail((pos.x * ppp, pos.y * ppp)) {
+                            self.on_move(self.screen_pt(egui::pos2(x / ppp, y / ppp)), m, t);
+                        }
+                    }
                     self.on_move(self.screen_pt(pos), m, t);
                 }
                 Event::PointerGone => self.on_leave(),
@@ -117,6 +143,14 @@ impl Editor {
         }
         if let Some(p) = double_click {
             self.on_double_click(self.screen_pt(p));
+        }
+        if std::mem::take(&mut self.input.ate_tab) {
+            ctx.memory_mut(|m| {
+                if let Some(f) = m.focused() {
+                    m.surrender_focus(f);
+                }
+                m.move_focus(egui::FocusDirection::None);
+            });
         }
         self.tick();
         if hovered || self.gesture.is_some() {
@@ -258,11 +292,23 @@ impl Editor {
             }
         }
 
-        let handle = if !ro && matches!(tool, Tool::Select | Tool::Lasso) { self.hit_handle(s, kind != PointerKind::Mouse) } else { None };
+        let mut handle = if !ro && matches!(tool, Tool::Select | Tool::Lasso) { self.hit_handle(s, kind != PointerKind::Mouse) } else { None };
+        // The "+" of a shape or note under the pointer: it becomes the selection, then as below.
+        if handle.is_none()
+            && !ro
+            && tool == Tool::Select
+            && let Some((h, el)) = self.hit_hover_add(s, kind != PointerKind::Mouse)
+        {
+            self.selection = vec![el.id.clone()];
+            self.hover_adds = None;
+            handle = Some(h);
+        }
         if let Some(h) = handle {
             self.board.stop_capturing();
             let sel: Vec<El> = self.selected().iter().map(|e| (**e).clone()).collect();
-            if h.is_add() {
+            if h == Handle::AddRow || h == Handle::AddCol {
+                self.grow_table(h == Handle::AddCol);
+            } else if h.is_add() {
                 // Drag: a connector from this element; a click adds a connected copy on that side.
                 let src = sel[0].clone();
                 let el = self.connector(p, Some(src.id.clone()), true);
@@ -281,6 +327,15 @@ impl Editor {
             return;
         }
 
+        // The line between two columns of the selected table: drag to make one wider.
+        if !ro
+            && tool == Tool::Select
+            && let Some((el, col)) = self.column_line_at(s)
+        {
+            self.board.stop_capturing();
+            self.gesture = Some(Gesture::ColWidth { col, orig: (*el).clone(), start: p });
+            return;
+        }
         if self.try_vote(p, m.shift || m.alt) {
             return;
         }
@@ -308,6 +363,19 @@ impl Editor {
                     }
                     if !ro {
                         self.start_move(p, s, m.alt);
+                        // A click (no drag) on what was already selected writes in it, as in
+                        // FigJam: in the cell under the pointer for a table.
+                        if was && !m.shift && !m.alt && self.selection.len() == 1 && writable(&hit) && !hit.is_line() && !hit.is_section() {
+                            let cell = hit.table().and_then(|t| {
+                                let l = to_local(&hit, p.x, p.y);
+                                t.cell_at(l.x, l.y)
+                            });
+                            if (hit.table().is_none() || cell.is_some())
+                                && let Some(Gesture::Move { edit, .. }) = &mut self.gesture
+                            {
+                                *edit = Some((hit.id.clone(), cell));
+                            }
+                        }
                     }
                     return;
                 }
@@ -404,13 +472,17 @@ impl Editor {
         let Some(g) = &mut self.gesture else {
             if self.input.kind != Some(PointerKind::Touch) || !self.input.down {
                 let h = if matches!(self.tool, Tool::Select | Tool::Lasso) { self.hit_handle(s, self.input.kind == Some(PointerKind::Pen)) } else { None };
+                self.hover_col = h.is_none() && self.tool == Tool::Select && self.column_line_at(s).is_some();
                 let hit = if self.tool == Tool::Select && h.is_none() { self.hit_element(p, 4.0) } else { None };
                 self.hot = !self.read_only
                     && hit.as_ref().is_some_and(|e| {
                         let l = crate::geom::to_local(e, p.x, p.y);
                         crate::widgets::hot_at(e, l.x, l.y).is_some()
                     });
-                self.hover_handle = h;
+                self.hover_handle = h.or_else(|| self.hit_hover_add(s, false).map(|(h, _)| h));
+                if h.is_none() {
+                    self.track_hover_adds(s, hit.as_ref());
+                }
                 self.hover = hit.map(|e| e.id.clone());
             }
             return;
@@ -453,7 +525,23 @@ impl Editor {
                     self.selection = next;
                 }
             }
-            Gesture::Move { start, orig, bbox, cands, moved, s0 } => {
+            Gesture::ColWidth { col, orig, start } => {
+                let (col, orig, start) = (*col, orig.clone(), *start);
+                // Along the table's own axis, whatever its rotation.
+                let (a, b) = (to_local(&orig, start.x, start.y), to_local(&orig, p.x, p.y));
+                let mut next = orig.clone();
+                if let Kind::Table(t) = &mut next.kind
+                    && let Some(w) = t.cols.get_mut(col)
+                {
+                    *w = (*w + b.x - a.x).max(24.0);
+                }
+                crate::text::fit_text(&mut next);
+                // The table stays where it is: only its right side moves.
+                (next.x, next.y) = (orig.x, orig.y);
+                self.preview.insert(orig.id.clone(), Arc::new(next));
+                self.schedule_flush();
+            }
+            Gesture::Move { start, orig, bbox, cands, moved, s0, .. } => {
                 if !*moved && s.distance(*s0) < 3.0 {
                     return;
                 }
@@ -588,7 +676,11 @@ impl Editor {
             Gesture::Erase { touched, .. } => self.finish_erase(touched),
             // Let the trail fade, then clear it for the others.
             Gesture::Laser => self.laser_clear = Some(now() + 950.0),
-            Gesture::Move { moved, .. } => {
+            Gesture::Move { moved, edit, .. } => {
+                if !moved && let Some((id, cell)) = edit {
+                    self.editing = Some(id);
+                    self.editing_cell = cell;
+                }
                 let sel = self.selected();
                 if !moved && sel.len() == 1 && sel[0].is_comment() {
                     self.comment = Some(sel[0].id.clone());
@@ -607,7 +699,9 @@ impl Editor {
     }
 
     fn on_double_click(&mut self, s: Pos2) {
-        if self.read_only {
+        // Only the selection tool writes into things on a double click: writing fast with the
+        // pen, two quick marks over a note must not turn the pen into the selection.
+        if self.read_only || self.tool != Tool::Select {
             return;
         }
         let p = self.to_world(s);
@@ -660,6 +754,26 @@ impl Editor {
         let ro = self.read_only;
         if key == Key::Space {
             self.space = true;
+            return;
+        }
+        // Diagrams from the keyboard: Ctrl+arrow puts a connected node that way.
+        if cmd && !ro && self.selection.len() == 1 && matches!(key, Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown) {
+            if let Some(el) = self.board.get(&self.selection[0]).cloned().filter(|e| Editor::can_branch(e)) {
+                let side = match key {
+                    Key::ArrowLeft => Handle::AddW,
+                    Key::ArrowRight => Handle::AddE,
+                    Key::ArrowUp => Handle::AddN,
+                    _ => Handle::AddS,
+                };
+                self.add_beside(&el, side);
+            }
+            return;
+        }
+        if key == Key::Tab && !ro && self.selection.len() == 1 {
+            let id = self.selection[0].clone();
+            if self.grow_diagram(&id, m.shift) {
+                self.input.ate_tab = true;
+            }
             return;
         }
         if cmd {
@@ -828,6 +942,9 @@ impl Editor {
         if self.hot && self.tool == Tool::Select {
             return CursorIcon::PointingHand;
         }
+        if (self.hover_col && self.hover_handle.is_none()) || matches!(self.gesture, Some(Gesture::ColWidth { .. })) {
+            return CursorIcon::ResizeHorizontal;
+        }
         if let Some(h) = self.hover_handle {
             return match h {
                 Handle::N | Handle::S => CursorIcon::ResizeVertical,
@@ -836,6 +953,7 @@ impl Editor {
                 Handle::Ne | Handle::Sw => CursorIcon::ResizeNeSw,
                 Handle::Rot => CursorIcon::Grab,
                 Handle::P0 | Handle::P1 => CursorIcon::Move,
+                Handle::AddRow | Handle::AddCol => CursorIcon::PointingHand,
                 _ => CursorIcon::Copy,
             };
         }

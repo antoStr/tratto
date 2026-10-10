@@ -46,7 +46,7 @@ pub fn context_bar(ctx: &egui::Context, free: Rect, ed: &mut Editor) {
     let gap = 36.0;
     let h = ctx.data(|d| d.get_temp::<f32>(Id::new("ctx-bar-h"))).unwrap_or(40.0);
     let above = sel.min.y - gap - h >= free.min.y + 8.0;
-    let rise = (1.0 - k.min(1.0)) * 6.0;
+    let rise = ui::motion::travel(ctx, k) * 6.0;
     let (pivot, at) = if above {
         (egui::Align2::CENTER_BOTTOM, pos2(sel.center().x, sel.min.y - gap + rise))
     } else {
@@ -60,7 +60,7 @@ pub fn context_bar(ctx: &egui::Context, free: Rect, ed: &mut Editor) {
         ui.set_opacity(k.clamp(0.0, 1.0));
         ctx.data_mut(|d| d.insert_temp(Id::NULL, dark));
         egui::Frame::new().fill(dark.menu).corner_radius(12).inner_margin(egui::Margin::same(4)).shadow(egui::Shadow { offset: [0, 6], blur: 18, spread: 0, color: Color32::from_black_alpha(60) }).show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui::row(ui, B, |ui| {
                 ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
                 controls(ui, ed, &els, &dark);
             });
@@ -300,56 +300,33 @@ fn controls(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], t: &Theme) {
                 });
             }
         }
-        // Text: font, size, weight, alignment.
-        let texty = els.iter().all(|e| e.text().is_some() || e.sticky().is_some() || e.shape().is_some_and(|s| s.text.as_ref().is_some_and(|t| !t.is_empty())));
+        // Text: font, size, weight, alignment, for anything with text in it.
+        let texty = els.iter().all(|e| e.text().is_some() || e.sticky().is_some() || e.table().is_some() || e.shape().is_some_and(|s| s.text.as_ref().is_some_and(|t| !t.is_empty())));
         if texty {
+            use crate::style::Change;
             gap(ui, &mut sep);
-            let mut f = same(els, |e| e.text().map(|x| x.font).or_else(|| e.sticky().map(|s| s.font)).or_else(|| e.shape().map(|s| s.font.unwrap_or_default()))).unwrap_or_default();
+            let mut f = same(els, |e| crate::style::look(e).and_then(|l| l.font)).unwrap_or_default();
             if super::toolbar::font_picker(ui, &mut f, 112.0, t) {
-                ed.board.update(&ids, |el| {
-                    match &mut el.kind {
-                        Kind::Text(x) => x.font = f,
-                        Kind::Sticky(s) => s.font = f,
-                        Kind::Shape(s) => s.font = Some(f),
-                        _ => {}
-                    }
-                    crate::text::fit_text(el);
-                });
+                ed.board.update(&ids, |el| crate::style::apply(el, &Change::Font(f)));
             }
-            if only("text") {
-                let size = same(els, |e| e.text().map(|x| x.font_size.round() as i64));
-                let mut step = |ui: &mut Ui, name: &str, label: &str, k: f64| {
-                    if ui::icon_button(ui, name, label, None, vec2(22.0, B), 12.0, false, false).clicked() {
-                        ed.board.update(&ids, |el| {
-                            if let Kind::Text(x) = &mut el.kind {
-                                x.font_size = (x.font_size * k).round().clamp(4.0, 2000.0);
-                            }
-                            crate::text::fit_text(el);
-                        });
-                    }
-                };
-                step(ui, "minus", "Testo più piccolo", 1.0 / 1.2);
-                let txt = size.map_or("–".to_string(), |v| v.to_string());
-                ui.add_sized(vec2(26.0, B), egui::Label::new(egui::RichText::new(txt).color(t.text).monospace()));
-                step(ui, "plus", "Testo più grande", 1.2);
-                let bold = els.iter().all(|e| e.text().is_some_and(|x| x.bold));
-                let italic = els.iter().all(|e| e.text().is_some_and(|x| x.italic));
-                if ui::icon_button(ui, "bold", "Grassetto", None, vec2(B, B), 16.0, bold, false).clicked() {
-                    ed.board.update(&ids, |el| {
-                        if let Kind::Text(x) = &mut el.kind {
-                            x.bold = !bold;
-                        }
-                        crate::text::fit_text(el);
-                    });
+            let size = same(els, |e| crate::style::shown_size(e).map(|v| v.round() as i64));
+            let mut step = |ui: &mut Ui, name: &str, label: &str, k: f64| {
+                if ui::icon_button(ui, name, label, None, vec2(22.0, B), 12.0, false, false).clicked() {
+                    ed.board.update(&ids, |el| crate::style::apply(el, &Change::Scale(k)));
                 }
-                if ui::icon_button(ui, "italic", "Corsivo", None, vec2(B, B), 16.0, italic, false).clicked() {
-                    ed.board.update(&ids, |el| {
-                        if let Kind::Text(x) = &mut el.kind {
-                            x.italic = !italic;
-                        }
-                        crate::text::fit_text(el);
-                    });
-                }
+            };
+            step(ui, "minus", "Testo più piccolo", 1.0 / 1.2);
+            let txt = size.map_or("–".to_string(), |v| v.to_string());
+            let (r, _) = ui.allocate_exact_size(vec2(28.0, B), Sense::hover());
+            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, txt, egui::FontId::proportional(11.0), t.text);
+            step(ui, "plus", "Testo più grande", 1.2);
+            let bold = els.iter().all(|e| crate::style::look(e).and_then(|l| l.bold) == Some(true));
+            let italic = els.iter().all(|e| crate::style::look(e).and_then(|l| l.italic) == Some(true));
+            if ui::icon_button(ui, "bold", "Grassetto", None, vec2(B, B), 16.0, bold, false).clicked() {
+                ed.board.update(&ids, |el| crate::style::apply(el, &Change::Bold(!bold)));
+            }
+            if ui::icon_button(ui, "italic", "Corsivo", None, vec2(B, B), 16.0, italic, false).clicked() {
+                ed.board.update(&ids, |el| crate::style::apply(el, &Change::Italic(!italic)));
             }
             if types.iter().all(|k| *k == "text" || *k == "sticky") {
                 // Lists and strikethrough, as in FigJam's text.
@@ -390,19 +367,15 @@ fn controls(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], t: &Theme) {
                         });
                     }
                 }
-                let align = same(els, |e| e.text().map(|x| x.align).or_else(|| e.sticky().map(|s| s.align))).unwrap_or_default();
-                let (next, name) = match align {
-                    Align::Left => (Align::Center, "text-align-start"),
-                    Align::Center => (Align::Right, "text-align-center"),
-                    Align::Right => (Align::Left, "text-align-end"),
-                };
-                if ui::icon_button(ui, name, "Allineamento del testo", None, vec2(B, B), 16.0, false, false).clicked() {
-                    ed.board.update(&ids, |el| match &mut el.kind {
-                        Kind::Text(x) => x.align = next,
-                        Kind::Sticky(s) => s.align = next,
-                        _ => {}
-                    });
-                }
+            }
+            let align = same(els, |e| crate::style::look(e).and_then(|l| l.align)).unwrap_or_default();
+            let (next, name) = match align {
+                Align::Left => (Align::Center, "text-align-start"),
+                Align::Center => (Align::Right, "text-align-center"),
+                Align::Right => (Align::Left, "text-align-end"),
+            };
+            if ui::icon_button(ui, name, "Allineamento del testo", None, vec2(B, B), 16.0, false, false).clicked() {
+                ed.board.update(&ids, |el| crate::style::apply(el, &Change::Align(next)));
             }
         }
         if els.len() > 1 {
@@ -433,6 +406,18 @@ fn controls(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], t: &Theme) {
                     }
                 });
             });
+        }
+    }
+    // A diagram growing from this node: tidy it up in one go.
+    if !locked
+        && let [one] = els
+        && crate::editor::Editor::can_branch(one)
+        && ed.board.all().iter().any(|e| e.line().is_some_and(|l| l.from.as_deref() == Some(one.id.as_str()) && l.to.is_some()))
+    {
+        gap(ui, &mut sep);
+        if ui::icon_button(ui, "tidy", "Riordina il diagramma che parte da qui", None, vec2(B, B), 16.0, false, false).clicked() {
+            let id = one.id.clone();
+            ed.tidy(&id);
         }
     }
     gap(ui, &mut sep);

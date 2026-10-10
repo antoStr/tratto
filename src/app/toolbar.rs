@@ -94,10 +94,19 @@ pub fn shape_icon(ui: &Ui, tool: ShapeTool, c: Pos2, size: f32, color: Color32) 
     icon(ui, name, c, size, color);
 }
 
-fn sep(ui: &mut Ui, t: &Theme) {
-    let (r, _) = ui.allocate_exact_size(vec2(9.0, BTN), Sense::hover());
-    ui.painter().vline(r.center().x, (r.center().y - 10.0)..=(r.center().y + 10.0), Stroke::new(1.0, t.border));
+/// A thin divider between groups, `h` tall (the row's height).
+fn sep_h(ui: &mut Ui, t: &Theme, h: f32) {
+    let (r, _) = ui.allocate_exact_size(vec2(9.0, h), Sense::hover());
+    let half = (h * 0.28).min(10.0);
+    ui.painter().vline(r.center().x, (r.center().y - half)..=(r.center().y + half), Stroke::new(1.0, t.border));
 }
+
+fn sep(ui: &mut Ui, t: &Theme) {
+    sep_h(ui, t, BTN);
+}
+
+/// Height of the tray's row for a tool: everything in it sits on one centre line.
+const TRAY_H: f32 = 32.0;
 
 fn tool_button(ui: &mut Ui, ed: &mut Editor, tool: Tool, name: &str, label: &str, kbd: Option<&str>) -> egui::Response {
     let r = icon_button(ui, name, label, kbd, vec2(BTN, BTN), ICON, false, ed.tool == tool);
@@ -249,7 +258,7 @@ pub fn toolbar(ctx: &egui::Context, stage: Rect, ed: &mut Editor, st: &mut Board
         let [contact, soft] = ui::card_shadows(&t);
         let under = ui.painter().add(egui::Shape::Noop);
         let card = egui::Frame::new().fill(t.bg).stroke(Stroke::new(1.0, t.border)).corner_radius(16).shadow(soft).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui::row(ui, BTN, |ui| {
                 ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
                 tool_button(ui, ed, Tool::Select, "mouse-pointer-2", "Seleziona", Some("V"));
                 tool_button(ui, ed, Tool::Hand, "hand", "Mano", Some("H"));
@@ -275,9 +284,7 @@ pub fn toolbar(ctx: &egui::Context, stage: Rect, ed: &mut Editor, st: &mut Board
                 let r = tool_button(ui, ed, Tool::Shape, "", label, kbd);
                 shape_icon(ui, shape, r.rect.center(), ICON, if ed.tool == Tool::Shape { Color32::WHITE } else { t.icon });
                 let (cr, chevron) = ui.allocate_exact_size(vec2(14.0, BTN), Sense::click());
-                if chevron.hovered() {
-                    ui.painter().rect_filled(cr, 4.0, t.hover);
-                }
+                ui::hover_fill(ui, chevron.id, cr, chevron.hovered(), 4.0, t.hover);
                 icon(ui, "chevron-down", cr.center(), 12.0, t.icon2);
                 egui::Popup::menu(&chevron).frame(ui::menu_frame(&t)).align(if top { egui::RectAlign::BOTTOM } else { egui::RectAlign::TOP }).show(|ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
@@ -342,7 +349,7 @@ const PCT: fn(f64) -> String = |v| format!("{}%", (v * 100.0).round());
 /// The contextual tray above the toolbar: what the current tool can be set to.
 fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) {
     let tool = ed.tool;
-    if !matches!(tool, Tool::Pen | Tool::Highlighter | Tool::Tape | Tool::Eraser | Tool::Shape | Tool::Line | Tool::Arrow | Tool::Text | Tool::Sticky | Tool::Stamp | Tool::Comment | Tool::Section) {
+    if !matches!(tool, Tool::Pen | Tool::Highlighter | Tool::Tape | Tool::Eraser | Tool::Shape | Tool::Line | Tool::Arrow | Tool::Text | Tool::Sticky | Tool::Stamp | Tool::Comment | Tool::Section | Tool::Table) {
         return;
     }
     let pivot = if top { egui::Align2::CENTER_TOP } else { egui::Align2::CENTER_BOTTOM };
@@ -353,27 +360,37 @@ fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) {
         ui::motion::reset(ctx, Id::new("tray"));
     }
     let k = ui::motion::appear(ctx, Id::new("tray"), true);
-    let rise = (1.0 - k) * 10.0;
+    let rise = ui::motion::travel(ctx, k) * 10.0;
     let at = if top { pos2(bar.center().x, bar.max.y + 8.0 - rise) } else { pos2(bar.center().x, bar.min.y - 8.0 + rise) };
+    // The tallest thing in the tray sets its height; everything else is centred on it.
+    let h = match tool {
+        Tool::Shape => 88.0,
+        Tool::Stamp => 62.0,
+        _ => TRAY_H,
+    };
     egui::Area::new(Id::new(("tray", format!("{tool:?}")))).pivot(pivot).fixed_pos(at).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
-        ui::float_frame(t).show(ui, |ui| {
-            ui.horizontal(|ui| {
+        ui::float_frame(t).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+            ui::row(ui, h, |ui| {
                 ui.spacing_mut().item_spacing = vec2(6.0, 0.0);
                 let p = &mut ed.prefs;
                 match tool {
                     Tool::Pen => {
+                        ui.spacing_mut().item_spacing.x = 2.0;
                         let n = p.pens.len();
                         for i in 0..n {
                             pen_slot(ui, ed, i, t, top);
                         }
+                        ui.spacing_mut().item_spacing.x = 8.0;
                         let p = &mut ed.prefs;
                         let i = ed.pen.min(p.pens.len() - 1);
-                        sep(ui, t);
+                        sep_h(ui, t, h);
                         let pen = &mut p.pens[i];
-                        ui::slider(ui, "Spessore", &mut pen.size, 1.0, 64.0, 0.5, true, PX, 120.0);
-                        ui::slider(ui, "Opacità", &mut pen.opacity, 0.1, 1.0, 0.05, false, PCT, 100.0);
-                        sep(ui, t);
+                        ui::slider_inline(ui, "Spessore", &mut pen.size, 1.0, 64.0, 0.5, true, PX, 196.0);
+                        ui.add_space(8.0);
+                        ui::slider_inline(ui, "Opacità", &mut pen.opacity, 0.1, 1.0, 0.05, false, PCT, 172.0);
+                        sep_h(ui, t, h);
+                        ui.spacing_mut().item_spacing.x = 2.0;
                         if icon_button(ui, "shapes", "Da tratto a forma: trasforma linee, cerchi e rettangoli disegnati a mano", None, vec2(32.0, 32.0), 18.0, p.ink_to_shape, false).clicked() {
                             p.ink_to_shape = !p.ink_to_shape;
                         }
@@ -386,25 +403,25 @@ fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) {
                         if let Some(c) = ui::swatches(ui, &HIGHLIGHT_COLORS, &p.highlighter.color, false) {
                             p.highlighter.color = c;
                         }
-                        sep(ui, t);
-                        ui::slider(ui, "Spessore", &mut p.highlighter.size, 4.0, 96.0, 0.0, true, PX, 120.0);
+                        sep_h(ui, t, h);
+                        ui::slider_inline(ui, "Spessore", &mut p.highlighter.size, 4.0, 96.0, 0.0, true, PX, 196.0);
                     }
                     Tool::Tape => {
                         if let Some(c) = ui::swatches(ui, &TAPE_COLORS, &p.tape.color, false) {
                             p.tape.color = c;
                         }
-                        sep(ui, t);
-                        ui::slider(ui, "Larghezza", &mut p.tape.size, 8.0, 120.0, 0.0, true, PX, 120.0);
+                        sep_h(ui, t, h);
+                        ui::slider_inline(ui, "Larghezza", &mut p.tape.size, 8.0, 120.0, 0.0, true, PX, 204.0);
                     }
                     Tool::Eraser => {
                         ui::segmented(ui, &mut p.eraser.mode, &[(EraserMode::Pixel, "Pixel"), (EraserMode::Stroke, "Tratto intero")], 196.0);
-                        sep(ui, t);
-                        let (r, _) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::hover());
-                        let d = (p.eraser.size as f32).clamp(4.0, 28.0);
+                        sep_h(ui, t, h);
+                        let (r, _) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::hover());
+                        let d = (p.eraser.size as f32).clamp(4.0, 26.0);
                         ui.painter().circle(r.center(), d / 2.0, t.bg2, Stroke::new(1.0, t.border_strong));
-                        ui::slider(ui, "Dimensione", &mut p.eraser.size, 2.0, 240.0, 0.0, true, PX, 120.0);
+                        ui::slider_inline(ui, "Dimensione", &mut p.eraser.size, 2.0, 240.0, 0.0, true, PX, 212.0);
                         if p.eraser.mode == EraserMode::Pixel {
-                            ui::slider(ui, "Forza", &mut p.eraser.strength, 0.1, 1.0, 0.05, false, PCT, 100.0);
+                            ui::slider_inline(ui, "Forza", &mut p.eraser.strength, 0.1, 1.0, 0.05, false, PCT, 164.0);
                         }
                     }
                     Tool::Shape | Tool::Line | Tool::Arrow => {
@@ -422,31 +439,33 @@ fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) {
                                     }
                                 }
                             });
-                            sep(ui, t);
+                            sep_h(ui, t, h);
                             color_pop(ui, "Riempimento", &mut p.shape_style.fill, true, false, top, t);
                         }
                         if tool != Tool::Shape {
+                            ui.spacing_mut().item_spacing.x = 2.0;
                             for (r, name, label) in ROUTES {
                                 if icon_button(ui, name, label, None, vec2(28.0, 28.0), 16.0, p.route == r, false).clicked() {
                                     p.route = r;
                                 }
                             }
-                            sep(ui, t);
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            sep_h(ui, t, h);
                         }
                         color_pop(ui, "Contorno", &mut p.shape_style.stroke, false, true, top, t);
-                        sep(ui, t);
-                        ui::slider(ui, "Spessore", &mut p.shape_style.stroke_width, 0.5, 32.0, 0.5, true, PX, 120.0);
+                        sep_h(ui, t, h);
+                        ui::slider_inline(ui, "Spessore", &mut p.shape_style.stroke_width, 0.5, 32.0, 0.5, true, PX, 196.0);
                     }
                     Tool::Text => {
                         font_picker(ui, &mut p.text.font, 168.0, t);
-                        sep(ui, t);
+                        sep_h(ui, t, h);
                         color_pop(ui, "Colore testo", &mut p.text.color, false, false, top, t);
                         let mut size = p.text.font_size.round() as i64;
                         if ui::segmented(ui, &mut size, &[(16, "S"), (24, "M"), (36, "L"), (56, "XL")], 150.0) {
                             p.text.font_size = size as f64;
                         }
-                        if let Some(v) = ui::number_field(ui, Id::new("tray-font-size"), "Aa", "Dimensione del testo in pixel", Some(p.text.font_size), 0, 72.0) {
-                            p.text.font_size = v.clamp(4.0, 400.0);
+                        if let Some(v) = ui::Num::new(Id::new("tray-font-size"), "icon:text-size", "Dimensione del testo in pixel: trascina per cambiarla", Some(p.text.font_size)).width(76.0).range(4.0, 400.0).show(ui) {
+                            p.text.font_size = v;
                         }
                     }
                     Tool::Sticky => {
@@ -458,6 +477,17 @@ fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) {
                         if let Some(e) = stamp_picker(ui, Some(&p.stamp)) {
                             p.stamp = e;
                         }
+                    }
+                    Tool::Table => {
+                        let [rows, cols] = p.table_size;
+                        if let Some(v) = ui::Num::new(Id::new("tray-table-rows"), "Righe", "Righe della nuova tabella: trascina o scrivi", Some(rows as f64)).width(92.0).range(1.0, 20.0).show(ui) {
+                            p.table_size[0] = v as u8;
+                        }
+                        if let Some(v) = ui::Num::new(Id::new("tray-table-cols"), "Colonne", "Colonne della nuova tabella: trascina o scrivi", Some(cols as f64)).width(108.0).range(1.0, 12.0).show(ui) {
+                            p.table_size[1] = v as u8;
+                        }
+                        sep_h(ui, t, h);
+                        ui::hint(ui, "Clicca sulla lavagna per metterla. Poi un clic su una cella per scriverci.");
                     }
                     Tool::Comment => ui::hint(ui, "Clicca dove vuoi lasciare un commento. Gli altri lo vedono e possono rispondere."),
                     Tool::Section => ui::hint(ui, "Trascina per disegnare una sezione: quello che ci metti dentro si sposta insieme a lei."),
@@ -474,11 +504,11 @@ fn pen_slot(ui: &mut Ui, ed: &mut Editor, i: usize, t: &Theme, top: bool) {
     let pen: Pen = ed.prefs.pens[i].clone();
     let active = ed.pen == i;
     let (rect, resp) = ui.allocate_exact_size(vec2(48.0, 32.0), Sense::click());
-    if active {
-        ui.painter().rect_filled(rect, ui::RADIUS, t.selected);
-    } else if resp.hovered() {
-        ui.painter().rect_filled(rect, ui::RADIUS, t.hover);
+    let sel = ui::motion::hover(ui.ctx(), resp.id.with("sel"), active);
+    if sel > 0.0 {
+        ui.painter().rect_filled(rect, ui::RADIUS, t.selected.gamma_multiply(sel));
     }
+    ui::hover_fill(ui, resp.id, rect, resp.hovered() && !active, ui::RADIUS as f32, t.hover);
     let pts: Vec<f32> = (0..=24)
         .flat_map(|k| {
             let s = k as f32 / 24.0;
@@ -513,9 +543,7 @@ fn pen_slot(ui: &mut Ui, ed: &mut Editor, i: usize, t: &Theme, top: bool) {
 /// A colour chip opening a palette (with "none" for fills).
 pub fn color_pop(ui: &mut Ui, label: &str, value: &mut String, transparent: bool, ring: bool, top: bool, t: &Theme) {
     let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, ui::RADIUS, t.hover);
-    }
+    ui::hover_fill(ui, resp.id, rect, resp.hovered(), ui::RADIUS as f32, t.hover);
     let chip = rect.shrink(5.0);
     let c = crate::model::parse_color(value).unwrap_or(Color32::TRANSPARENT);
     if value == "transparent" {
@@ -543,8 +571,9 @@ pub fn font_picker(ui: &mut Ui, value: &mut FontKind, width: f32, t: &Theme) -> 
     let name = FONTS.iter().find(|f| f.0 == *value).map_or("Inter", |f| f.1);
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 24.0), Sense::click());
     ui.painter().rect_filled(rect, ui::RADIUS, t.bg2);
-    if resp.hovered() {
-        ui.painter().rect_stroke(rect, ui::RADIUS, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+    let k = ui::motion::hover(ui.ctx(), resp.id.with("h"), resp.hovered());
+    if k > 0.0 {
+        ui.painter().rect_stroke(rect, ui::RADIUS, Stroke::new(1.0, t.border_strong.gamma_multiply(k)), egui::StrokeKind::Inside);
     }
     let family = egui::FontFamily::Name(crate::text::prefix(*value).into());
     ui.painter().text(rect.left_center() + vec2(8.0, 0.0), egui::Align2::LEFT_CENTER, name, egui::FontId::new(12.0, family), t.text);
@@ -588,9 +617,8 @@ pub fn stamp_picker(ui: &mut Ui, value: Option<&str>) -> Option<String> {
             let on = value == Some(s.emoji);
             if on {
                 ui.painter().rect_filled(r, ui::RADIUS, t.selected);
-            } else if resp.hovered() {
-                ui.painter().rect_filled(r, ui::RADIUS, t.hover);
             }
+            ui::hover_fill(ui, resp.id, r, resp.hovered() && !on, ui::RADIUS as f32, t.hover);
             ui::icons::picture(ui, &format!("stamp:{}", s.emoji), s.svg, Rect::from_center_size(r.center(), vec2(22.0, 22.0)));
             if ui::tip(resp, s.name, None).clicked() {
                 picked = Some(s.emoji.to_string());
@@ -614,7 +642,11 @@ pub fn view_controls(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     let corner = stage.max - vec2(16.0, 16.0);
     let clash = bar.is_some_and(|b| b.intersects(Rect::from_min_max(corner - size - vec2(8.0, 8.0), corner)));
     let lift = ui::motion::spring(ctx, Id::new("view-controls-lift"), if clash { bar.map_or(0.0, |b| (corner.y - b.min.y + 12.0).max(0.0)) } else { 0.0 }, 0.3, 0.9);
-    let resp = egui::Area::new(Id::new("view-controls")).pivot(egui::Align2::RIGHT_BOTTOM).fixed_pos(corner - vec2(0.0, lift)).order(egui::Order::Foreground).show(ctx, |ui| {
+    // The minimap put down in this corner: the controls step to its left.
+    let mini = if ed.prefs.minimap { ctx.data(|d| d.get_temp::<Rect>(Id::new("minimap-rect"))) } else { None };
+    let spot = Rect::from_min_max(corner - size - vec2(0.0, lift), corner - vec2(0.0, lift));
+    let aside = ui::motion::spring(ctx, Id::new("view-controls-aside"), mini.filter(|m| m.expand(6.0).intersects(spot)).map_or(0.0, |m| (corner.x - m.min.x + 10.0).max(0.0)), 0.3, 0.9);
+    let resp = egui::Area::new(Id::new("view-controls")).pivot(egui::Align2::RIGHT_BOTTOM).fixed_pos(corner - vec2(aside, lift)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui::float_frame(&t).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
@@ -629,9 +661,7 @@ pub fn view_controls(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
                 }
                 let label = format!("{}%", (ed.cam.z * 100.0).round());
                 let (r, resp) = ui.allocate_exact_size(vec2(32.0, 24.0), Sense::click());
-                if resp.hovered() {
-                    ui.painter().rect_filled(r, ui::RADIUS, t.hover);
-                }
+                ui::hover_fill(ui, resp.id, r, resp.hovered(), ui::RADIUS as f32, t.hover);
                 ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, &label, egui::FontId::proportional(10.0), t.text);
                 egui::Popup::menu(&resp).frame(ui::menu_frame(&t)).align(egui::RectAlign::LEFT_END).show(|ui| zoom_items(ui, ed));
                 if icon_button(ui, "minus", "Riduci", Some("Ctrl+−"), vec2(32.0, 28.0), 16.0, false, false).clicked() {
@@ -703,9 +733,31 @@ pub struct Minimap {
     seen_at: f64,
     /// Pointer offset from the view centre while dragging, in board units.
     grab: Option<(f64, f64)>,
+    /// Pointer offset from the card's corner while the card itself is being moved.
+    moving: Option<egui::Vec2>,
 }
 
-/// Overview of the board and of the visible area; click or drag to move there.
+/// What the minimap frames: the content, but never much less than a screenful around it, so a
+/// single dot doesn't fill the map and where you are stays readable.
+fn map_area(content: Option<BBox>, view: BBox) -> BBox {
+    let Some(c) = content else { return view };
+    let (w, h) = (c.w.max(view.w * 0.8), c.h.max(view.h * 0.8));
+    BBox { x: c.x + c.w / 2.0 - w / 2.0, y: c.y + c.h / 2.0 - h / 2.0, w, h }
+}
+
+/// The part of `lo..hi` inside `min..max`, at least `least` long and never outside: when the
+/// range is off to one side the marker waits at that edge.
+fn clamp_span(lo: f32, hi: f32, min: f32, max: f32, least: f32) -> (f32, f32) {
+    let (a, b) = (lo.max(min), hi.min(max));
+    if b - a >= least {
+        return (a, b);
+    }
+    let c = ((lo + hi) / 2.0).clamp(min + least / 2.0, max - least / 2.0);
+    (c - least / 2.0, c + least / 2.0)
+}
+
+/// Overview of the board and of the visible area; click or drag to move there. The card can be
+/// put anywhere over the board by its grip (it sticks to the edges), and stays there.
 ///
 /// The picture shows the content and is redrawn only after the board has stayed unchanged for a
 /// moment: drawing it costs tens of milliseconds on a big board, and moving around never needs it
@@ -723,7 +775,7 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
     if m.tex.is_none() || (m.drawn != version && m.grab.is_none() && quiet > 300.0) {
         m.drawn = version;
         let content = union(ed.board.all().iter().filter(|e| !e.hidden).map(|e| crate::geom::aabb(e)));
-        let fit = fit_for(content.unwrap_or_else(|| ed.view()), mw, mh);
+        let fit = fit_for(map_area(content, ed.view()), mw, mh);
         m.shown = Some(fit);
         let ppp = ctx.pixels_per_point() as f64;
         let (w, h) = ((mw * ppp) as u32, (mh * ppp) as u32);
@@ -745,8 +797,24 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
     let Some(f) = m.shown else { return };
     let view = ed.view();
     let k = ui::motion::appear(ctx, Id::new("minimap"), true);
-    let pos = pos2(free.max.x - 12.0 - MW, free.min.y + 12.0 - (1.0 - k.min(1.0)) * 8.0);
-    egui::Area::new(Id::new("minimap")).fixed_pos(pos).order(egui::Order::Foreground).show(ctx, |ui| {
+    // Where the card sits: a fraction of the room it can move in, so it keeps its corner when
+    // the window changes size. Dragged, it follows the pointer; let go, it glides into place.
+    let room = free.shrink(12.0);
+    let range = vec2((room.width() - MW).max(0.0), (room.height() - MH).max(0.0));
+    let at = ed.prefs.minimap_at.unwrap_or([1.0, 0.0]);
+    let target = room.min + vec2(at[0] * range.x, at[1] * range.y);
+    let pointer = ctx.input(|i| i.pointer.interact_pos());
+    let (px, py) = match (m.moving, pointer) {
+        (Some(grab), Some(p)) => {
+            let p = (p - grab).clamp(room.min, room.min + range);
+            ui::motion::hold(ctx, Id::new("minimap-x"), p.x);
+            ui::motion::hold(ctx, Id::new("minimap-y"), p.y);
+            (p.x, p.y)
+        }
+        _ => (ui::motion::spring(ctx, Id::new("minimap-x"), target.x, 0.32, 0.86), ui::motion::spring(ctx, Id::new("minimap-y"), target.y, 0.32, 0.86)),
+    };
+    let pos = pos2(px, py - ui::motion::travel(ctx, k) * 8.0);
+    let resp = egui::Area::new(Id::new("minimap")).fixed_pos(pos).order(egui::Order::Middle).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
         let (card, resp) = ui.allocate_exact_size(vec2(MW, MH), Sense::click_and_drag());
         let radius = egui::CornerRadius::same(12);
@@ -761,19 +829,17 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
             Some(tex) => fill.with_texture(tex.id(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))),
             None => fill,
         });
-        // Where you are: clamped inside the map, so it shows the way back when you are far off.
+        // Where you are: kept inside the map on each axis, so it shows the way back when you
+        // are far off and never spills over the card.
         let to = |x: f64, y: f64| map.min + vec2((x * f.k + f.x) as f32, (y * f.k + f.y) as f32);
         let vr = Rect::from_min_max(to(view.x, view.y), to(view.right(), view.bottom()));
-        let inner = map.shrink(1.0);
-        let min = vec2(6.0, 6.0);
-        let mut v = vr.intersect(inner);
-        if !v.is_positive() || v.width() < min.x || v.height() < min.y {
-            let c = vr.center().clamp(inner.min + min / 2.0, inner.max - min / 2.0);
-            v = Rect::from_center_size(c, v.size().max(min).min(inner.size()));
-        }
+        let inner = map.shrink(1.5);
+        let (x0, x1) = clamp_span(vr.min.x, vr.max.x, inner.min.x, inner.max.x, 6.0);
+        let (y0, y1) = clamp_span(vr.min.y, vr.max.y, inner.min.y, inner.max.y, 6.0);
+        let v = Rect::from_min_max(pos2(x0, y0), pos2(x1, y1));
         // Everything in view: no rectangle, the map alone says it.
         if !vr.contains_rect(inner) {
-            ui.painter().rect(v, egui::CornerRadius::same(3), t.brand.gamma_multiply(0.1), Stroke::new(1.5, t.brand), egui::StrokeKind::Inside);
+            ui.painter().with_clip_rect(map).rect(v, egui::CornerRadius::same(3), t.brand.gamma_multiply(0.1), Stroke::new(1.5, t.brand), egui::StrokeKind::Inside);
         }
         let point = |p: Pos2| ((p.x.clamp(map.min.x, map.max.x) - map.min.x) as f64 - f.x) / f.k;
         let point_y = |p: Pos2| ((p.y.clamp(map.min.y, map.max.y) - map.min.y) as f64 - f.y) / f.k;
@@ -807,5 +873,43 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
             ed.prefs.minimap = false;
             ui::motion::reset(ctx, Id::new("minimap"));
         }
+        // The grip, top left: drag it to put the minimap anywhere over the board.
+        let grip = Rect::from_center_size(map.left_top() + vec2(13.0, 13.0), vec2(20.0, 20.0));
+        let g = ui.interact(grip, Id::new("minimap-grip"), Sense::drag()).on_hover_cursor(egui::CursorIcon::Grab);
+        let ga = ui::motion::hover(ctx, Id::new("minimap-grip-show"), over || g.dragged() || g.has_focus());
+        if ga > 0.01 {
+            let h = ui::motion::hover(ctx, g.id, g.hovered() || g.dragged());
+            ui.painter().circle(grip.center(), 10.0, ui::mix(t.hover, h, t.bg).gamma_multiply(ga), Stroke::new(1.0, t.border.gamma_multiply(ga)));
+            icon(ui, "grip", grip.center(), 12.0, t.icon.gamma_multiply(ga));
+        }
+        if g.drag_started()
+            && let Some(p) = g.interact_pointer_pos()
+        {
+            m.moving = Some(p - card.min);
+        }
+        if g.dragged() {
+            ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+        }
+        if g.drag_stopped() {
+            m.moving = None;
+            // Within a short reach of an edge it sticks to it, as windows do.
+            let reach = 28.0;
+            let frac = |v: f32, lo: f32, span: f32| -> f32 {
+                if span <= 0.0 {
+                    return 0.0;
+                }
+                let k = (v - lo) / span;
+                if v - lo < reach {
+                    0.0
+                } else if lo + span - v < reach {
+                    1.0
+                } else {
+                    k.clamp(0.0, 1.0)
+                }
+            };
+            ed.prefs.minimap_at = Some([frac(card.min.x, room.min.x, range.x), frac(card.min.y, room.min.y, range.y)]);
+        }
+        ui::tip(g, "Trascina per spostare la minimappa", None);
     });
+    ctx.data_mut(|d| d.insert_temp(Id::new("minimap-rect"), resp.response.rect));
 }

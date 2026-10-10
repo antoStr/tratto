@@ -153,6 +153,13 @@ pub struct Prefs {
     pub code_language: String,
     /// Path of new connectors and lines.
     pub route: crate::model::Route,
+    /// Only fades: nothing slides, grows or bounces (Settings ▸ Accessibilità).
+    pub reduce_motion: bool,
+    /// Where the minimap sits: its top-left corner as a fraction of the room it can move in
+    /// (None: the top right corner).
+    pub minimap_at: Option<[f32; 2]>,
+    /// Rows and columns of the next table.
+    pub table_size: [u8; 2],
 }
 
 pub const DEFAULT_ACCENT: &str = "#0D99FF";
@@ -190,6 +197,9 @@ impl Default for Prefs {
             new_board: BoardMeta::default(),
             code_language: "javascript".into(),
             route: crate::model::Route::Straight,
+            reduce_motion: false,
+            minimap_at: None,
+            table_size: [3, 3],
         }
     }
 }
@@ -216,6 +226,8 @@ impl Prefs {
         p.pens.truncate(8);
         p.ui_scale = p.ui_scale.clamp(0.75, 2.0);
         p.text_scale = p.text_scale.clamp(0.8, 1.6);
+        p.minimap_at = p.minimap_at.filter(|a| a.iter().all(|v| v.is_finite())).map(|a| a.map(|v| v.clamp(0.0, 1.0)));
+        p.table_size = p.table_size.map(|v| v.clamp(1, 20));
         p
     }
 

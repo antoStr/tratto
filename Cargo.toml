@@ -17,6 +17,11 @@ long-description = "Lavagna infinita con penna, forme, note adesive e modelli. L
 # The tunnel program lives next to Tratto (see share::cloudflared); CI downloads it into the build folder.
 binaries = [{ path = "tratto", main = true }, { path = "tratto-cloudflared", main = false }]
 
+# The app, its installer and its uninstaller are signed by scripts/sign.ps1 when the build has a
+# code signing certificate (see the script); without one they stay unsigned.
+[package.metadata.packager.windows]
+sign-command = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sign.ps1 %1"
+
 [package.metadata.packager.nsis]
 installer-mode = "currentUser"
 languages = ["Italian"]
@@ -83,7 +88,7 @@ wasm-bindgen-futures = "0.4.79"
 web-sys = { version = "0.3.106", features = ["WebSocket", "MessageEvent", "BinaryType", "CloseEvent", "Window", "Location", "Storage", "HtmlCanvasElement", "Document", "Element", "Blob", "Url", "HtmlAnchorElement"] }
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_Pointer"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_Pointer", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi"] }
 
 # The icon of Tratto.exe (and of its shortcuts).
 [target."cfg(windows)".build-dependencies]

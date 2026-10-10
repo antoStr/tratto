@@ -76,7 +76,18 @@ jobs:
           echo "${{ matrix.sha }}  cf.bin" | $sum -c -
           exe=tratto-cloudflared; [ "$RUNNER_OS" = Windows ] && exe=tratto-cloudflared.exe
           mv cf.bin "$out/$exe" && chmod +x "$out/$exe"
+      # On Windows the app, the installer and the uninstaller are signed when a certificate is set
+      # up in the repository secrets (see scripts/sign.ps1); otherwise they stay unsigned.
       - run: cargo packager --release --target ${{ matrix.target }} --formats ${{ matrix.formats }} --binaries-dir target/${{ matrix.target }}/release --out-dir dist
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          TRUSTED_SIGNING_ENDPOINT: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          TRUSTED_SIGNING_ACCOUNT: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          TRUSTED_SIGNING_PROFILE: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
       - uses: actions/upload-artifact@v4
         with:
           name: Tratto-${{ matrix.name }}

@@ -22,11 +22,18 @@ fn texture(ctx: &egui::Context, name: &str, px: u32, svg: impl FnOnce() -> Optio
     tex
 }
 
-fn paint(ui: &Ui, tex: &TextureHandle, center: Pos2, size: f32, color: Color32) {
+/// Device pixels for an icon `size` points wide.
+fn pixels(ui: &Ui, size: f32) -> u32 {
+    (size * ui.ctx().pixels_per_point()).round().max(1.0) as u32
+}
+
+/// One texel per device pixel: the picture is `px` device pixels wide and its corner sits on the
+/// pixel grid, so nothing is stretched or resampled (that is what blurred icons at 115 or 130%).
+fn paint(ui: &Ui, tex: &TextureHandle, center: Pos2, px: u32, color: Color32) {
     let ppp = ui.ctx().pixels_per_point();
-    // On the pixel grid, so thin strokes stay crisp.
-    let min = ((center.to_vec2() - vec2(size, size) / 2.0) * ppp).round() / ppp;
-    let rect = Rect::from_min_size(min.to_pos2(), vec2(size, size));
+    let side = px as f32;
+    let min = ((center.to_vec2() * ppp) - vec2(side, side) / 2.0).round() / ppp;
+    let rect = Rect::from_min_size(min.to_pos2(), vec2(side, side) / ppp);
     let mut mesh = Mesh::with_texture(tex.id());
     mesh.add_rect_with_uv(rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), color);
     ui.painter().add(mesh);
@@ -34,18 +41,18 @@ fn paint(ui: &Ui, tex: &TextureHandle, center: Pos2, size: f32, color: Color32) 
 
 /// Paints a Lucide icon centred on `center`, `size` points wide, in `color`.
 pub fn icon(ui: &Ui, name: &str, center: Pos2, size: f32, color: Color32) {
-    let px = (size * ui.ctx().pixels_per_point()).round().max(1.0) as u32;
+    let px = pixels(ui, size);
     let svg = || ICONS.iter().find(|(n, _)| *n == name).map(|(_, s)| s.as_bytes().to_vec());
     if let Some(tex) = texture(ui.ctx(), name, px, svg) {
-        paint(ui, &tex, center, size, color);
+        paint(ui, &tex, center, px, color);
     }
 }
 
 /// An SVG picture (reaction, logo) in its own colours.
 pub fn picture(ui: &Ui, key: &str, svg: &'static [u8], rect: Rect) {
-    let px = (rect.width().max(rect.height()) * ui.ctx().pixels_per_point()).round().max(1.0) as u32;
+    let px = pixels(ui, rect.width().max(rect.height()));
     if let Some(tex) = texture(ui.ctx(), key, px, || Some(svg.to_vec())) {
-        paint(ui, &tex, rect.center(), rect.width(), Color32::WHITE);
+        paint(ui, &tex, rect.center(), px, Color32::WHITE);
     }
 }
 

@@ -54,7 +54,7 @@ impl Toasts {
             let k = ui::motion::appear(ctx, id, true);
             let out = ((toast.until - now) / 220.0).clamp(0.0, 1.0) as f32;
             let lift = ui::motion::spring(ctx, id.with("y"), y, 0.32, 0.86);
-            let resp = egui::Area::new(id).anchor(egui::Align2::CENTER_BOTTOM, [0.0, -88.0 - lift + (1.0 - k.min(1.0)) * 16.0]).order(egui::Order::Tooltip).interactable(false).show(ctx, |ui| {
+            let resp = egui::Area::new(id).anchor(egui::Align2::CENTER_BOTTOM, [0.0, -88.0 - lift + ui::motion::travel(ctx, k) * 16.0]).order(egui::Order::Tooltip).interactable(false).show(ctx, |ui| {
                 ui.set_opacity((k * out).clamp(0.0, 1.0));
                 ui::menu_frame(&t).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -88,6 +88,7 @@ pub fn apply_theme(ctx: &egui::Context, p: &Prefs, applied: &mut Option<(Theme, 
     if (ctx.zoom_factor() - zoom).abs() > 1e-3 {
         ctx.set_zoom_factor(zoom);
     }
+    ui::motion::set_reduced(ctx, p.reduce_motion);
 }
 
 /* ---------------- the app ---------------- */
@@ -306,28 +307,40 @@ mod picture {
         println!("BOARD {id}");
     }
 
-    /// The board list as a picture: `TRATTO_SHOT=out.png cargo test home_picture`.
+    /// Device pixels per point of the pictures (TRATTO_PPP=1.3 to see 130%).
+    fn ppp() -> f32 {
+        std::env::var("TRATTO_PPP").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0)
+    }
+
+    /// The board list as a picture: `TRATTO_SHOT=out.png cargo test home_picture`. With
+    /// TRATTO_SETTINGS=0…3 the settings are open on that section.
     #[test]
     fn home_picture() {
         let Ok(path) = std::env::var("TRATTO_SHOT") else { return };
         let dark = std::env::var("TRATTO_DARK").is_ok();
+        let settings: Option<usize> = std::env::var("TRATTO_SETTINGS").ok().and_then(|v| v.parse().ok());
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         for name in ["Riunione di lunedì", "Idee per il progetto", "Mappa del sito", "Retrospettiva"] {
             store.create(name, None).unwrap();
         }
         let mut home: Option<home::Home> = None;
         let (mut toasts, mut dialogs, mut prefs) = (Toasts::default(), dialogs::Dialogs::default(), Prefs::default());
-        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).wgpu().build_ui(move |ui| {
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).with_pixels_per_point(ppp()).wgpu().build_ui(move |ui| {
             let ctx = ui.ctx().clone();
             if home.is_none() {
                 ui::install_fonts(&ctx);
                 ui::setup(&ctx, Theme::new(dark, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
                 home = Some(home::Home::new(&store));
+                if let Some(tab) = settings {
+                    dialogs.settings = true;
+                    dialogs::open_settings_tab(&ctx, tab);
+                }
                 return;
             }
             home.as_mut().unwrap().ui(ui, &store, &mut prefs, &mut toasts, &mut dialogs);
+            dialogs::settings(&ctx, &mut dialogs.settings, &mut prefs, true);
         });
-        harness.run_steps(40);
+        harness.run_steps(60);
         harness.render().unwrap().save(path).unwrap();
     }
 
@@ -340,7 +353,7 @@ mod picture {
         let id = store.create("Diagramma di flusso", None).unwrap();
         let mut screen: Option<board::BoardScreen> = None;
         let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
-        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).wgpu().build_ui(move |ui| {
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).with_pixels_per_point(ppp()).wgpu().build_ui(move |ui| {
             let ctx = ui.ctx().clone();
             if screen.is_none() {
                 ui::install_fonts(&ctx);
@@ -355,6 +368,171 @@ mod picture {
             screen.as_mut().unwrap().ui(ui, &mut toasts, &mut dialogs);
         });
         harness.run_steps(40);
+        harness.render().unwrap().save(path).unwrap();
+    }
+
+    /// Cursive written with the mouse, through the real input path: three words, each one
+    /// stroke with every point of its loops, sampled like a 125 Hz mouse while frames run at
+    /// about 60 Hz; then two quick dots over a note, both drawn, the pen still the pen. With
+    /// `TRATTO_SHOT=out.png` it also saves the picture.
+    #[test]
+    fn mouse_writing_stays_whole() {
+        let shot = std::env::var("TRATTO_SHOT").ok();
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let id = store.create("Corsivo", None).unwrap();
+        let mut screen: Option<board::BoardScreen> = None;
+        let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
+        // Strokes (points in each), the tool and where the note is on screen, after each frame.
+        let state = std::rc::Rc::new(std::cell::RefCell::new((Vec::<usize>::new(), crate::editor::Tool::Pen, egui::Pos2::ZERO)));
+        let out = state.clone();
+        let builder = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0));
+        let builder = if shot.is_some() { builder.wgpu() } else { builder };
+        let mut harness = builder.build_ui(move |ui| {
+            let ctx = ui.ctx().clone();
+            if screen.is_none() {
+                ui::install_fonts(&ctx);
+                ui::setup(&ctx, Theme::new(false, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
+                let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), None).unwrap();
+                b.editor.tool = crate::editor::Tool::Pen;
+                // A note to write over.
+                let mut s = crate::model::El::new(crate::model::Kind::Sticky(crate::model::Sticky::default()));
+                (s.x, s.y, s.w, s.h) = (300.0, -200.0, 220.0, 220.0);
+                b.editor.board.put([s]);
+                screen = Some(b);
+                return;
+            }
+            let b = screen.as_mut().unwrap();
+            b.ui(ui, &mut toasts, &mut dialogs);
+            let sticky = b.editor.board.all().iter().find(|e| e.sticky().is_some()).cloned();
+            let note = sticky.map(|e| b.editor.to_screen(e.x + e.w / 2.0, e.y + e.h / 2.0) + b.editor.origin.to_vec2()).unwrap_or_default();
+            *out.borrow_mut() = (b.editor.board.all().iter().filter_map(|e| e.ink().map(|i| i.points.len() / 3)).collect(), b.editor.tool, note);
+        });
+        harness.run_steps(10);
+        // A word: loops along a line, like "eeee", at mouse speed (up to 4 px a sample).
+        let word = |x0: f32, y0: f32| -> Vec<egui::Pos2> {
+            (0..=180)
+                .map(|i| {
+                    let t = i as f32 / 180.0 * std::f32::consts::TAU * 4.0;
+                    egui::pos2(x0 + i as f32 * 1.2 - 20.0 * t.sin(), y0 - 20.0 * (1.0 - t.cos()))
+                })
+                .collect()
+        };
+        let press = |h: &mut egui_kittest::Harness, p: egui::Pos2, down: bool| {
+            h.input_mut().events.push(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: down, modifiers: egui::Modifiers::NONE });
+        };
+        for (x, y) in [(420.0, 300.0), (420.0, 420.0), (420.0, 540.0)] {
+            let pts = word(x, y);
+            harness.input_mut().events.push(egui::Event::PointerMoved(pts[0]));
+            harness.step();
+            press(&mut harness, pts[0], true);
+            for (i, p) in pts.iter().enumerate() {
+                harness.input_mut().events.push(egui::Event::PointerMoved(*p));
+                if i % 2 == 1 {
+                    harness.step();
+                }
+            }
+            press(&mut harness, *pts.last().unwrap(), false);
+            harness.step();
+        }
+        let (strokes, tool, note) = state.borrow().clone();
+        assert_eq!(strokes.len(), 3, "one stroke per word: {strokes:?}");
+        assert!(strokes.iter().all(|n| *n > 150), "no point of the loops lost: {strokes:?}");
+        assert_eq!(tool, crate::editor::Tool::Pen);
+        // Two quick dots over the note (a double click, for egui).
+        for k in 0..2 {
+            // The second a little beside the first, as when writing: on the note, not on the dot.
+            let dot = note + egui::vec2(12.0 * k as f32, 0.0);
+            harness.input_mut().events.push(egui::Event::PointerMoved(dot));
+            harness.step();
+            press(&mut harness, dot, true);
+            harness.step();
+            press(&mut harness, dot, false);
+            harness.step();
+        }
+        harness.run_steps(5);
+        let (strokes, tool, _) = state.borrow().clone();
+        assert_eq!(strokes.len(), 5, "both dots drawn: {strokes:?}");
+        assert_eq!(tool, crate::editor::Tool::Pen, "still writing after a quick double tap");
+        if let Some(path) = shot {
+            harness.render().unwrap().save(path).unwrap();
+        }
+    }
+
+    /// Situations to look at: `TRATTO_SHOT=out.png TRATTO_SCENE=table cargo test scene_picture`
+    /// (table, menu, sticky, hover, dot, dark…).
+    #[test]
+    fn scene_picture() {
+        let Ok(path) = std::env::var("TRATTO_SHOT") else { return };
+        let scene = std::env::var("TRATTO_SCENE").unwrap_or_default();
+        let dark = std::env::var("TRATTO_DARK").is_ok();
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let template = if scene == "dot" || scene == "table" { None } else { Some("flow".to_string()) };
+        let id = store.create("Prova", None).unwrap();
+        let mut screen: Option<board::BoardScreen> = None;
+        let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
+        let mut frame = 0;
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).with_pixels_per_point(ppp()).wgpu().build_ui(move |ui| {
+            let ctx = ui.ctx().clone();
+            frame += 1;
+            if screen.is_none() {
+                ui::install_fonts(&ctx);
+                ui::setup(&ctx, Theme::new(dark, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
+                let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), template.clone()).unwrap();
+                b.editor.tool = crate::editor::Tool::Select;
+                let ed = &mut b.editor;
+                match scene.as_str() {
+                    "table" => {
+                        ed.prefs.table_size = [4, 3];
+                        ed.insert_table(Some(crate::geom::pt(0.0, 0.0)));
+                        let tid = ed.selection[0].clone();
+                        ed.board.update(&[tid.clone()], |el| {
+                            if let crate::model::Kind::Table(t) = &mut el.kind {
+                                for (i, s) in ["Attività", "Chi", "Quando", "Bozza", "Anna", "Lunedì", "Revisione", "Marco", "Giovedì"].iter().enumerate() {
+                                    t.cells[i / 3][i % 3].text = s.to_string();
+                                }
+                                t.cells[2][2].fill = Some("#C9F2C7".into());
+                            }
+                            crate::text::fit_text(el);
+                        });
+                        ed.editing = Some(tid.clone());
+                        ed.editing_cell = Some((1, 1));
+                        b.ui.open_folders.insert(format!("el:{tid}"));
+                    }
+                    "sticky" => {
+                        let mut s = crate::model::El::new(crate::model::Kind::Sticky(crate::model::Sticky { text: "Idea da sviluppare".into(), bold: true, radius: Some(18.0), ..Default::default() }));
+                        (s.x, s.y, s.w, s.h) = (-120.0, -420.0, 220.0, 220.0);
+                        let sid = s.id.clone();
+                        ed.board.put([s]);
+                        ed.selection = vec![sid];
+                    }
+                    "menu" => {
+                        let first = ed.board.all().iter().find(|e| e.shape().is_some()).unwrap().id.clone();
+                        ed.selection = vec![first];
+                        b.ui.menu = Some(egui::pos2(520.0, 300.0));
+                    }
+                    "hover" => {
+                        let first = ed.board.all().iter().find(|e| e.shape().is_some()).unwrap().id.clone();
+                        ed.hover_adds = Some(first);
+                    }
+                    "dot" => {
+                        let mut d = crate::model::El::new(crate::model::Kind::Ink(crate::model::Ink { points: vec![0.0, 0.0, 0.5, 1.0, 1.0, 0.5], color: "#1E1E1E".into(), size: 6.0 }));
+                        (d.w, d.h) = (1.0, 1.0);
+                        ed.board.put([d]);
+                    }
+                    _ => {}
+                }
+                screen = Some(b);
+                return;
+            }
+            let b = screen.as_mut().unwrap();
+            // Scrolled down far from the dot: the minimap must keep the view marker inside.
+            if scene == "dot" && frame == 20 {
+                let c = b.editor.cam;
+                b.editor.set_cam(crate::geom::Camera { y: c.y - 2600.0, ..c });
+            }
+            b.ui(ui, &mut toasts, &mut dialogs);
+        });
+        harness.run_steps(60);
         harness.render().unwrap().save(path).unwrap();
     }
 }

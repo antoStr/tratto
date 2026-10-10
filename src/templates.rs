@@ -34,7 +34,7 @@ fn label(cx: f64, cy: f64, s: &str, size: f64, bold: bool, color: &str) -> El {
 
 #[allow(clippy::too_many_arguments)]
 fn shape(k: ShapeKind, x: f64, y: f64, w: f64, h: f64, fill: &str, stroke: &str, width: f64, radius: f64) -> El {
-    el(Kind::Shape(Shape { shape: k, fill: fill.into(), stroke: stroke.into(), stroke_width: width, radius, dash: false, points: None, text: None, font: None }), x, y, w, h)
+    el(Kind::Shape(Shape { shape: k, fill: fill.into(), stroke: stroke.into(), stroke_width: width, radius, ..Default::default() }), x, y, w, h)
 }
 
 /// Figma-style white card.
@@ -52,7 +52,7 @@ fn with_text(mut e: El, s: &str) -> El {
 }
 
 fn sticky(x: f64, y: f64, color: &str, s: &str) -> El {
-    el(Kind::Sticky(Sticky { text: s.into(), color: color.into(), font: FontKind::Hand, align: Align::Center, author: None, hide_author: false }), x, y, 200.0, 200.0)
+    el(Kind::Sticky(Sticky { text: s.into(), color: color.into(), font: FontKind::Hand, ..Default::default() }), x, y, 200.0, 200.0)
 }
 
 fn line(x1: f64, y1: f64, x2: f64, y2: f64, arrow: bool) -> El {

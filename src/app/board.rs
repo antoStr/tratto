@@ -414,9 +414,7 @@ impl BoardScreen {
             ui.horizontal_centered(|ui| {
                 ui.add_space(8.0);
                 let home = ui.allocate_response(vec2(40.0, 40.0), Sense::click());
-                if home.hovered() {
-                    ui.painter().rect_filled(home.rect, 0.0, t.chrome2);
-                }
+                ui::hover_fill(ui, home.id, home.rect, home.hovered(), 0.0, t.chrome2);
                 ui::icon(ui, "home", home.rect.center(), 16.0, t.chrome_text);
                 if ui::tip(home, "Lavagne", None).clicked() {
                     action = Some(Action::Home);
@@ -625,13 +623,13 @@ impl BoardScreen {
                 let h = (layout.height as f32).max(size as f32 * 1.3) * z;
                 let inner = Rect::from_min_max(p + vec2(pad, pad), p + vec2(el.w as f32 * z - pad, el.h as f32 * z - pad - band));
                 let r = Rect::from_center_size(inner.center(), vec2(inner.width(), h.min(inner.height().max(h))));
-                (r, FontId::new(size as f32 * z, family(crate::text::font(s.font, false, false).face)), if crate::model::is_dark(&s.color) { Color32::WHITE } else { crate::model::DARK }, s.align, false, true)
+                (r, FontId::new(size as f32 * z, family(crate::text::sticky_font(s).face)), crate::text::sticky_text_color(s), s.align, false, true)
             }
             Kind::Shape(s) => {
                 let st = crate::text::shape_text_layout(&el, s);
                 let h = (st.layout.height as f32).max(st.size as f32 * 1.3) * z;
                 let r = Rect::from_min_size(p + vec2(st.left as f32 * z, st.top as f32 * z), vec2(st.width as f32 * z, h));
-                (r, FontId::new(st.size as f32 * z, family(crate::text::font(s.font.unwrap_or_default(), false, false).face)), crate::text::shape_text_color(s), crate::model::Align::Center, false, true)
+                (r, FontId::new(st.size as f32 * z, family(crate::text::shape_font(s).face)), crate::text::shape_text_color(s), s.align.unwrap_or(crate::model::Align::Center), false, true)
             }
             Kind::Table(tb) => {
                 let (r, c) = ed.editing_cell.unwrap_or((0, 0));
@@ -641,8 +639,7 @@ impl BoardScreen {
                 let lines = crate::table::cell_lines(tb, r, c).len().max(1) as f32;
                 let size = tb.font_size as f32;
                 let rect = Rect::from_min_size(p + vec2((x + pad) as f32 * z, (y + pad) as f32 * z), vec2(((cw - pad * 2.0) as f32 * z).max(8.0), lines * size * 1.3 * z));
-                let dark = tb.cells[r][c].fill.as_deref().is_some_and(crate::model::is_dark);
-                (rect, FontId::new(size * z, family(f.face)), if dark { Color32::WHITE } else { crate::model::DARK }, crate::model::Align::Left, false, true)
+                (rect, FontId::new(size * z, family(f.face)), crate::table::cell_color(tb, r, c), tb.align.unwrap_or(crate::model::Align::Left), false, true)
             }
             Kind::Line(l) => {
                 let (mx, my) = crate::geom::route_mid(l);
@@ -681,8 +678,22 @@ impl BoardScreen {
         // Code is coloured while it is typed, with the same rows as when it is drawn.
         let code = el.code().map(|c| (c.language.clone(), c.light, (c.font_size * 1.55) as f32 * z));
         let is_table = el.table().is_some();
+        // In a shape or a note, Tab goes on with the diagram: a connected node, ready to write in.
+        let branches = matches!(el.kind, Kind::Shape(_) | Kind::Sticky(_));
+        let mut grow = None;
         egui::Area::new(Id::new("board-text-area")).fixed_pos(rect.min).order(egui::Order::Middle).show(ctx, |ui| {
             ui.set_min_size(rect.size());
+            if branches && !self.editor.read_only {
+                grow = ui.input_mut(|i| {
+                    if i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab) {
+                        Some(true)
+                    } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                });
+            }
             if is_table {
                 tab = ui.input_mut(|i| {
                     if i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab) {
@@ -749,6 +760,11 @@ impl BoardScreen {
         if let Some(back) = tab {
             self.editor.next_cell(back);
         }
+        if let Some(sibling) = grow {
+            self.ui.text_for = None;
+            self.editor.grow_diagram(&id, sibling);
+            return;
+        }
         if finish {
             self.editor.stop_editing();
             self.ui.text_for = None;
@@ -762,12 +778,18 @@ impl BoardScreen {
     /* ---------- context menu ---------- */
 
     fn context_menu(&mut self, ctx: &egui::Context) {
-        let Some(at) = self.ui.menu else { return };
+        let Some(at) = self.ui.menu else {
+            ctx.data_mut(|d| d.remove::<Pos2>(Id::new("board-menu-at")));
+            return;
+        };
         let t = ui::theme(ctx);
         let mut close = false;
-        let resp = egui::Area::new(Id::new("board-menu")).fixed_pos(at).order(egui::Order::Foreground).constrain(true).show(ctx, |ui| {
+        // Measured afresh each time it opens: as wide as its longest row, not a pixel more.
+        let fresh = ctx.data(|d| d.get_temp::<Pos2>(Id::new("board-menu-at"))) != Some(at);
+        ctx.data_mut(|d| d.insert_temp(Id::new("board-menu-at"), at));
+        let resp = egui::Area::new(Id::new("board-menu")).fixed_pos(at).order(egui::Order::Foreground).constrain(true).sizing_pass(fresh).show(ctx, |ui| {
             ui::menu_frame(&t).show(ui, |ui| {
-                ui.set_min_width(220.0);
+                ui.set_min_width(180.0);
                 ui.spacing_mut().item_spacing.y = 0.0;
                 close = super::panels::selection_menu(ui, &mut self.editor, &mut self.ui);
             });
@@ -802,7 +824,7 @@ fn panel_card(ctx: &egui::Context, id: &str, rect: Rect, k: f32, side: f32, t: &
     if k <= 0.01 {
         return;
     }
-    let rect = rect.translate(vec2((1.0 - k.min(1.0)) * 20.0 * side, 0.0));
+    let rect = rect.translate(vec2(ui::motion::travel(ctx, k) * 20.0 * side, 0.0));
     egui::Area::new(Id::new(id)).fixed_pos(rect.min).order(egui::Order::Middle).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
         // The whole card takes the pointer, also where it is empty.

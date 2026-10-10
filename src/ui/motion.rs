@@ -1,6 +1,7 @@
 //! Motion in the manner of Figma and Apple: springs that carry on from wherever they are when
 //! the target changes (so nothing jumps when you change your mind half-way), quick quiet exits,
-//! small rises for things that appear and a slight give when a button is pressed.
+//! small rises for things that appear and a slight give when a button is pressed. With "Riduci
+//! il movimento" (Settings ▸ Accessibilità) things only fade: nothing slides, grows or bounces.
 
 use egui::{Context, Id};
 
@@ -10,6 +11,19 @@ struct Spring {
     v: f32,
 }
 
+fn reduce_id() -> Id {
+    Id::new("reduce-motion")
+}
+
+/// Whether moving animations are turned off (Settings ▸ Accessibilità).
+pub fn reduced(ctx: &Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(reduce_id())).unwrap_or(false)
+}
+
+pub fn set_reduced(ctx: &Context, on: bool) {
+    ctx.data_mut(|d| d.insert_temp(reduce_id(), on));
+}
+
 /// A value following `target` like a SwiftUI spring: `response` is roughly how long it takes
 /// (seconds); `damping` 1 settles without overshoot, lower bounces a little.
 pub fn spring(ctx: &Context, id: Id, target: f32, response: f32, damping: f32) -> f32 {
@@ -17,6 +31,13 @@ pub fn spring(ctx: &Context, id: Id, target: f32, response: f32, damping: f32) -
         ctx.data_mut(|d| d.insert_temp(id, Spring { x: target, v: 0.0 }));
         return target;
     };
+    if reduced(ctx) {
+        // No travel: what moves jumps to its place (fades still play, they are not motion).
+        if s.x != target || s.v != 0.0 {
+            ctx.data_mut(|d| d.insert_temp(id, Spring { x: target, v: 0.0 }));
+        }
+        return target;
+    }
     if s.x != target || s.v != 0.0 {
         let dt = ctx.input(|i| i.stable_dt).clamp(0.0, 1.0 / 20.0);
         let w = std::f32::consts::TAU / response.max(0.01);
@@ -40,13 +61,24 @@ pub fn spring(ctx: &Context, id: Id, target: f32, response: f32, damping: f32) -
 }
 
 /// How far something is shown, 0 to 1 (a touch above 1 while it settles): appears with a soft
-/// spring, leaves quicker and without bounce.
+/// spring, leaves quicker and without bounce. With reduced motion, a short fade instead.
 pub fn presence(ctx: &Context, id: Id, shown: bool) -> f32 {
+    if reduced(ctx) {
+        return ctx.animate_bool_with_time(id.with("fade"), shown, 0.12);
+    }
     if shown { spring(ctx, id, 1.0, 0.36, 0.82) } else { spring(ctx, id, 0.0, 0.2, 1.0) }
 }
 
 /// Like `presence`, for something that is drawn only while shown: starts from 0 the first time.
 pub fn appear(ctx: &Context, id: Id, shown: bool) -> f32 {
+    if reduced(ctx) {
+        let fade = id.with("fade");
+        if shown && ctx.data(|d| d.get_temp::<Spring>(id)).is_none() {
+            ctx.data_mut(|d| d.insert_temp(id, Spring { x: 1.0, v: 0.0 }));
+            ctx.animate_bool_with_time(fade, false, 0.0);
+        }
+        return ctx.animate_bool_with_time(fade, shown, 0.12);
+    }
     if shown && ctx.data(|d| d.get_temp::<Spring>(id)).is_none() {
         ctx.data_mut(|d| d.insert_temp(id, Spring { x: 0.0, v: 0.0 }));
     }
@@ -66,9 +98,20 @@ pub fn entering(ctx: &Context, slot: Id, key: impl std::hash::Hash) -> f32 {
     appear(ctx, slot, true)
 }
 
+/// How far something still has to travel as it appears (1 → 0 as `k` goes 0 → 1), for slides
+/// and rises; nothing with reduced motion, where only the fade remains.
+pub fn travel(ctx: &Context, k: f32) -> f32 {
+    if reduced(ctx) { 0.0 } else { 1.0 - k.min(1.0) }
+}
+
 /// Forgets a spring, so the next `appear` starts from nothing again.
 pub fn reset(ctx: &Context, id: Id) {
     ctx.data_mut(|d| d.remove::<Spring>(id));
+}
+
+/// Puts a spring at rest at `x` (something held under the pointer): let go, it glides from there.
+pub fn hold(ctx: &Context, id: Id, x: f32) {
+    ctx.data_mut(|d| d.insert_temp(id, Spring { x, v: 0.0 }));
 }
 
 /// 0 to 1 over a short ease, for hover and selection colours.
@@ -78,6 +121,9 @@ pub fn hover(ctx: &Context, id: Id, on: bool) -> f32 {
 
 /// Scale of a pressed control: a slight give, like a physical button.
 pub fn press(ctx: &Context, id: Id, down: bool) -> f32 {
+    if reduced(ctx) {
+        return 1.0;
+    }
     1.0 - 0.06 * ctx.animate_bool_with_time_and_easing(id.with("press"), down, 0.1, egui::emath::easing::cubic_out)
 }
 
@@ -100,5 +146,16 @@ mod tests {
         }
         assert_eq!(x, 100.0, "settled exactly");
         assert!(peak > 100.0 && peak < 110.0, "a small overshoot, not a wobble: {peak}");
+    }
+
+    #[test]
+    fn reduced_motion_jumps_straight_to_the_target() {
+        let ctx = Context::default();
+        set_reduced(&ctx, true);
+        let id = Id::new("s");
+        spring(&ctx, id, 0.0, 0.3, 0.8);
+        ctx.begin_pass(egui::RawInput { predicted_dt: 1.0 / 60.0, ..Default::default() });
+        assert_eq!(spring(&ctx, id, 100.0, 0.3, 0.8), 100.0);
+        ctx.end_pass().textures_delta.clear();
     }
 }

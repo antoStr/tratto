@@ -21,11 +21,17 @@ Per **entrare** in una lavagna condivisa non serve installare niente, su nessun 
 
 Il collegamento passa da un tunnel cifrato di Cloudflare. Il PC si collega solo in uscita: nessuna porta aperta sul router e il tuo indirizzo IP non è visibile agli ospiti. Gli ospiti non vedono nemmeno gli indirizzi l'uno dell'altro.
 
-**Penna e touch.** Con la penna: il tasto laterale trascinato seleziona col lazo, toccato apre il menu; la parte superiore cancella. Tenendo premuta la penna o il dito su un elemento si apre il menu. Con due dita sposti e ingrandisci la lavagna.
+**Penna e touch.** Con la penna: il tasto laterale trascinato seleziona col lazo, toccato apre il menu; la parte superiore cancella. Tenendo premuta la penna o il dito su un elemento si apre il menu. Con due dita sposti e ingrandisci la lavagna. Col mouse il tratto segue il puntatore senza levigatura, anche in corsivo veloce (la levigatura *Alta*, in Impostazioni ▸ Penna, la rimette); su Windows Tratto recupera anche i movimenti che il sistema accorpa mentre disegna, così nessun occhiello va perso.
 
-**Impostazioni** (`Ctrl+,`, anche dalla schermata delle lavagne): tema, dimensione dell'interfaccia e del testo, contrasto elevato, colore principale, posizione della barra, pannelli, minimappa, penna, aggiornamenti.
+**Impostazioni** (`Ctrl+,`, anche dalla schermata delle lavagne): tema, dimensione dell'interfaccia e del testo, contrasto elevato, *riduci il movimento* (solo dissolvenze, niente scorrimenti), colore principale (anche personalizzato), posizione della barra, pannelli, minimappa, penna, aggiornamenti.
 
-**Come in FigJam.** Selezionando qualcosa compare sopra una barra scura con i suoi colori, la forma, il carattere e le altre impostazioni. Il **+** della barra degli strumenti aggiunge blocchi di codice e widget. *Tabella*: doppio clic su una cella per scrivere, Tab per passare alla successiva (nell'ultima aggiunge una riga). *Connettori*: doppio clic su una linea per scriverci un'etichetta. *Widget*: si cliccano direttamente sulla lavagna (con lo strumento di selezione) e si scrivono nel pannello a destra.
+**Come in FigJam.** Selezionando qualcosa compare sopra una barra scura con i suoi colori, la forma, il carattere e le altre impostazioni. Il **+** della barra degli strumenti aggiunge blocchi di codice e widget. *Connettori*: doppio clic su una linea per scriverci un'etichetta. *Widget*: si cliccano direttamente sulla lavagna (con lo strumento di selezione) e si scrivono nel pannello a destra.
+
+**Diagrammi e mappe.** Passando sopra una forma o una nota compaiono quattro **+**: un clic aggiunge un nodo collegato da quel lato (cliccando ancora lo stesso **+** i nodi si affiancano, come i rami di una decisione), trascinandolo si tira una freccia. Con una forma o una nota selezionata (anche mentre ci scrivi): **Tab** aggiunge il nodo dopo, **Maiusc+Tab** uno accanto sullo stesso ramo, **Ctrl+frecce** uno in quella direzione. Le frecce seguono le forme quando le sposti; *Riordina* nella barra scura mette in ordine tutto il diagramma che parte da lì.
+
+**Tabelle.** Righe e colonne si scelgono nella barra dello strumento. Un clic seleziona la tabella, un altro clic su una cella ci scrive (trascinando la sposti); Tab passa alla cella dopo (nell'ultima aggiunge una riga). Mentre scrivi, una barretta sopra la tabella cambia il colore della cella e aggiunge o toglie righe e colonne; i **+** sotto e a destra le aggiungono in fondo; le linee tra le colonne si trascinano per allargarle. Nei *Livelli* la tabella si apre sulle sue celle (un clic e ci scrivi), le sezioni sui loro elementi, i widget sulle loro voci.
+
+**Pannello Design.** Come in Figma, i numeri si cambiano trascinando la loro etichetta (Maiusc per andare più veloce) o con le frecce mentre scrivi. Forme, note, tabelle e blocchi di codice hanno gli *angoli* arrotondabili (campo e cursore). Il testo di qualsiasi elemento (caselle, note, forme, tabelle, codice) ha carattere, dimensione, grassetto, corsivo, allineamento e colore; ogni tavolozza ha anche il colore personalizzato. La *minimappa* si sposta dove vuoi trascinandola dalla maniglia in alto a sinistra.
 
 **Esportare.** *Menu ▸ Esporta*: PNG, JPG, SVG, PDF o file Tratto.
 
@@ -44,6 +50,8 @@ cargo test
 ```
 
 **Installer.** La GitHub Action `.github/workflows/build.yml` costruisce su Windows (NSIS), Mac (dmg arm64 e x64) e Linux (AppImage e deb) con [cargo-packager]. Su un tag `vX.Y.Z` pubblica una sola release con tutti i file, più `latest.yml` e `latest-linux.yml` che fanno aggiornare da soli i Tratto 1.x. Per una nuova versione: alza `version` in `Cargo.toml`, crea il tag annotato `vX.Y.Z` e caricalo.
+
+**Firma su Windows.** SmartScreen e gli antivirus trattano da sconosciuto un programma senza firma digitale. `scripts/sign.ps1` firma l'app, l'installer e il programma di disinstallazione (cargo-packager lo chiama per ognuno) appena il repository ha un certificato di firma del codice nei *Secrets* delle Actions: o un certificato in formato .pfx (`WINDOWS_CERTIFICATE` con il file in base64, `WINDOWS_CERTIFICATE_PASSWORD`) o Azure Trusted Signing (le variabili elencate nello script). Senza certificato la build resta uguale, non firmata. Un certificato autofirmato non serve: Windows non lo riconosce. Anche con un certificato vero, SmartScreen può avvisare nei primi giorni, finché il programma non si fa una reputazione; se Defender segnala per errore una versione, il file si invia come falso positivo dal portale di Microsoft per gli sviluppatori.
 
 ### Come è fatta
 

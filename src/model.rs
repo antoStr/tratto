@@ -105,6 +105,25 @@ pub struct Shape {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font: Option<FontKind>,
+    /// Largest size of the text: it shrinks below it to fit (None: up to 24).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_size: Option<f64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bold: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub italic: bool,
+    /// Colour of the text (None: dark, or white on a dark fill).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_color: Option<String>,
+    /// Alignment of the text (None: centred).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub align: Option<Align>,
+}
+
+impl Default for Shape {
+    fn default() -> Self {
+        Shape { shape: ShapeKind::Rect, fill: "transparent".into(), stroke: "#1E1E1E".into(), stroke_width: 3.0, radius: 0.0, dash: false, points: None, text: None, font: None, font_size: None, bold: false, italic: false, text_color: None, align: None }
+    }
 }
 
 /// Straight line, arrow or connector. `points` is [x1, y1, x2, y2] relative to (x, y).
@@ -187,6 +206,25 @@ pub struct Sticky {
     pub author: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hide_author: bool,
+    /// Largest size of the text: it shrinks below it to fit (None: up to 28, as in FigJam).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_size: Option<f64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bold: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub italic: bool,
+    /// Colour of the text (None: dark, or white on a dark note).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_color: Option<String>,
+    /// Corner radius (None: 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius: Option<f64>,
+}
+
+impl Default for Sticky {
+    fn default() -> Self {
+        Sticky { text: String::new(), color: "#FFF3A3".into(), font: FontKind::Sans, align: Align::Center, author: None, hide_author: false, font_size: None, bold: false, italic: false, text_color: None, radius: None }
+    }
 }
 
 /// A table: rows × columns of text cells. `cols` are the column widths; `rows` the row heights,
@@ -205,6 +243,18 @@ pub struct Table {
     pub font: FontKind,
     #[serde(default = "cell_font_size")]
     pub font_size: f64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bold: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub italic: bool,
+    /// Colour of the text (None: dark, or white on a dark cell).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub align: Option<Align>,
+    /// Corner radius (None: 6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius: Option<f64>,
 }
 
 fn cell_font_size() -> f64 {
@@ -226,7 +276,7 @@ pub const CELL_PAD: f64 = 10.0;
 
 impl Table {
     pub fn new(rows: usize, cols: usize) -> Table {
-        Table { cols: vec![TABLE_COL; cols], rows: vec![TABLE_ROW; rows], cells: vec![vec![Cell::default(); cols]; rows], header: true, font: FontKind::Sans, font_size: cell_font_size() }
+        Table { cols: vec![TABLE_COL; cols], rows: vec![TABLE_ROW; rows], cells: vec![vec![Cell::default(); cols]; rows], header: true, font: FontKind::Sans, font_size: cell_font_size(), bold: false, italic: false, color: None, align: None, radius: None }
     }
     /// Left edge of each column and top edge of each row, plus the far edge.
     pub fn col_edges(&self) -> Vec<f64> {
@@ -289,6 +339,9 @@ pub struct Code {
     pub light: bool,
     #[serde(default = "code_font_size")]
     pub font_size: f64,
+    /// Corner radius (None: a little under the text size).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius: Option<f64>,
 }
 
 fn code_font_size() -> f64 {
@@ -495,10 +548,10 @@ impl El {
             Kind::Line(l) => l.points.len() == 4 && l.points.iter().all(|v| v.is_finite()) && num(l.stroke_width) && opt_id(&l.from) && opt_id(&l.to) && l.label.as_ref().is_none_or(|t| t.len() <= 1000),
             Kind::Comment { thread } => thread.len() <= 500 && thread.iter().all(|m| m.text.len() <= 4000 && m.author.len() <= 64 && num(m.t)),
             Kind::Shape(s) => {
-                num(s.stroke_width) && num(s.radius) && s.text.as_ref().is_none_or(|t| t.len() < 10_000) && s.points.as_ref().is_none_or(|p| p.len() <= 2000 && p.iter().all(|v| v.is_finite()))
+                num(s.stroke_width) && num(s.radius) && s.text.as_ref().is_none_or(|t| t.len() < 10_000) && s.points.as_ref().is_none_or(|p| p.len() <= 2000 && p.iter().all(|v| v.is_finite())) && s.font_size.is_none_or(num) && s.text_color.as_ref().is_none_or(|c| c.len() <= 32)
             }
             Kind::Text(t) => t.text.len() < 100_000 && num(t.font_size),
-            Kind::Sticky(s) => s.text.len() < 100_000 && s.author.as_ref().is_none_or(|a| a.len() <= 64),
+            Kind::Sticky(s) => s.text.len() < 100_000 && s.author.as_ref().is_none_or(|a| a.len() <= 64) && s.font_size.is_none_or(num) && s.radius.is_none_or(num) && s.text_color.as_ref().is_none_or(|c| c.len() <= 32),
             Kind::Section { .. } => true,
             Kind::Image { file_id } => valid_file_id(file_id),
             Kind::Stamp { emoji } => emoji.len() <= 16,
@@ -511,8 +564,10 @@ impl El {
                     && cells <= 5000
                     && t.cols.iter().chain(&t.rows).all(|v| v.is_finite() && *v > 0.0)
                     && num(t.font_size)
+                    && t.radius.is_none_or(num)
+                    && t.color.as_ref().is_none_or(|c| c.len() <= 32)
             }
-            Kind::Code(c) => c.code.len() < 200_000 && c.language.len() <= 32 && num(c.font_size),
+            Kind::Code(c) => c.code.len() < 200_000 && c.language.len() <= 32 && num(c.font_size) && c.radius.is_none_or(num),
             Kind::Widget(w) => match w {
                 Widget::Poll { question, options } => question.len() <= 1000 && options.len() <= 50 && options.iter().all(|o| o.text.len() <= 1000 && o.votes.len() <= 1000 && o.votes.iter().all(|v| v.len() <= 64)),
                 Widget::Checklist { title, items } => title.len() <= 1000 && items.len() <= 200 && items.iter().all(|i| i.text.len() <= 2000),

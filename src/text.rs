@@ -286,18 +286,34 @@ pub fn author_band(el: &El, s: &Sticky) -> f64 {
     if show_author(s) { el.h * 0.12 } else { 0.0 }
 }
 
-/// Largest font size (8–28) at which the sticky's text fits its square.
+pub fn sticky_font(s: &Sticky) -> FontRef {
+    font(s.font, s.bold, s.italic)
+}
+
+/// Largest font size (from the note's own, 28 unless chosen, down to 8) at which the sticky's
+/// text fits its square.
 pub fn sticky_layout(el: &El, s: &Sticky) -> (Layout, f64) {
     let max_w = (el.w - STICKY_PAD * 2.0).max(10.0);
     let max_h = (el.h - STICKY_PAD * 2.0 - author_band(el, s)).max(10.0);
-    let face = font(s.font, false, false).face;
-    let mut size = 28.0;
+    let face = sticky_font(s).face;
+    let top = s.font_size.unwrap_or(28.0).clamp(4.0, 400.0);
+    let floor = top.min(8.0);
+    let mut size = top;
     let mut layout = layout_text(&s.text, face, size, Some(max_w));
-    while size > 8.0 && (layout.height > max_h || layout.width > max_w + 0.5) {
-        size = (size * 0.9_f64).floor().max(8.0);
+    while size > floor && (layout.height > max_h || layout.width > max_w + 0.5) {
+        size = (size * 0.9_f64).floor().max(floor);
         layout = layout_text(&s.text, face, size, Some(max_w));
     }
     (layout, size)
+}
+
+/// Colour of a sticky's text: its own, or dark (white on a dark note).
+pub fn sticky_text_color(s: &Sticky) -> egui::Color32 {
+    match s.text_color.as_deref().and_then(crate::model::parse_color) {
+        Some(c) => c,
+        None if is_dark(&s.color) => egui::Color32::WHITE,
+        None => DARK,
+    }
 }
 
 /// How much of a shape's box its text may use, and how far the text sits below the centre (both × size).
@@ -333,14 +349,19 @@ pub struct ShapeText {
     pub width: f64,
 }
 
-/// Text inside a shape: largest size (up to 24) that fits its usable area, and where it starts.
+pub fn shape_font(s: &Shape) -> FontRef {
+    font(s.font.unwrap_or_default(), s.bold, s.italic)
+}
+
+/// Text inside a shape: largest size (up to 24, or the shape's own) that fits its usable area,
+/// and where it starts.
 pub fn shape_text_layout(el: &El, s: &Shape) -> ShapeText {
     let (k, shift) = shape_text_room(s.shape);
     let max_w = (el.w * k).max(1.0);
     let max_h = (el.h * k).max(1.0);
-    let face = font(s.font.unwrap_or_default(), false, false).face;
+    let face = shape_font(s).face;
     let text = s.text.as_deref().unwrap_or("");
-    let start = 24.0_f64.min(max_h);
+    let start = s.font_size.unwrap_or(24.0).clamp(1.0, 400.0).min(max_h);
     let mut size = start;
     let mut layout = layout_text(text, face, size, Some(max_w));
     while size > start * 0.15 && (layout.height > max_h || layout.width > max_w + 0.5) {
@@ -352,6 +373,9 @@ pub fn shape_text_layout(el: &El, s: &Shape) -> ShapeText {
 }
 
 pub fn shape_text_color(s: &Shape) -> egui::Color32 {
+    if let Some(c) = s.text_color.as_deref().and_then(crate::model::parse_color) {
+        return c;
+    }
     if s.fill == "transparent" {
         if s.stroke == "transparent" { DARK } else { color_or(&s.stroke, DARK) }
     } else if is_dark(&s.fill) {
@@ -497,7 +521,7 @@ mod tests {
 
     #[test]
     fn stickies_shrink_their_text_to_fit() {
-        let mut el = El::new(Kind::Sticky(Sticky { text: "Una nota con parecchie parole dentro, che a ventotto punti proprio non ci stanno tutte quante".into(), color: "#FFF3A3".into(), font: FontKind::Sans, align: Align::Center, author: None, hide_author: false }));
+        let mut el = El::new(Kind::Sticky(Sticky { text: "Una nota con parecchie parole dentro, che a ventotto punti proprio non ci stanno tutte quante".into(), ..Default::default() }));
         el.w = 220.0;
         el.h = 220.0;
         let Kind::Sticky(s) = &el.kind else { unreachable!() };

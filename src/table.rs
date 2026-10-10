@@ -7,7 +7,22 @@ use crate::prims::{Path, Prim, with_alpha};
 use crate::text::{self, layout_text, place_lines};
 
 pub fn cell_font(t: &Table, row: usize) -> text::FontRef {
-    text::font(t.font, t.header && row == 0, false)
+    text::font(t.font, t.bold || (t.header && row == 0), t.italic)
+}
+
+/// Colour of a cell's text: the table's own, or dark (white on a dark cell).
+pub fn cell_color(t: &Table, row: usize, col: usize) -> Color32 {
+    let dark = t.cells[row][col].fill.as_deref().is_some_and(crate::model::is_dark);
+    match t.color.as_deref().and_then(crate::model::parse_color) {
+        Some(c) if !dark => c,
+        _ if dark => Color32::WHITE,
+        _ => DARK,
+    }
+}
+
+/// Corner radius of a table.
+pub fn radius(t: &Table) -> f64 {
+    t.radius.unwrap_or(6.0).max(0.0)
 }
 
 /// Wrapped lines of a cell.
@@ -39,7 +54,7 @@ const HEAD: Color32 = Color32::from_rgb(0xF5, 0xF5, 0xF5);
 
 pub fn prims(el: &El, t: &Table, alpha: f64, editing: Option<(usize, usize)>, out: &mut Vec<Prim>) {
     let (w, h) = (el.w as f32, el.h as f32);
-    let r = 6.0f32;
+    let r = (radius(t) as f32).min(w / 2.0).min(h / 2.0);
     out.push(Prim::Fill { path: Path::round_rect(0.0, 0.0, w, h, [r; 4]), color: with_alpha(Color32::WHITE, alpha) });
     let rows = t.rows.len();
     let cols = t.cols.len();
@@ -60,10 +75,9 @@ pub fn prims(el: &El, t: &Table, alpha: f64, editing: Option<(usize, usize)>, ou
             if editing == Some((row, col)) || t.cells[row][col].text.is_empty() {
                 continue;
             }
-            let dark = t.cells[row][col].fill.as_deref().is_some_and(crate::model::is_dark);
-            let color = if dark { Color32::WHITE } else { DARK };
+            let color = cell_color(t, row, col);
             let lines = cell_lines(t, row, col);
-            out.push(Prim::Text { placed: place_lines(&lines, cell_font(t, row), t.font_size, Align::Left, cw - CELL_PAD * 2.0, y + CELL_PAD, x + CELL_PAD), color: with_alpha(color, alpha) });
+            out.push(Prim::Text { placed: place_lines(&lines, cell_font(t, row), t.font_size, t.align.unwrap_or(Align::Left), cw - CELL_PAD * 2.0, y + CELL_PAD, x + CELL_PAD), color: with_alpha(color, alpha) });
         }
     }
     // Grid: inner lines, then the rounded border on top.

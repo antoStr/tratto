@@ -155,10 +155,8 @@ pub fn left(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, dialogs: &mut
     ui.painter().hline(tabs.x_range(), tabs.max.y - 0.5, Stroke::new(1.0, t.border));
     ui.scope_builder(egui::UiBuilder::new().max_rect(tabs.shrink2(vec2(8.0, 8.0))), |ui| {
         ui.horizontal_centered(|ui| {
-            tab(ui, &mut b.ui.left_tab, LeftTab::Layers, "Livelli");
-            if !b.editor.read_only {
-                tab(ui, &mut b.ui.left_tab, LeftTab::Templates, "Modelli");
-            }
+            let options: &[(LeftTab, &str)] = if b.editor.read_only { &[(LeftTab::Layers, "Livelli")] } else { &[(LeftTab::Layers, "Livelli"), (LeftTab::Templates, "Modelli")] };
+            tab_strip(ui, &mut b.ui.left_tab, options);
         });
     });
     if b.ui.left_tab == LeftTab::Templates && !b.editor.read_only {
@@ -169,19 +167,33 @@ pub fn left(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, dialogs: &mut
     action
 }
 
-fn tab<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, v: T, label: &str) {
+/// Text tabs; a soft pill glides under the chosen one.
+fn tab_strip<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, &str)]) {
     let t = ui::theme(ui.ctx());
-    let on = *value == v;
-    let font = if on { ui::medium(11.0) } else { egui::FontId::proportional(11.0) };
-    let g = ui.painter().layout_no_wrap(label.into(), font, if on { t.text } else { t.text2 });
-    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 16.0, 24.0), Sense::click());
-    if resp.hovered() && !on {
-        ui.painter().rect_filled(r, ui::RADIUS, t.hover);
-    }
-    ui.painter().galley(r.center() - g.size() / 2.0, g, t.text);
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, label));
-    if resp.clicked() {
-        *value = v;
+    let rects: Vec<Rect> = options
+        .iter()
+        .map(|(_, label)| {
+            let w = ui.painter().layout_no_wrap(label.to_string(), ui::medium(11.0), t.text).size().x;
+            ui.allocate_exact_size(vec2(w + 18.0, 24.0), Sense::hover()).0
+        })
+        .collect();
+    let Some(first) = rects.first().copied() else { return };
+    let at = options.iter().position(|o| o.0 == *value).unwrap_or(0);
+    let id = ui.id().with("tabs-pill");
+    let x = ui::motion::spring(ui.ctx(), id.with("x"), rects[at].min.x - first.min.x, 0.3, 0.88);
+    let w = ui::motion::spring(ui.ctx(), id.with("w"), rects[at].width(), 0.3, 0.88);
+    ui.painter().rect_filled(Rect::from_min_size(pos2(first.min.x + x, first.min.y), vec2(w, 24.0)), ui::RADIUS, t.bg2);
+    for (i, ((v, label), r)) in options.iter().zip(&rects).enumerate() {
+        let resp = ui.interact(*r, ui.id().with(("tab", i)), Sense::click());
+        let on = i == at;
+        let k = ui::motion::hover(ui.ctx(), resp.id.with("h"), on || resp.hovered());
+        let font = if on { ui::medium(11.0) } else { egui::FontId::proportional(11.0) };
+        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, *label, font, ui::blend(t.text2, t.text, k));
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, *label));
+        ui::focus_ring(ui, &resp, *r);
+        if resp.clicked() {
+            *value = *v;
+        }
     }
 }
 
@@ -213,9 +225,7 @@ fn title(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, width: f32) {
 fn app_menu(ui: &mut Ui, b: &mut BoardScreen, dialogs: &mut Dialogs) -> Option<Action> {
     let t = ui::theme(ui.ctx());
     let (r, resp) = ui.allocate_exact_size(vec2(40.0, 32.0), Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(r, ui::RADIUS, t.hover);
-    }
+    ui::hover_fill(ui, resp.id, r, resp.hovered(), ui::RADIUS as f32, t.hover);
     ui::icons::logo(ui, Rect::from_center_size(r.center() - vec2(6.0, 0.0), vec2(20.0, 20.0)));
     icon(ui, "chevron-down", r.center() + vec2(13.0, 0.0), 12.0, t.icon2);
     let resp = ui::tip(resp, "Menu principale", None);
@@ -262,23 +272,56 @@ fn app_menu(ui: &mut Ui, b: &mut BoardScreen, dialogs: &mut Dialogs) -> Option<A
 
 /* ---------- layers ---------- */
 
+/// Something inside an element, listed under it when it is opened: a table's cell, a poll's
+/// option or a checklist's item.
+#[derive(Clone, Copy, PartialEq)]
+enum Piece {
+    Cell(usize, usize),
+    Item(usize),
+}
+
 enum Row {
-    El(Arc<El>, u8),
+    /// An element; `bool`: it can be opened (a section with things in it, a table, a widget).
+    El(Arc<El>, u8, bool),
     /// `auto`: strokes written one after the other in the same spot, shown together.
     Folder { id: String, name: String, members: Vec<Arc<El>>, auto: bool },
+    Piece { el: Arc<El>, piece: Piece, label: String, depth: u8 },
 }
 
 fn row_ids(r: &Row) -> Vec<String> {
     match r {
-        Row::El(e, _) => vec![e.id.clone()],
+        Row::El(e, ..) | Row::Piece { el: e, .. } => vec![e.id.clone()],
         Row::Folder { members, .. } => members.iter().map(|m| m.id.clone()).collect(),
     }
 }
 
 fn row_key(r: &Row) -> String {
     match r {
-        Row::El(e, _) => e.id.clone(),
+        Row::El(e, ..) => e.id.clone(),
         Row::Folder { id, .. } => format!("folder:{id}"),
+        Row::Piece { el, piece: Piece::Cell(r, c), .. } => format!("{}/{r}/{c}", el.id),
+        Row::Piece { el, piece: Piece::Item(i), .. } => format!("{}/{i}", el.id),
+    }
+}
+
+/// Key of an element's open state in the layers panel.
+fn open_key(id: &str) -> String {
+    format!("el:{id}")
+}
+
+/// What an element shows inside it when opened.
+fn pieces(el: &El) -> Vec<(Piece, String)> {
+    let or = |s: String, d: String| if s.is_empty() { d } else { s };
+    match &el.kind {
+        Kind::Table(t) => t
+            .cells
+            .iter()
+            .enumerate()
+            .flat_map(|(r, row)| row.iter().enumerate().map(move |(c, cell)| (Piece::Cell(r, c), format!("{}{}   {}", col_name(c), r + 1, or(first_line(&cell.text), "—".into())))))
+            .collect(),
+        Kind::Widget(Widget::Poll { options, .. }) => options.iter().enumerate().map(|(i, o)| (Piece::Item(i), or(first_line(&o.text), format!("Opzione {}", i + 1)))).collect(),
+        Kind::Widget(Widget::Checklist { items, .. }) => items.iter().enumerate().map(|(i, it)| (Piece::Item(i), format!("{} {}", if it.done { "✓" } else { "○" }, or(first_line(&it.text), "Cosa da fare".into())))).collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -289,65 +332,141 @@ fn near(a: &BBox, b: &BBox) -> bool {
     a.x - RUN_GAP <= b.right() && b.x - RUN_GAP <= a.right() && a.y - RUN_GAP <= b.bottom() && b.y - RUN_GAP <= a.bottom()
 }
 
-fn push_container(rows: &mut Vec<Row>, open: &std::collections::HashSet<String>, id: String, name: String, members: Vec<Arc<El>>, auto: bool) {
-    let is_open = open.contains(&id);
-    let shown = if is_open { members.clone() } else { Vec::new() };
-    rows.push(Row::Folder { id, name, members, auto });
-    rows.extend(shown.into_iter().map(|m| Row::El(m, 1)));
-}
-
-fn flush_run(rows: &mut Vec<Row>, open: &std::collections::HashSet<String>, run: &mut Vec<Arc<El>>) {
-    if run.len() == 1 {
-        rows.push(Row::El(run[0].clone(), 0));
-    } else if run.len() > 1 {
-        // Keyed by the oldest stroke, so the row keeps its state while more strokes come.
-        let name = if run.iter().all(|e| matches!(e.kind, Kind::Highlighter(_))) { "Evidenziature" } else { "Scrittura" };
-        let id = format!("ink:{}", run[run.len() - 1].id);
-        push_container(rows, open, id, name.into(), std::mem::take(run), true);
+/// The section each element lies in (the smallest that holds it), as in Figma's frames. Elements
+/// in folders stay in their folder.
+fn section_parents(items: &[Arc<El>]) -> std::collections::HashMap<String, String> {
+    let sections: Vec<(&Arc<El>, BBox)> = items.iter().filter(|e| e.is_section()).map(|e| (e, frame_box(e))).collect();
+    let mut parent = std::collections::HashMap::new();
+    if sections.is_empty() {
+        return parent;
     }
-    run.clear();
+    for el in items.iter().filter(|e| e.group_id.is_none() && !e.is_comment()) {
+        let f = frame_box(el);
+        let area = f.w * f.h;
+        let best = sections.iter().filter(|(s, b)| s.id != el.id && b.holds(&f) && b.w * b.h > area).min_by(|a, b| (a.1.w * a.1.h).total_cmp(&(b.1.w * b.1.h)));
+        if let Some((s, _)) = best {
+            parent.insert(el.id.clone(), s.id.clone());
+        }
+    }
+    parent
 }
 
-/// Layers top to bottom; each folder sits where its top element is, members indented below it
-/// when open. Consecutive nearby strokes outside folders collapse into one row.
+struct Tree<'a> {
+    open: &'a std::collections::HashSet<String>,
+    children: std::collections::HashMap<String, Vec<Arc<El>>>,
+    folders: std::collections::HashMap<String, Vec<Arc<El>>>,
+}
+
+impl Tree<'_> {
+    fn element(&self, rows: &mut Vec<Row>, el: &Arc<El>, depth: u8) {
+        let kids = self.children.get(&el.id);
+        let parts = pieces(el);
+        rows.push(Row::El(el.clone(), depth, kids.is_some() || !parts.is_empty()));
+        if !self.open.contains(&open_key(&el.id)) {
+            return;
+        }
+        if let Some(kids) = kids {
+            self.level(rows, kids, depth + 1);
+        }
+        rows.extend(parts.into_iter().map(|(piece, label)| Row::Piece { el: el.clone(), piece, label, depth: depth + 1 }));
+    }
+
+    fn container(&self, rows: &mut Vec<Row>, id: String, name: String, members: Vec<Arc<El>>, auto: bool) {
+        let shown = if self.open.contains(&id) { members.clone() } else { Vec::new() };
+        rows.push(Row::Folder { id, name, members, auto });
+        for m in shown {
+            self.element(rows, &m, 1);
+        }
+    }
+
+    fn flush_run(&self, rows: &mut Vec<Row>, run: &mut Vec<Arc<El>>, depth: u8) {
+        if run.len() == 1 {
+            self.element(rows, &run[0], depth);
+        } else if run.len() > 1 && depth == 0 {
+            // Keyed by the oldest stroke, so the row keeps its state while more strokes come.
+            let name = if run.iter().all(|e| matches!(e.kind, Kind::Highlighter(_))) { "Evidenziature" } else { "Scrittura" };
+            let id = format!("ink:{}", run[run.len() - 1].id);
+            self.container(rows, id, name.into(), std::mem::take(run), true);
+        } else {
+            for el in run.iter() {
+                self.element(rows, el, depth);
+            }
+        }
+        run.clear();
+    }
+
+    /// One level of the list, top to bottom; each folder sits where its top element is.
+    /// Consecutive nearby strokes outside folders collapse into one row.
+    fn level(&self, rows: &mut Vec<Row>, items: &[Arc<El>], depth: u8) {
+        let mut run: Vec<Arc<El>> = Vec::new();
+        let mut run_box: Option<BBox> = None;
+        for el in items {
+            if el.group_id.is_none() && el.is_ink() {
+                let b = aabb(el);
+                if run_box.is_some_and(|r| !near(&r, &b)) {
+                    self.flush_run(rows, &mut run, depth);
+                    run_box = None;
+                }
+                run.push(el.clone());
+                run_box = Some(run_box.map_or(b, |r| union([r, b]).unwrap()));
+                continue;
+            }
+            self.flush_run(rows, &mut run, depth);
+            run_box = None;
+            match &el.group_id {
+                None => self.element(rows, el, depth),
+                Some(g) if self.folders.get(g).is_some_and(|m| m[0].id == el.id) => {
+                    let name = String::new();
+                    self.container(rows, g.clone(), name, self.folders[g].clone(), false);
+                }
+                _ => {}
+            }
+        }
+        self.flush_run(rows, &mut run, depth);
+    }
+}
+
 fn build_rows(ed: &mut Editor, open: &std::collections::HashSet<String>) -> Vec<Row> {
     let items: Vec<Arc<El>> = ed.board.all().iter().rev().cloned().collect();
-    let mut by_folder: std::collections::HashMap<String, Vec<Arc<El>>> = Default::default();
+    let parent = section_parents(&items);
+    let mut tree = Tree { open, children: Default::default(), folders: Default::default() };
     for el in &items {
+        if let Some(p) = parent.get(&el.id) {
+            tree.children.entry(p.clone()).or_default().push(el.clone());
+        }
         if let Some(g) = &el.group_id {
-            by_folder.entry(g.clone()).or_default().push(el.clone());
+            tree.folders.entry(g.clone()).or_default().push(el.clone());
         }
     }
+    let top: Vec<Arc<El>> = items.iter().filter(|e| !parent.contains_key(&e.id)).cloned().collect();
     let mut rows = Vec::new();
-    let mut run: Vec<Arc<El>> = Vec::new();
-    let mut run_box: Option<BBox> = None;
-    for el in &items {
-        if el.group_id.is_none() && el.is_ink() {
-            let b = aabb(el);
-            if run_box.is_some_and(|r| !near(&r, &b)) {
-                flush_run(&mut rows, open, &mut run);
-                run_box = None;
-            }
-            run.push(el.clone());
-            run_box = Some(run_box.map_or(b, |r| union([r, b]).unwrap()));
-            continue;
-        }
-        flush_run(&mut rows, open, &mut run);
-        run_box = None;
-        match &el.group_id {
-            None => rows.push(Row::El(el.clone(), 0)),
-            Some(g) if by_folder[g][0].id == el.id => {
-                let name = ed.board.group_name(g);
-                push_container(&mut rows, open, g.clone(), name, by_folder[g].clone(), false);
-            }
-            _ => {}
+    tree.level(&mut rows, &top, 0);
+    // Folder names come from the board.
+    for r in &mut rows {
+        if let Row::Folder { id, name, auto: false, .. } = r
+            && name.is_empty()
+        {
+            *name = ed.board.group_name(id);
         }
     }
-    flush_run(&mut rows, open, &mut run);
     rows
 }
 
 fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
+    // A new selection inside closed sections opens them, so it can be seen in the list.
+    let seen = ui.id().with("layers-selection");
+    if ui.data(|d| d.get_temp::<Vec<String>>(seen)).as_ref() != Some(&ed.selection) {
+        ui.data_mut(|d| d.insert_temp(seen, ed.selection.clone()));
+        let items: Vec<Arc<El>> = ed.board.all().to_vec();
+        let parent = section_parents(&items);
+        for id in &ed.selection {
+            let mut at = parent.get(id);
+            while let Some(p) = at {
+                st.open_folders.insert(open_key(p));
+                at = parent.get(p);
+            }
+        }
+    }
     let rows = build_rows(ed, &st.open_folders);
     if rows.is_empty() {
         ui.add_space(16.0);
@@ -368,40 +487,59 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
             let key = row_key(row);
             let ids = row_ids(row);
             let els: Vec<Arc<El>> = match row {
-                Row::El(e, _) => vec![e.clone()],
+                Row::El(e, ..) | Row::Piece { el: e, .. } => vec![e.clone()],
                 Row::Folder { members, .. } => members.clone(),
+            };
+            let piece = match row {
+                Row::Piece { piece, .. } => Some(*piece),
+                _ => None,
             };
             let locked = els.iter().all(|e| e.locked);
             let hidden = els.iter().all(|e| e.hidden);
-            let is_sel = ids.iter().all(|i| selected.contains(i));
+            let is_sel = match (row, piece) {
+                // A cell is chosen while it is being written in.
+                (Row::Piece { el, .. }, Some(Piece::Cell(r, c))) => ed.editing.as_deref() == Some(el.id.as_str()) && ed.editing_cell == Some((r, c)),
+                (_, Some(_)) => false,
+                _ => ids.iter().all(|i| selected.contains(i)),
+            };
             let (label, depth, folder) = match row {
-                Row::El(e, d) => (element_label(e), *d, false),
+                Row::El(e, d, _) => (element_label(e), *d, false),
                 Row::Folder { name, members, .. } => (format!("{name}  {}", members.len()), 0, true),
+                Row::Piece { label, depth, .. } => (label.clone(), *depth, false),
             };
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
             let r = rect.shrink2(vec2(8.0, 2.0));
-            if is_sel {
-                ui.painter().rect_filled(r, ui::RADIUS, t.selected);
-            } else if resp.hovered() {
-                ui.painter().rect_filled(r, ui::RADIUS, t.hover);
+            let sel_k = ui::motion::hover(ui.ctx(), Id::new(("layer-sel", &key)), is_sel);
+            if sel_k > 0.0 {
+                ui.painter().rect_filled(r, ui::RADIUS, t.selected.gamma_multiply(sel_k));
             }
+            ui::hover_fill(ui, Id::new(("layer-h", &key)), r, resp.hovered() && !is_sel, ui::RADIUS as f32, t.hover);
             let mut x = r.min.x + 8.0 + depth as f32 * 16.0;
-            if let Row::Folder { id, auto, .. } = row {
+            // Opens and closes folders, sections, tables and widgets.
+            let toggle = match row {
+                Row::Folder { id, .. } => Some(id.clone()),
+                Row::El(e, _, true) => Some(open_key(&e.id)),
+                _ => None,
+            };
+            if let Some(tk) = &toggle {
                 let chev = Rect::from_center_size(pos2(x + 6.0, r.center().y), vec2(16.0, 24.0));
                 let c = ui.interact(chev, Id::new(("chev", &key)), Sense::click());
-                let open = st.open_folders.contains(id);
-                icon(ui, if open { "chevron-down" } else { "chevron-right" }, chev.center(), 12.0, t.icon2);
+                let open = st.open_folders.contains(tk);
+                icon(ui, if open { "chevron-down" } else { "chevron-right" }, chev.center(), 12.0, if c.hovered() { t.icon } else { t.icon2 });
                 if c.clicked() {
                     if open {
-                        st.open_folders.remove(id);
+                        st.open_folders.remove(tk);
                     } else {
-                        st.open_folders.insert(id.clone());
+                        st.open_folders.insert(tk.clone());
                     }
                 }
-                x += 16.0;
-                icon(ui, if *auto { "pen-line" } else { "folder" }, pos2(x + 7.0, r.center().y), 14.0, t.icon2);
-            } else if let Row::El(e, _) = row {
-                icon(ui, type_icon(e), pos2(x + 7.0, r.center().y), 14.0, t.icon2);
+            }
+            x += 16.0;
+            match row {
+                Row::Folder { auto, .. } => icon(ui, if *auto { "pen-line" } else { "folder" }, pos2(x + 7.0, r.center().y), 14.0, t.icon2),
+                Row::El(e, ..) => icon(ui, type_icon(e), pos2(x + 7.0, r.center().y), 14.0, t.icon2),
+                Row::Piece { piece: Piece::Cell(..), .. } => icon(ui, "rectangle-horizontal", pos2(x + 7.0, r.center().y), 12.0, t.text3),
+                Row::Piece { el, .. } => icon(ui, if matches!(el.widget(), Some(Widget::Poll { .. })) { "chart-column" } else { "list-checks" }, pos2(x + 7.0, r.center().y), 12.0, t.text3),
             }
             x += 22.0;
             let renaming = st.renaming.as_deref() == Some(key.as_str());
@@ -416,7 +554,7 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
                     if !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                         match row {
                             Row::Folder { id, auto: false, .. } => ed.board.rename_group(id, &v),
-                            Row::El(e, _) => {
+                            Row::El(e, ..) => {
                                 let name: String = v.trim().chars().take(80).collect();
                                 ed.board.update(&[e.id.clone()], |el| el.name = (!name.is_empty()).then(|| name.clone()));
                             }
@@ -425,18 +563,16 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
                     }
                 }
             } else {
-                let color = if hidden { t.text3 } else { t.text };
+                let color = if hidden { t.text3 } else if piece.is_some() { t.text2 } else { t.text };
                 let font = if folder { ui::medium(11.0) } else { egui::FontId::proportional(11.0) };
                 ui.painter().with_clip_rect(Rect::from_min_max(pos2(x, r.min.y), pos2(r.max.x - 52.0, r.max.y))).text(pos2(x, r.center().y), egui::Align2::LEFT_CENTER, &label, font, color);
             }
             // Lock and hide, shown on hover or when on.
-            if !ro && (resp.hovered() || locked || hidden) && !renaming {
+            if !ro && piece.is_none() && (resp.hovered() || locked || hidden) && !renaming {
                 for (k, (name, tip, on)) in [("eye", if hidden { "Mostra" } else { "Nascondi" }, hidden), ("lock", if locked { "Sblocca" } else { "Blocca" }, locked)].into_iter().enumerate() {
                     let br = Rect::from_center_size(pos2(r.max.x - 12.0 - k as f32 * 22.0, r.center().y), vec2(20.0, 20.0));
                     let bresp = ui.interact(br, Id::new((name, &key)), Sense::click());
-                    if bresp.hovered() {
-                        ui.painter().rect_filled(br, 4.0, t.press);
-                    }
+                    ui::hover_fill(ui, bresp.id, br, bresp.hovered(), 4.0, t.press);
                     let shown = match (name, on) {
                         ("eye", true) => "eye-off",
                         ("lock", false) => "unlock",
@@ -453,10 +589,31 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
                     }
                 }
             }
+            if let (Some(p), Row::Piece { el, .. }) = (piece, row) {
+                if resp.clicked() && !ro && !el.locked {
+                    ed.set_tool(Tool::Select);
+                    ed.selection = vec![el.id.clone()];
+                    ed.reveal(&ids);
+                    match p {
+                        // A cell: straight to writing in it.
+                        Piece::Cell(r, c) => {
+                            ed.editing = Some(el.id.clone());
+                            ed.editing_cell = Some((r, c));
+                        }
+                        // An option or item: written in the side panel.
+                        Piece::Item(_) => {
+                            ed.prefs.right_panel = true;
+                            ed.prefs.focus = false;
+                        }
+                    }
+                }
+                continue;
+            }
             if resp.double_clicked() && !ro && !matches!(row, Row::Folder { auto: true, .. }) {
                 st.rename_buf = match row {
-                    Row::El(e, _) => element_label(e),
+                    Row::El(e, ..) => element_label(e),
                     Row::Folder { name, .. } => name.clone(),
+                    Row::Piece { .. } => String::new(),
                 };
                 st.renaming = Some(key.clone());
             } else if resp.clicked() {
@@ -495,9 +652,7 @@ fn templates(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
         for tpl in crate::templates::TEMPLATES.iter() {
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 72.0), Sense::click());
             let r = rect.shrink2(vec2(8.0, 4.0));
-            if resp.hovered() {
-                ui.painter().rect_filled(r, ui::RADIUS, t.hover);
-            }
+            ui::hover_fill(ui, resp.id, r, resp.hovered(), ui::RADIUS as f32, t.hover);
             let art = Rect::from_min_size(r.min + vec2(6.0, 6.0), vec2(80.0, 52.0));
             template_art(ui, Some(tpl), art);
             let tx = art.max.x + 10.0;
@@ -558,9 +713,7 @@ fn zoom_menu(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
     let label = format!("{}%", (ed.cam.z * 100.0).round());
     let g = ui.painter().layout_no_wrap(label.clone(), egui::FontId::proportional(11.0), t.text);
     let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 26.0, 24.0), Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(r, ui::RADIUS, t.hover);
-    }
+    ui::hover_fill(ui, resp.id, r, resp.hovered(), ui::RADIUS as f32, t.hover);
     ui.painter().galley(pos2(r.min.x + 6.0, r.center().y - g.size().y / 2.0), g, t.text);
     icon(ui, "chevron-down", pos2(r.max.x - 10.0, r.center().y), 12.0, t.icon2);
     let resp = ui::tip(resp, &format!("Zoom {label}"), None);
@@ -666,11 +819,7 @@ pub fn background_fields(ui: &mut Ui, meta: &mut BoardMeta) {
                 meta.background = value.into();
             }
         }
-        let mut c = parse_color(&meta.background).unwrap_or(Color32::WHITE);
-        let before = c;
-        let resp = ui.color_edit_button_srgba(&mut c);
-        ui::tip(resp, "Colore personalizzato", None);
-        if c != before {
+        if let Some(c) = ui::color_well(ui, "Colore personalizzato dello sfondo", parse_color(&meta.background).unwrap_or(Color32::WHITE)) {
             meta.background = hex(c);
         }
     });
@@ -740,6 +889,7 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
     if els.len() > 1 {
         section(ui, Some("Allinea"), |ui| {
             ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
                 for (k, name, label) in [
                     (AlignKind::Left, "align-start-vertical", "Allinea a sinistra"),
                     (AlignKind::HCenter, "align-center-vertical", "Centra orizzontalmente"),
@@ -752,20 +902,18 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
                         ed.align(k);
                     }
                 }
-            });
-            if els.len() > 2 {
-                ui.horizontal(|ui| {
+                if els.len() > 2 {
                     if small_icon_button(ui, "align-horizontal-distribute-center", "Distribuisci in orizzontale", false).clicked() {
                         ed.distribute(false);
                     }
                     if small_icon_button(ui, "align-vertical-distribute-center", "Distribuisci in verticale", false).clicked() {
                         ed.distribute(true);
                     }
-                });
-            }
+                }
+            });
         });
     }
-    // Position and size.
+    // Position and size, rotation and corners: every number can be dragged by its label.
     let frame = union(els.iter().map(|e| frame_box(e))).unwrap_or_default();
     section(ui, Some("Posizione e dimensioni"), |ui| {
         let w = (ui.available_width() - 8.0) / 2.0;
@@ -774,25 +922,45 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
         let (bw, bh) = one.as_ref().map_or((frame.w, frame.h), |e| (e.w, e.h));
         let mut set: Option<(Option<f64>, Option<f64>, Option<f64>, Option<f64>)> = None;
         ui.horizontal(|ui| {
-            if let Some(v) = ui::number_field(ui, Id::new("px"), "X", "Posizione orizzontale", Some(x), 0, w) {
+            if let Some(v) = ui::Num::new(Id::new("px"), "X", "Posizione orizzontale: trascina la X o scrivi", Some(x)).width(w).show(ui) {
                 set = Some((Some(v), None, None, None));
             }
-            if let Some(v) = ui::number_field(ui, Id::new("py"), "Y", "Posizione verticale", Some(y), 0, w) {
+            if let Some(v) = ui::Num::new(Id::new("py"), "Y", "Posizione verticale: trascina la Y o scrivi", Some(y)).width(w).show(ui) {
                 set = Some((None, Some(v), None, None));
             }
         });
         ui.horizontal(|ui| {
-            if let Some(v) = ui::number_field(ui, Id::new("pw"), "L", "Larghezza", Some(bw), 0, w) {
-                set = Some((None, None, Some(v.max(1.0)), None));
+            if let Some(v) = ui::Num::new(Id::new("pw"), "L", "Larghezza: trascina la L o scrivi", Some(bw)).width(w).range(1.0, f64::INFINITY).show(ui) {
+                set = Some((None, None, Some(v), None));
             }
-            if let Some(v) = ui::number_field(ui, Id::new("ph"), "A", "Altezza", Some(bh), 0, w) {
-                set = Some((None, None, None, Some(v.max(1.0))));
+            if let Some(v) = ui::Num::new(Id::new("ph"), "A", "Altezza: trascina la A o scrivi", Some(bh)).width(w).range(1.0, f64::INFINITY).show(ui) {
+                set = Some((None, None, None, Some(v)));
             }
         });
-        if let Some(e) = &one {
-            let deg = (e.rotation.to_degrees() % 360.0 + 360.0) % 360.0;
-            if let Some(v) = ui::number_field(ui, Id::new("prot"), "°", "Rotazione in gradi", Some(deg), 0, w) {
-                apply(ed, &mut |el| el.rotation = v.to_radians());
+        let radii: Vec<f64> = els.iter().filter_map(|e| crate::style::radius(e)).collect();
+        let round = !radii.is_empty() && radii.len() == els.len();
+        ui.horizontal(|ui| {
+            if let Some(e) = &one {
+                let deg = (e.rotation.to_degrees() % 360.0 + 360.0) % 360.0;
+                if let Some(v) = ui::Num::new(Id::new("prot"), "icon:rotate-cw", "Rotazione in gradi: trascina l'icona o scrivi", Some(deg)).width(w).suffix("°").show(ui) {
+                    let v = v.rem_euclid(360.0);
+                    apply(ed, &mut |el| el.rotation = v.to_radians());
+                }
+            }
+            if round {
+                let cur = radii.windows(2).all(|p| (p[0] - p[1]).abs() < 0.01).then(|| radii[0]);
+                let max = els.iter().map(|e| crate::style::max_radius(e)).fold(f64::INFINITY, f64::min);
+                if let Some(v) = ui::Num::new(Id::new("pradius"), "icon:corner-radius", "Raggio degli angoli: trascina l'icona o scrivi", cur.map(|r| r.min(max).round())).width(w).range(0.0, max.round()).show(ui) {
+                    apply(ed, &mut |el| crate::style::set_radius(el, v));
+                }
+            }
+        });
+        if round {
+            // The same radius on a slider, from square to fully round.
+            let max = els.iter().map(|e| crate::style::max_radius(e)).fold(f64::INFINITY, f64::min);
+            let mut r = radii[0].min(max);
+            if ui::slider_inline(ui, "Angoli", &mut r, 0.0, max.max(1.0), 1.0, false, |v| format!("{}", v.round()), ui.available_width()) {
+                apply(ed, &mut |el| crate::style::set_radius(el, r));
             }
         }
         if let Some((nx, ny, nw, nh)) = set {
@@ -845,40 +1013,9 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
                             }
                         });
                     }
-                    if let Some(v) = ui::number_field(ui, Id::new("pcode"), "Aa", "Dimensione del testo", Some(c.font_size.round()), 0, 90.0) {
-                        apply(ed, &mut |el| {
-                            if let Kind::Code(x) = &mut el.kind {
-                                x.font_size = v.clamp(4.0, 400.0);
-                            }
-                            crate::text::fit_text(el);
-                        });
-                    }
                 });
             }
-            Kind::Table(tb) => {
-                let tb = tb.clone();
-                section(ui, Some("Tabella"), |ui| {
-                    ui::hint(ui, &format!("{} righe × {} colonne. Doppio clic su una cella per scrivere, Tab per passare alla successiva.", tb.rows.len(), tb.cols.len()));
-                    let mut f = tb.font;
-                    if super::toolbar::font_picker(ui, &mut f, ui.available_width(), t) {
-                        apply(ed, &mut |el| {
-                            if let Kind::Table(x) = &mut el.kind {
-                                x.font = f;
-                            }
-                            crate::text::fit_text(el);
-                        });
-                    }
-                    let mut header = tb.header;
-                    if ui::switch(ui, &mut header, "Prima riga come intestazione") {
-                        apply(ed, &mut |el| {
-                            if let Kind::Table(x) = &mut el.kind {
-                                x.header = header;
-                            }
-                            crate::text::fit_text(el);
-                        });
-                    }
-                });
-            }
+            Kind::Table(tb) => table_props(ui, ed, e, tb),
             _ => {}
         }
     }
@@ -892,7 +1029,7 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
                 }
             }
             let cur = same(&els, |e| if let Kind::Section { fill } = &e.kind { Some(fill.clone()) } else { None });
-            if let Some(c) = ui::swatches(ui, &SECTION_COLORS, cur.as_deref().unwrap_or(""), false) {
+            if let Some(c) = ui::palette(ui, &SECTION_COLORS, cur.as_deref().unwrap_or(""), false) {
                 apply(ed, &mut |el| {
                     if let Kind::Section { fill } = &mut el.kind {
                         *fill = c.clone();
@@ -902,25 +1039,20 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
             ui::hint(ui, "Quello che metti dentro la sezione si sposta, si copia e si duplica insieme a lei.");
         });
     }
-    if only("text") || only("sticky") {
+    if els.iter().all(|e| crate::style::look(e).is_some()) {
         text_props(ui, ed, &els, &ids);
     }
-    if only("shape") {
-        section(ui, Some("Testo nella forma"), |ui| {
-            let mut f = same(&els, |e| e.shape().map(|s| s.font.unwrap_or_default())).unwrap_or_default();
-            if super::toolbar::font_picker(ui, &mut f, ui.available_width(), t) {
+    if only("sticky") {
+        section(ui, Some("Colore della nota"), |ui| {
+            let cur = same(&els, |e| e.sticky().map(|s| s.color.clone()));
+            if let Some(c) = ui::palette(ui, &STICKY_COLORS, cur.as_deref().unwrap_or(""), false) {
                 apply(ed, &mut |el| {
-                    if let Kind::Shape(s) = &mut el.kind {
-                        s.font = Some(f);
+                    if let Kind::Sticky(s) = &mut el.kind {
+                        s.color = c.clone();
                     }
                 });
             }
-            ui::hint(ui, "Doppio clic sulla forma, o Invio, per scriverci dentro.");
-        });
-    }
-    if only("sticky") {
-        if els.iter().any(|e| e.sticky().is_some_and(|s| s.author.is_some())) {
-            section(ui, None, |ui| {
+            if els.iter().any(|e| e.sticky().is_some_and(|s| s.author.is_some())) {
                 let mut on = els.iter().all(|e| e.sticky().is_none_or(|s| !s.hide_author));
                 if ui::switch(ui, &mut on, "Mostra chi l'ha scritta") {
                     apply(ed, &mut |el| {
@@ -929,23 +1061,13 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
                         }
                     });
                 }
-            });
-        }
-        section(ui, Some("Colore della nota"), |ui| {
-            let cur = same(&els, |e| e.sticky().map(|s| s.color.clone()));
-            if let Some(c) = ui::swatches(ui, &STICKY_COLORS, cur.as_deref().unwrap_or(""), false) {
-                apply(ed, &mut |el| {
-                    if let Kind::Sticky(s) = &mut el.kind {
-                        s.color = c.clone();
-                    }
-                });
             }
         });
     }
     if only("shape") {
         section(ui, Some("Riempimento"), |ui| {
             let cur = same(&els, |e| e.shape().map(|s| s.fill.clone()));
-            if let Some(c) = ui::swatches(ui, &INK_COLORS, cur.as_deref().unwrap_or(""), true) {
+            if let Some(c) = ui::palette(ui, &INK_COLORS, cur.as_deref().unwrap_or(""), true) {
                 apply(ed, &mut |el| {
                     if let Kind::Shape(s) = &mut el.kind {
                         s.fill = c.clone();
@@ -954,21 +1076,19 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
             }
         });
     }
-    let colorable = !types.is_empty() && types.iter().all(|k| matches!(*k, "ink" | "highlighter" | "text" | "shape" | "line"));
+    let colorable = !types.is_empty() && types.iter().all(|k| matches!(*k, "ink" | "highlighter" | "shape" | "line"));
     if colorable {
         let title = if only("shape") || only("line") { "Contorno" } else { "Colore" };
         section(ui, Some(title), |ui| {
             let main = same(&els, |e| match &e.kind {
                 Kind::Ink(i) | Kind::Highlighter(i) => Some(i.color.clone()),
-                Kind::Text(x) => Some(x.color.clone()),
                 Kind::Shape(s) => Some(s.stroke.clone()),
                 Kind::Line(l) => Some(l.stroke.clone()),
                 _ => None,
             });
-            if let Some(c) = ui::swatches(ui, &INK_COLORS, main.as_deref().unwrap_or(""), false) {
+            if let Some(c) = ui::palette(ui, &INK_COLORS, main.as_deref().unwrap_or(""), false) {
                 apply(ed, &mut |el| match &mut el.kind {
                     Kind::Ink(i) | Kind::Highlighter(i) => i.color = c.clone(),
-                    Kind::Text(x) => x.color = c.clone(),
                     Kind::Shape(s) => s.stroke = c.clone(),
                     Kind::Line(l) => l.stroke = c.clone(),
                     _ => {}
@@ -983,18 +1103,19 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
                     _ => None,
                 })
                 .collect();
-            if widths.iter().all(Option::is_some) {
-                let v = widths.windows(2).all(|w| w[0] == w[1]).then(|| widths[0].unwrap());
-                if let Some(w) = ui::number_field(ui, Id::new("pstroke"), "Sp", "Spessore", v, 1, ui.available_width() / 2.0) {
-                    let w = w.clamp(0.1, 200.0);
-                    apply(ed, &mut |el| match &mut el.kind {
-                        Kind::Ink(i) | Kind::Highlighter(i) => i.size = w,
-                        Kind::Shape(s) => s.stroke_width = w,
-                        Kind::Line(l) => l.stroke_width = w,
-                        _ => {}
-                    });
+            ui.horizontal(|ui| {
+                if widths.iter().all(Option::is_some) {
+                    let v = widths.windows(2).all(|w| w[0] == w[1]).then(|| widths[0].unwrap());
+                    if let Some(w) = ui::Num::new(Id::new("pstroke"), "Sp", "Spessore: trascina «Sp» o scrivi", v).decimals(1).step(0.5).range(0.1, 200.0).width(96.0).show(ui) {
+                        apply(ed, &mut |el| match &mut el.kind {
+                            Kind::Ink(i) | Kind::Highlighter(i) => i.size = w,
+                            Kind::Shape(s) => s.stroke_width = w,
+                            Kind::Line(l) => l.stroke_width = w,
+                            _ => {}
+                        });
+                    }
                 }
-            }
+            });
             if types.iter().all(|k| *k == "shape" || *k == "line") {
                 let mut dash = same(&els, |e| match &e.kind {
                     Kind::Shape(s) => Some(s.dash),
@@ -1038,16 +1159,6 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
                     }
                 }
             });
-            if cur == Some(ShapeKind::Rect) {
-                let r = same(&els, |e| e.shape().map(|s| s.radius));
-                if let Some(v) = ui::number_field(ui, Id::new("pradius"), "◜", "Raggio degli angoli", r, 0, ui.available_width() / 2.0) {
-                    apply(ed, &mut |el| {
-                        if let Kind::Shape(s) = &mut el.kind {
-                            s.radius = v.max(0.0);
-                        }
-                    });
-                }
-            }
         });
     }
     if only("comment") {
@@ -1076,6 +1187,17 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
                         }
                     });
                 }
+                for (r, name, label) in super::toolbar::ROUTES {
+                    let route = same(&els, |e| e.line().map(|l| l.route));
+                    if small_icon_button(ui, name, label, route == Some(r)).clicked() {
+                        ed.prefs.route = r;
+                        apply(ed, &mut |el| {
+                            if let Kind::Line(l) = &mut el.kind {
+                                l.route = r;
+                            }
+                        });
+                    }
+                }
             });
         });
     }
@@ -1099,12 +1221,14 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
         });
     }
     section(ui, Some("Livello"), |ui| {
-        ui.horizontal(|ui| {
+        ui::row(ui, 24.0, |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
             let op = same(&els, |e| Some((e.opacity * 100.0).round()));
-            if let Some(v) = ui::number_field(ui, Id::new("popacity"), "%", "Opacità", op, 0, 64.0) {
+            if let Some(v) = ui::Num::new(Id::new("popacity"), "icon:droplet", "Opacità: trascina la goccia o scrivi", op).suffix("%").range(0.0, 100.0).width(84.0).show(ui) {
                 let v = (v / 100.0).clamp(0.0, 1.0);
                 apply(ed, &mut |el| el.opacity = v);
             }
+            ui.add_space(6.0);
             let locked = els.iter().all(|e| e.locked);
             if small_icon_button(ui, if locked { "lock" } else { "unlock" }, if locked { "Sblocca" } else { "Blocca" }, locked).clicked() {
                 ed.toggle_lock();
@@ -1133,63 +1257,152 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
     });
 }
 
+/// The text of whatever is selected (text boxes, notes, shapes, tables, code): font, size,
+/// weight, alignment and colour, changed for all of them at once.
 fn text_props(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], ids: &[String]) {
     let t = ui::theme(ui.ctx());
-    let is_text = els.iter().all(|e| e.text().is_some());
+    let looks: Vec<crate::style::Look> = els.iter().filter_map(|e| crate::style::look(e)).collect();
+    if looks.is_empty() {
+        return;
+    }
+    let mut change: Option<crate::style::Change> = None;
     section(ui, Some("Testo"), |ui| {
-        let mut f = same(els, |e| e.text().map(|x| x.font).or_else(|| e.sticky().map(|s| s.font))).unwrap_or_default();
-        if super::toolbar::font_picker(ui, &mut f, ui.available_width(), &t) {
-            ed.board.update(ids, |el| {
-                match &mut el.kind {
-                    Kind::Text(x) => x.font = f,
-                    Kind::Sticky(s) => s.font = f,
-                    _ => {}
-                }
-                crate::text::fit_text(el);
-            });
+        use crate::style::Change;
+        if looks.iter().all(|l| l.font.is_some()) {
+            let mut f = same(els, |e| crate::style::look(e).and_then(|l| l.font)).unwrap_or_default();
+            if super::toolbar::font_picker(ui, &mut f, ui.available_width(), &t) {
+                change = Some(Change::Font(f));
+            }
         }
-        if is_text {
-            ui.horizontal(|ui| {
-                let size = same(els, |e| e.text().map(|x| (x.font_size * 10.0).round() / 10.0));
-                if let Some(v) = ui::number_field(ui, Id::new("pfont"), "Aa", "Dimensione del testo", size, 1, 90.0) {
-                    let v = v.clamp(0.1, 2000.0);
-                    ed.board.update(ids, |el| {
-                        if let Kind::Text(x) = &mut el.kind {
-                            x.font_size = v;
-                        }
-                        crate::text::fit_text(el);
-                    });
+        ui::row(ui, 24.0, |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let auto = looks.iter().all(|l| l.auto && l.size.is_none());
+            let size = same(els, |e| crate::style::shown_size(e).map(|v| (v * 10.0).round() / 10.0));
+            let title = if auto { "Dimensione del testo (adesso si adatta da sola): trascina o scrivi per fissarla" } else { "Dimensione del testo: trascina l'icona o scrivi" };
+            if let Some(v) = ui::Num::new(Id::new("pfont"), "icon:text-size", title, size).decimals(1).range(1.0, 2000.0).width(88.0).show(ui) {
+                change = Some(Change::Size(Some(v)));
+            }
+            if looks.iter().all(|l| l.auto) {
+                let r = ui::icon_button(ui, "maximize", if auto { "La dimensione si adatta alla forma" } else { "Fai adattare la dimensione alla forma" }, None, vec2(24.0, 24.0), 14.0, auto, false);
+                if r.clicked() && !auto {
+                    change = Some(Change::Size(None));
                 }
-                let bold = els.iter().all(|e| e.text().is_some_and(|x| x.bold));
-                let italic = els.iter().all(|e| e.text().is_some_and(|x| x.italic));
-                if small_icon_button(ui, "bold", "Grassetto", bold).clicked() {
-                    ed.board.update(ids, |el| {
-                        if let Kind::Text(x) = &mut el.kind {
-                            x.bold = !bold;
-                        }
-                        crate::text::fit_text(el);
-                    });
+            }
+            ui.add_space(6.0);
+            let all = |f: fn(&crate::style::Look) -> Option<bool>| looks.iter().all(|l| f(l) == Some(true));
+            if looks.iter().all(|l| l.bold.is_some()) {
+                let on = all(|l| l.bold);
+                if small_icon_button(ui, "bold", "Grassetto", on).clicked() {
+                    change = Some(Change::Bold(!on));
                 }
-                if small_icon_button(ui, "italic", "Corsivo", italic).clicked() {
-                    ed.board.update(ids, |el| {
-                        if let Kind::Text(x) = &mut el.kind {
-                            x.italic = !italic;
-                        }
-                        crate::text::fit_text(el);
-                    });
+                let on = all(|l| l.italic);
+                if small_icon_button(ui, "italic", "Corsivo", on).clicked() {
+                    change = Some(Change::Italic(!on));
                 }
-            });
+            }
+            if looks.iter().all(|l| l.strike.is_some()) {
+                let on = all(|l| l.strike);
+                if small_icon_button(ui, "strikethrough", "Barrato", on).clicked() {
+                    change = Some(Change::Strike(!on));
+                }
+            }
+        });
+        if looks.iter().all(|l| l.align.is_some()) {
+            let mut align = same(els, |e| crate::style::look(e).and_then(|l| l.align));
+            let before = align;
+            ui::segmented(ui, &mut align, &[(Some(Align::Left), "icon:text-align-start"), (Some(Align::Center), "icon:text-align-center"), (Some(Align::Right), "icon:text-align-end")], ui.available_width());
+            if align != before
+                && let Some(a) = align
+            {
+                change = Some(Change::Align(a));
+            }
         }
-        let mut align = same(els, |e| e.text().map(|x| x.align).or_else(|| e.sticky().map(|s| s.align))).unwrap_or_default();
-        if ui::segmented(ui, &mut align, &[(Align::Left, "icon:text-align-start"), (Align::Center, "icon:text-align-center"), (Align::Right, "icon:text-align-end")], ui.available_width()) {
-            ed.board.update(ids, |el| match &mut el.kind {
-                Kind::Text(x) => x.align = align,
-                Kind::Sticky(s) => s.align = align,
-                _ => {}
-            });
+        if looks.iter().all(|l| l.color.is_some()) {
+            let cur = same(els, |e| crate::style::look(e).and_then(|l| l.color.flatten()));
+            if let Some(c) = ui::palette(ui, &INK_COLORS, cur.as_deref().unwrap_or(""), false) {
+                change = Some(Change::Color(c));
+            }
         }
     });
+    if let Some(c) = change {
+        ed.board.update(ids, |el| crate::style::apply(el, &c));
+        // The next text box starts with the same font.
+        if let (crate::style::Change::Font(f), true) = (&c, els.iter().all(|e| e.text().is_some())) {
+            ed.prefs.text.font = *f;
+        }
+    }
 }
+
+/// A table: its size, its first row, and the cell being written in.
+fn table_props(ui: &mut Ui, ed: &mut Editor, el: &El, tb: &Table) {
+    let id = el.id.clone();
+    let cell = if ed.editing.as_deref() == Some(id.as_str()) { ed.editing_cell } else { None };
+    let mut next: Option<Table> = None;
+    section(ui, Some("Tabella"), |ui| {
+        let w = (ui.available_width() - 8.0) / 2.0;
+        ui.horizontal(|ui| {
+            if let Some(v) = ui::Num::new(Id::new("trows"), "Righe", "Righe: trascina o scrivi", Some(tb.rows.len() as f64)).range(1.0, 200.0).width(w).show(ui) {
+                let mut t = tb.clone();
+                let n = (v as usize).clamp(1, 200);
+                while t.rows.len() < n {
+                    t.insert_row(t.rows.len());
+                }
+                while t.rows.len() > n {
+                    t.remove_row(t.rows.len() - 1);
+                }
+                next = Some(t);
+            }
+            if let Some(v) = ui::Num::new(Id::new("tcols"), "Colonne", "Colonne: trascina o scrivi", Some(tb.cols.len() as f64)).range(1.0, 50.0).width(w).show(ui) {
+                let mut t = tb.clone();
+                let n = (v as usize).clamp(1, 50);
+                while t.cols.len() < n {
+                    t.insert_col(t.cols.len());
+                }
+                while t.cols.len() > n {
+                    t.remove_col(t.cols.len() - 1);
+                }
+                next = Some(t);
+            }
+        });
+        let mut header = tb.header;
+        if ui::switch(ui, &mut header, "Prima riga come intestazione") {
+            next = Some(Table { header, ..tb.clone() });
+        }
+        match cell {
+            Some((r, c)) if r < tb.rows.len() && c < tb.cols.len() => {
+                ui::heading(ui, &format!("Cella {}{}", col_name(c), r + 1));
+                let cur = tb.cells[r][c].fill.clone().unwrap_or_else(|| "transparent".into());
+                if let Some(f) = ui::palette(ui, &CELL_COLORS, &cur, true) {
+                    let mut t = tb.clone();
+                    t.cells[r][c].fill = (f != "transparent").then_some(f);
+                    next = Some(t);
+                }
+            }
+            _ => ui::hint(ui, "Un clic su una cella per scriverci; Tab passa alla cella dopo (nell'ultima aggiunge una riga). Il colore di una cella si sceglie mentre ci scrivi."),
+        }
+    });
+    if let Some(t) = next {
+        ed.board.update(&[id], |e| {
+            e.kind = Kind::Table(t.clone());
+            crate::text::fit_text(e);
+        });
+    }
+}
+
+/// Spreadsheet name of a column: A, B, … Z, AA…
+pub fn col_name(c: usize) -> String {
+    let mut n = c + 1;
+    let mut s = String::new();
+    while n > 0 {
+        n -= 1;
+        s.insert(0, (b'A' + (n % 26) as u8) as char);
+        n /= 26;
+    }
+    s
+}
+
+/// Light fills for table cells.
+const CELL_COLORS: [&str; 8] = ["#F5F5F5", "#FFF3A3", "#C9F2C7", "#C7E5FF", "#FFD1E3", "#E2D4FF", "#FFDDB8", "#1E1E1E"];
 
 /* ---------------- pills ---------------- */
 
@@ -1219,7 +1432,13 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
 /// Right panel closed: people, share and the way back, floating at the top right.
 pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
     let t = ui::theme(ctx);
-    let x = if b.editor.prefs.minimap { stage.max.x - 12.0 - 200.0 - 8.0 } else { stage.max.x - 12.0 };
+    // Beside the minimap when it sits in the top right corner.
+    let mini = if b.editor.prefs.minimap { ctx.data(|d| d.get_temp::<Rect>(Id::new("minimap-rect"))) } else { None };
+    let x = match mini {
+        Some(m) if m.min.y < stage.min.y + 64.0 && m.max.x > stage.max.x - 120.0 => m.min.x - 8.0,
+        _ => stage.max.x - 12.0,
+    };
+    let x = ui::motion::spring(ctx, Id::new("right-pill-x"), x, 0.3, 0.9);
     egui::Area::new(Id::new("right-pill")).pivot(egui::Align2::RIGHT_TOP).fixed_pos(pos2(x, stage.min.y + 12.0)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui::float_frame(&t).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -1239,6 +1458,113 @@ pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
     });
 }
 
+/// While a cell is written in: its colour, and rows and columns added or taken away around it,
+/// above the table.
+fn table_tools(ctx: &egui::Context, stage: Rect, ed: &mut Editor, el: &El, tb: &Table) {
+    let t = ui::theme(ctx);
+    let Some((r, c)) = ed.editing_cell.filter(|(r, c)| *r < tb.rows.len() && *c < tb.cols.len()) else { return };
+    let b = frame_box(el);
+    let a = ed.to_screen(b.x, b.y) + stage.min.to_vec2();
+    let below = ed.to_screen(b.x, b.bottom()) + stage.min.to_vec2();
+    let y = if a.y - 44.0 >= stage.min.y + 8.0 { a.y - 44.0 } else { below.y + 8.0 };
+    let x = a.x.clamp(stage.min.x + 8.0, (stage.max.x - 320.0).max(stage.min.x + 8.0));
+    let id = el.id.clone();
+    let mut next: Option<(Table, (usize, usize))> = None;
+    egui::Area::new(Id::new("table-tools")).fixed_pos(pos2(x, y)).order(egui::Order::Foreground).show(ctx, |ui| {
+        ui::float_frame(&t).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
+            ui::row(ui, 28.0, |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.add_space(4.0);
+                ui.label(RichText::new(format!("{}{}", col_name(c), r + 1)).font(ui::medium(11.0)).color(t.text2));
+                ui.add_space(4.0);
+                // The cell's colour.
+                let cur = tb.cells[r][c].fill.clone().unwrap_or_else(|| "transparent".into());
+                let (cr, chip) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
+                ui::hover_fill(ui, chip.id, cr, chip.hovered(), ui::RADIUS as f32, t.hover);
+                let fill = parse_color(&cur).filter(|c| c.a() > 0);
+                match fill {
+                    Some(f) => {
+                        ui.painter().circle_filled(cr.center(), 8.0, f);
+                    }
+                    None => {
+                        ui.painter().circle_filled(cr.center(), 8.0, Color32::WHITE);
+                        ui.painter().line_segment([cr.center() + vec2(-5.5, 5.5), cr.center() + vec2(5.5, -5.5)], Stroke::new(1.5, t.danger));
+                    }
+                }
+                ui.painter().circle_stroke(cr.center(), 8.0, Stroke::new(1.0, Color32::from_black_alpha(40)));
+                let chip = ui::tip(chip, "Colore della cella", None);
+                egui::Popup::from_toggle_button_response(&chip).frame(ui::float_frame(&t).inner_margin(egui::Margin::same(10))).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+                    ui.set_width(196.0);
+                    ui::heading(ui, "Colore della cella");
+                    if let Some(f) = ui::palette(ui, &CELL_COLORS, &cur, true) {
+                        let mut tt = tb.clone();
+                        tt.cells[r][c].fill = (f != "transparent").then_some(f);
+                        next = Some((tt, (r, c)));
+                    }
+                });
+                let (sr, _) = ui.allocate_exact_size(vec2(9.0, 28.0), Sense::hover());
+                ui.painter().vline(sr.center().x, (sr.center().y - 8.0)..=(sr.center().y + 8.0), Stroke::new(1.0, t.border));
+                let mut op = |ui: &mut Ui, name: &str, label: &str, f: &dyn Fn(&mut Table) -> (usize, usize)| {
+                    if ui::icon_button(ui, name, label, None, vec2(28.0, 28.0), 16.0, false, false).clicked() {
+                        let mut tt = tb.clone();
+                        let at = f(&mut tt);
+                        next = Some((tt, at));
+                    }
+                };
+                op(ui, "row-plus", "Aggiungi una riga sotto", &|t| {
+                    t.insert_row(r + 1);
+                    (r + 1, c)
+                });
+                op(ui, "col-plus", "Aggiungi una colonna a destra", &|t| {
+                    t.insert_col(c + 1);
+                    (r, c + 1)
+                });
+                if tb.rows.len() > 1 {
+                    op(ui, "row-minus", "Elimina questa riga", &|t| {
+                        t.remove_row(r);
+                        (r.min(t.rows.len() - 1), c)
+                    });
+                }
+                if tb.cols.len() > 1 {
+                    op(ui, "col-minus", "Elimina questa colonna", &|t| {
+                        t.remove_col(c);
+                        (r, c.min(t.cols.len() - 1))
+                    });
+                }
+                // More: before this row or column.
+                let more = ui::icon_button(ui, "more-horizontal", "Altro", None, vec2(28.0, 28.0), 16.0, false, false);
+                egui::Popup::menu(&more).frame(ui::menu_frame(&t)).show(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    if ui::menu_item(ui, Some("row-plus"), "Aggiungi una riga sopra", None, false).clicked() {
+                        let mut tt = tb.clone();
+                        tt.insert_row(r);
+                        next = Some((tt, (r + 1, c)));
+                    }
+                    if ui::menu_item(ui, Some("col-plus"), "Aggiungi una colonna a sinistra", None, false).clicked() {
+                        let mut tt = tb.clone();
+                        tt.insert_col(c);
+                        next = Some((tt, (r, c + 1)));
+                    }
+                    ui::menu_sep(ui);
+                    let mut header = tb.header;
+                    if ui::menu_item(ui, header.then_some("check"), "Prima riga come intestazione", None, false).clicked() {
+                        header = !header;
+                        next = Some((Table { header, ..tb.clone() }, (r, c)));
+                    }
+                });
+            });
+        });
+    });
+    if let Some((tt, cell)) = next {
+        ed.board.update(std::slice::from_ref(&id), |e| {
+            e.kind = Kind::Table(tt.clone());
+            crate::text::fit_text(e);
+        });
+        ed.editing_cell = Some(cell);
+        ctx.memory_mut(|m| m.request_focus(Id::new("board-text")));
+    }
+}
+
 /// While code is typed: its language and its theme, above the block.
 fn code_tools(ctx: &egui::Context, stage: Rect, ed: &mut Editor, el: &El, code: &crate::model::Code) {
     let t = ui::theme(ctx);
@@ -1247,7 +1573,7 @@ fn code_tools(ctx: &egui::Context, stage: Rect, ed: &mut Editor, el: &El, code: 
     let id = el.id.clone();
     egui::Area::new(Id::new("code-tools")).fixed_pos(pos2(a.x.max(stage.min.x + 8.0), y)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui::float_frame(&t).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui::row(ui, 24.0, |ui| {
                 if let Some(lang) = language_picker(ui, &code.language, &t) {
                     ed.prefs.code_language = lang.clone();
                     ed.board.update(std::slice::from_ref(&id), |el| {
@@ -1485,7 +1811,10 @@ pub fn selection_menu(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi) -> bool {
 /// Bar over the text being typed: font, plus bold and italic for text boxes.
 pub fn text_tools(ctx: &egui::Context, stage: Rect, ed: &mut Editor, el: &El) {
     let t = ui::theme(ctx);
-    if el.table().is_some() || el.is_line() {
+    if let Some(tb) = el.table() {
+        return table_tools(ctx, stage, ed, el, tb);
+    }
+    if el.is_line() {
         return;
     }
     if let Some(code) = el.code() {
@@ -1500,7 +1829,7 @@ pub fn text_tools(ctx: &egui::Context, stage: Rect, ed: &mut Editor, el: &El) {
     let id = el.id.clone();
     egui::Area::new(Id::new("text-tools")).fixed_pos(pos2(x, y)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui::float_frame(&t).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui::row(ui, 24.0, |ui| {
                 let mut f = match &el.kind {
                     Kind::Text(x) => x.font,
                     Kind::Sticky(s) => s.font,

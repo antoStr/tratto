@@ -851,9 +851,9 @@ pub fn dialog(ui: &mut egui::Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
                 }
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    let me = if b.editor.prefs.name.trim().is_empty() { "Tu".to_string() } else { b.editor.prefs.name.trim().to_string() };
-                    ui::avatar(ui, &me, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), 24.0);
-                    ui.label(RichText::new(format!("{me} (tu)")).color(t.text));
+                    let name = b.editor.prefs.name.trim().to_string();
+                    ui::avatar(ui, if name.is_empty() { "Tu" } else { &name }, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), 24.0);
+                    ui.label(RichText::new(if name.is_empty() { "Tu".to_string() } else { format!("{name} (tu)") }).color(t.text));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(RichText::new("Proprietario").color(t.text2)));
                 });
                 for (ticket, name, online) in &v.guests {

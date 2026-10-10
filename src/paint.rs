@@ -206,6 +206,85 @@ struct Erased {
     area: [f64; 4],
     tex: TextureHandle,
     used: u64,
+    /// While it is being erased: the picture and how many points of each mark it shows, so each
+    /// move of the eraser redraws (and sends to the graphics card) only the bit it passed over.
+    live: Option<(tiny_skia::Pixmap, Vec<usize>)>,
+    changed_at: f64,
+}
+
+/// Same element apart from its eraser marks.
+fn same_body(a: &El, b: &El) -> bool {
+    a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h && a.rotation == b.rotation && a.opacity == b.opacity && a.hidden == b.hidden && a.kind == b.kind
+}
+
+impl Erased {
+    /// The element got new eraser marks (or longer ones) and nothing else: redraws only the area
+    /// they cover. False when that is not the case and the whole picture must be drawn again.
+    fn grow(&mut self, el: &Arc<El>, k: f64, env: &Env, images: crate::raster::Images) -> bool {
+        let Some((pm, lens)) = &mut self.live else { return false };
+        if !same_body(&self.el, el) || el.erase.len() < lens.len() {
+            return false;
+        }
+        for (i, n) in lens.iter().enumerate() {
+            let (m, o) = (&el.erase[i], &self.el.erase[i]);
+            if m.p.len() < *n || o.p.len() != *n || m.s != o.s || m.a != o.a || m.p[..*n] != o.p[..] {
+                return false;
+            }
+        }
+        let t = crate::prims::Affine::of(el);
+        let mut dirty: Option<[f64; 4]> = None;
+        for (i, m) in el.erase.iter().enumerate() {
+            let had = lens.get(i).copied();
+            if had == Some(m.p.len()) {
+                continue;
+            }
+            // From the last point already drawn, so the join is covered too.
+            let from = had.map_or(0, |n| n.saturating_sub(2));
+            let r = m.s * k / 2.0 + 2.0;
+            for q in m.p[from..].chunks_exact(2) {
+                let (wx, wy) = t.apply(q[0] as f64, q[1] as f64);
+                let (px, py) = (wx * k - self.area[0], wy * k - self.area[1]);
+                let b = [px - r, py - r, px + r, py + r];
+                dirty = Some(match dirty {
+                    Some(d) => [d[0].min(b[0]), d[1].min(b[1]), d[2].max(b[2]), d[3].max(b[3])],
+                    None => b,
+                });
+            }
+        }
+        let (w, h) = (pm.width() as f64, pm.height() as f64);
+        if let Some(d) = dirty {
+            let (x0, y0) = (d[0].floor().clamp(0.0, w), d[1].floor().clamp(0.0, h));
+            let (x1, y1) = (d[2].ceil().clamp(0.0, w), d[3].ceil().clamp(0.0, h));
+            if x1 > x0 && y1 > y0 {
+                // The whole element with every mark, but only this piece of it: what a full
+                // redraw gives there. Drawn a little larger, since shapes cut at the edge of a
+                // picture come out a shade different along that edge; only the inside is kept.
+                let m = 6.0;
+                let (rx0, ry0) = ((x0 - m).max(0.0), (y0 - m).max(0.0));
+                let (rx1, ry1) = ((x1 + m).min(w), (y1 + m).min(h));
+                let Some(mut piece) = tiny_skia::Pixmap::new((rx1 - rx0) as u32, (ry1 - ry0) as u32) else { return false };
+                let tr = tiny_skia::Transform::from_row(k as f32, 0.0, 0.0, k as f32, (-(self.area[0] + rx0)) as f32, (-(self.area[1] + ry0)) as f32);
+                crate::raster::draw_element(&mut piece, el, env, tr, images);
+                let (pw, ph) = ((x1 - x0) as usize, (y1 - y0) as usize);
+                let (ox, oy) = ((x0 - rx0) as usize, (y0 - ry0) as usize);
+                let (stride, src_stride, row) = (pm.width() as usize * 4, piece.width() as usize * 4, pw * 4);
+                let mut out = Vec::with_capacity(row * ph);
+                let src = piece.data();
+                let data = pm.data_mut();
+                for j in 0..ph {
+                    let s = (oy + j) * src_stride + ox * 4;
+                    let at = (y0 as usize + j) * stride + x0 as usize * 4;
+                    data[at..at + row].copy_from_slice(&src[s..s + row]);
+                    out.extend_from_slice(&src[s..s + row]);
+                }
+                let img = ColorImage::from_rgba_premultiplied([pw, ph], &out);
+                self.tex.set_partial([x0 as usize, y0 as usize], img, TEXTURE);
+            }
+        }
+        *lens = el.erase.iter().map(|m| m.p.len()).collect();
+        self.el = el.clone();
+        true
+    }
 }
 
 pub struct Painter {
@@ -338,6 +417,13 @@ impl Painter {
         }
         flush(out, &mut mesh);
         self.last_len = len;
+        // The software copy of an erased element is kept only while it is being erased: the
+        // graphics card has the picture, and each copy can take tens of megabytes.
+        for e in self.erased.values_mut() {
+            if e.live.is_some() && now - e.changed_at > 2500.0 {
+                e.live = None;
+            }
+        }
         // Forget meshes not drawn for a while (elements deleted or long off screen).
         if self.frame % 240 == 0 {
             let now = self.frame;
@@ -370,23 +456,34 @@ impl Painter {
         };
         let fresh = self.erased.get(&el.id).is_some_and(|e| Arc::ptr_eq(&e.el, el) && (e.zoom == z || !settled) && (e.zoom != z || covers(e)));
         if !fresh {
-            // Never bigger than 4096 px a side: far zoomed in, only what is around the screen.
-            let (w, h) = ((want[2] - want[0]).min(4096.0), (want[3] - want[1]).min(4096.0));
-            let area = [want[0], want[1], want[0] + w, want[1] + h];
-            let t = tiny_skia::Transform::from_row(k as f32, 0.0, 0.0, k as f32, (-area[0]) as f32, (-area[1]) as f32);
             let env = Env { zoom: z, pixel: Some(1.0 / k), hairline: false, editing: f.editing, comments: true, editing_cell: f.editing_cell };
-            if let Some(mut pm) = tiny_skia::Pixmap::new(w as u32, h as u32) {
-                let images = &self.images;
-                crate::raster::draw_element(&mut pm, el, &env, t, &|key| images.pixmap(key));
-                let img = ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data());
-                match self.erased.get_mut(&el.id) {
-                    Some(e) => {
-                        e.tex.set(img, TEXTURE);
-                        (e.el, e.zoom, e.area) = (el.clone(), z, area);
-                    }
-                    None => {
-                        let tex = ctx.load_texture(format!("erased:{}", el.id), img, TEXTURE);
-                        self.erased.insert(el.id.clone(), Erased { el: el.clone(), zoom: z, area, tex, used: self.frame });
+            let images = &self.images;
+            let fetch = |key: &ImageKey| images.pixmap(key);
+            let now = crate::platform::now_ms();
+            // While erasing, only what the eraser just passed over is drawn again.
+            let grown = self.erased.get_mut(&el.id).is_some_and(|e| e.zoom == z && covers(e) && e.grow(el, k, &env, &fetch));
+            if grown {
+                if let Some(e) = self.erased.get_mut(&el.id) {
+                    e.changed_at = now;
+                }
+            } else {
+                // Never bigger than 4096 px a side: far zoomed in, only what is around the screen.
+                let (w, h) = ((want[2] - want[0]).min(4096.0), (want[3] - want[1]).min(4096.0));
+                let area = [want[0], want[1], want[0] + w, want[1] + h];
+                let t = tiny_skia::Transform::from_row(k as f32, 0.0, 0.0, k as f32, (-area[0]) as f32, (-area[1]) as f32);
+                if let Some(mut pm) = tiny_skia::Pixmap::new(w as u32, h as u32) {
+                    crate::raster::draw_element(&mut pm, el, &env, t, &fetch);
+                    let img = ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data());
+                    let live = Some((pm, el.erase.iter().map(|m| m.p.len()).collect()));
+                    match self.erased.get_mut(&el.id) {
+                        Some(e) => {
+                            e.tex.set(img, TEXTURE);
+                            (e.el, e.zoom, e.area, e.live, e.changed_at) = (el.clone(), z, area, live, now);
+                        }
+                        None => {
+                            let tex = ctx.load_texture(format!("erased:{}", el.id), img, TEXTURE);
+                            self.erased.insert(el.id.clone(), Erased { el: el.clone(), zoom: z, area, tex, used: self.frame, live, changed_at: now });
+                        }
                     }
                 }
             }
@@ -701,6 +798,73 @@ mod tests {
     }
 
     #[test]
+    fn the_three_spacings_never_look_alike() {
+        for z in [0.04, 0.1, 0.33, 0.5, 0.71, 1.0, 1.4, 2.0, 3.0, 7.5, 20.0, 32.0] {
+            let s: Vec<f32> = [12.0, 24.0, 48.0].iter().map(|g| pattern_levels(*g, z, 2.0).0).collect();
+            assert!(s[0] < s[1] && s[1] < s[2], "zoom {z}: {s:?}");
+            for (g, v) in [12.0, 24.0, 48.0].iter().zip(&s) {
+                assert!(*v >= *g as f32 - 1e-3 && *v < *g as f32 * 2.0 + 1e-3, "zoom {z}: {v} for {g}");
+            }
+        }
+        // Just before a level change the finer dots are all there, just after it they are the
+        // main ones: the picture doesn't jump.
+        let (a, sub_a, fade_a) = pattern_levels(24.0, 0.999, 2.0);
+        let (b, _, fade_b) = pattern_levels(24.0, 1.001, 2.0);
+        assert!((sub_a - 24.0).abs() < 0.1 && fade_a > 0.99, "{a} {sub_a} {fade_a}");
+        assert!((b - 24.0).abs() < 0.1 && fade_b < 0.01, "{b} {fade_b}");
+    }
+
+    /// Erasing redraws only around the eraser; the picture must be the same as drawing it all.
+    #[test]
+    fn erasing_bit_by_bit_matches_a_full_redraw() {
+        use crate::model::{EraseMark, Ink};
+        let ctx = egui::Context::default();
+        let pts: Vec<f32> = (0..=60).flat_map(|i| [i as f32 * 5.0, (i as f32 * 0.4).sin() * 30.0 + 40.0, 0.6]).collect();
+        let mut el = El::new(Kind::Ink(Ink { points: pts, color: "#1E1E1E".into(), size: 12.0 }));
+        (el.x, el.y, el.w, el.h) = (10.0, 10.0, 300.0, 80.0);
+        let k = 1.5;
+        let env = Env { zoom: k, pixel: Some(1.0 / k), comments: true, ..Env::default() };
+        let none = |_: &ImageKey| None;
+        let area = [0.0, 0.0, 500.0, 200.0];
+        let draw = |el: &El| {
+            let mut pm = tiny_skia::Pixmap::new(500, 200).unwrap();
+            crate::raster::draw_element(&mut pm, el, &env, tiny_skia::Transform::from_row(k as f32, 0.0, 0.0, k as f32, 0.0, 0.0), &none);
+            pm
+        };
+        for strength in [1.0, 0.5] {
+            let mut first = el.clone();
+            first.erase = vec![EraseMark { p: vec![40.0, -10.0, 60.0, 30.0], s: 16.0, a: strength }];
+            let first = Arc::new(first);
+            let pm = draw(&first);
+            let tex = ctx.load_texture("t", ColorImage::from_rgba_premultiplied([500, 200], pm.data()), TEXTURE);
+            let mut e = Erased { el: first.clone(), zoom: k, area, tex, used: 0, live: Some((pm, vec![4])), changed_at: 0.0 };
+            // The first pass goes on, and a second one starts elsewhere.
+            let mut next = (*first).clone();
+            next.erase[0].p.extend([90.0, 60.0, 140.0, 70.0]);
+            next.erase.push(EraseMark { p: vec![200.0, 0.0, 230.0, 80.0], s: 10.0, a: strength });
+            let next = Arc::new(next);
+            assert!(e.grow(&next, k, &env, &none), "only marks were added");
+            let whole = draw(&next);
+            let piecewise = &e.live.as_ref().unwrap().0;
+            let diffs: Vec<i32> = whole.data().chunks_exact(4).zip(piecewise.data().chunks_exact(4)).map(|(a, b)| a.iter().zip(b).map(|(x, y)| (*x as i32 - *y as i32).abs()).max().unwrap()).collect();
+            let worst = diffs.iter().max().copied().unwrap();
+            let off = diffs.iter().filter(|d| **d > 8).count();
+            let inked = whole.data().chunks_exact(4).filter(|p| p[3] > 0).count();
+            // Full strength: the same to the pixel. Partial: antialiasing may differ by a shade on
+            // a pixel or two, where the redrawn piece cuts a pass.
+            if strength == 1.0 {
+                assert!(worst <= 2, "strength {strength}: differs by {worst}");
+            } else {
+                assert!(worst <= 48 && off * 1000 <= inked, "strength {strength}: worst {worst}, {off} of {inked} pixels off");
+            }
+            // Anything else changed (here the colour): drawn again from scratch.
+            let mut moved = (*next).clone();
+            moved.ink_mut().unwrap().color = "#E03131".into();
+            assert!(!e.grow(&Arc::new(moved), k, &env, &none));
+        }
+    }
+
+    #[test]
     fn every_element_kind_tessellates() {
         let doc = yrs::Doc::new();
         crate::doc::apply_update(&doc, include_bytes!("../testdata/legacy.ydoc"), crate::doc::REMOTE).unwrap();
@@ -725,84 +889,104 @@ pub fn background(out: &mut Vec<Shape>, rect: egui::Rect, cam: &Camera, meta: &c
     if meta.pattern == Pattern::None {
         return;
     }
-    // Pattern spacing on screen, kept between 14 and ~100 px by doubling or halving.
-    let mut k = 1.0;
-    while meta.grid_size * cam.z * k < 14.0 {
-        k *= 2.0;
-    }
-    while meta.grid_size * cam.z * k > 100.0 {
-        k /= 2.0;
-    }
-    let step = (meta.grid_size * cam.z * k) as f32;
+    let (step, sub, fade) = pattern_levels(meta.grid_size, cam.z, if meta.pattern == Pattern::Graph { 5.0 } else { 2.0 });
     let dark = crate::model::is_dark(&meta.background);
-    let ink = |a: f32| if dark { Color32::from_white_alpha((a * 255.0) as u8) } else { Color32::from_black_alpha((a * 255.0) as u8) };
+    let ink = |a: f32| if dark { Color32::from_white_alpha((a * 255.0).round() as u8) } else { Color32::from_black_alpha((a * 255.0).round() as u8) };
     let (w, h) = (rect.width(), rect.height());
-    let wrap = |v: f64, s: f32| (v.rem_euclid(s as f64)) as f32;
     let mut mesh = Mesh::default();
     let mut quad = |x0: f32, y0: f32, x1: f32, y1: f32, c: Color32| {
-        mesh.add_colored_rect(egui::Rect::from_min_max(pos2(rect.min.x + x0, rect.min.y + y0), pos2(rect.min.x + x1, rect.min.y + y1)), c);
+        if c.a() > 0 {
+            mesh.add_colored_rect(egui::Rect::from_min_max(pos2(rect.min.x + x0, rect.min.y + y0), pos2(rect.min.x + x1, rect.min.y + y1)), c);
+        }
     };
     // One device pixel wide, on the pixel grid.
     let px = 1.0 / ppp;
     let crisp = |v: f32| ((v * ppp).round() + 0.5) / ppp;
-    let mut lines = |s: f32, x0: f32, y0: f32, vertical: bool, c: Color32| {
-        if vertical {
-            let mut x = x0;
-            while x < w {
-                let cx = crisp(x);
-                quad(cx - px / 2.0, 0.0, cx + px / 2.0, h, c);
-                x += s;
-            }
-        }
-        let mut y = y0;
-        while y < h {
-            let cy = crisp(y);
-            quad(0.0, cy - px / 2.0, w, cy + px / 2.0, c);
-            y += s;
-        }
+    // Every line (or dot) of the finest level in view, with its index counted from the board's
+    // origin: the index says which level it belongs to, so the pattern stays fixed on the board.
+    let ticks = |origin: f64, len: f32| {
+        let s = sub as f64;
+        let first = ((-origin) / s).ceil() as i64;
+        (first..).map(move |i| (i, (origin + i as f64 * s) as f32)).take_while(move |(_, v)| *v < len)
     };
-    let (ox, oy) = (wrap(cam.x, step), wrap(cam.y, step));
     let r = 1.1;
     match meta.pattern {
         Pattern::Dots => {
-            let c = ink(0.16);
-            let mut x = ox;
-            while x < w {
-                let mut y = oy;
-                while y < h {
-                    quad(x - r, y - r, x + r, y + r, c);
-                    y += step;
+            let (major, minor) = (ink(0.16), ink(0.16 * fade));
+            for (i, x) in ticks(cam.x, w + r) {
+                for (j, y) in ticks(cam.y, h + r) {
+                    quad(x - r, y - r, x + r, y + r, if i % 2 == 0 && j % 2 == 0 { major } else { minor });
                 }
-                x += step;
             }
         }
         Pattern::Isometric => {
-            // Dots on a triangular lattice: every other row is shifted by half a step.
-            let c = ink(0.18);
-            let row_h = step as f64 * 0.866;
+            // A triangular lattice: every other row shifted by half a step. The finer level's
+            // rows sit half-way between, its dots half-way along.
+            let (major, minor) = (ink(0.18), ink(0.18 * fade));
+            let s = sub as f64;
+            let row_h = s * 0.866;
             let mut row = (-cam.y / row_h).floor() as i64 - 1;
             while (row as f64 * row_h + cam.y) < h as f64 + row_h {
                 let y = (row as f64 * row_h + cam.y) as f32;
-                let shift = row.rem_euclid(2) as f64 * step as f64 / 2.0;
-                let mut x = wrap(cam.x + shift, step);
-                while x < w {
-                    quad(x - r, y - r, x + r, y + r, c);
-                    x += step;
+                let shift = row.rem_euclid(2) as f64 * s / 2.0;
+                let first = ((-(cam.x + shift)) / s).ceil() as i64;
+                let mut k = first;
+                loop {
+                    let x = (cam.x + shift + k as f64 * s) as f32;
+                    if x > w + r {
+                        break;
+                    }
+                    let on_major = row.rem_euclid(2) == 0 && k.rem_euclid(2) == (row / 2).rem_euclid(2);
+                    quad(x - r, y - r, x + r, y + r, if on_major { major } else { minor });
+                    k += 1;
                 }
                 row += 1;
             }
         }
-        Pattern::Graph => {
-            // Graph paper: fine lines plus a stronger line every five squares.
-            lines(step, ox, oy, true, ink(0.05));
-            let major = step * 5.0;
-            lines(major, wrap(cam.x, major), wrap(cam.y, major), true, ink(0.11));
+        Pattern::Graph | Pattern::Grid | Pattern::Lines => {
+            // Graph paper: fine squares and a stronger line every five; grid and ruled lines:
+            // one weight. The finer level fades in as the squares grow.
+            let level = |i: i64| -> Color32 {
+                match meta.pattern {
+                    Pattern::Graph if i.rem_euclid(25) == 0 => ink(0.11),
+                    Pattern::Graph if i.rem_euclid(5) == 0 => ink(0.05 + 0.06 * fade),
+                    Pattern::Graph => ink(0.05 * fade),
+                    Pattern::Grid if i.rem_euclid(2) == 0 => ink(0.07),
+                    Pattern::Grid => ink(0.07 * fade),
+                    _ if i.rem_euclid(2) == 0 => ink(0.08),
+                    _ => ink(0.08 * fade),
+                }
+            };
+            if meta.pattern != Pattern::Lines {
+                for (i, x) in ticks(cam.x, w) {
+                    let cx = crisp(x);
+                    quad(cx - px / 2.0, 0.0, cx + px / 2.0, h, level(i));
+                }
+            }
+            for (i, y) in ticks(cam.y, h) {
+                let cy = crisp(y);
+                quad(0.0, cy - px / 2.0, w, cy + px / 2.0, level(i));
+            }
         }
-        Pattern::Grid => lines(step, ox, oy, true, ink(0.07)),
-        Pattern::Lines => lines(step, ox, oy, false, ink(0.08)),
         Pattern::None => {}
     }
+    let _ = step;
     out.push(Shape::mesh(mesh));
+}
+
+/// The pattern's spacing on screen at zoom `z`: the chosen spacing `g` (board units) times a
+/// power of `base`, so that it stays between g and g·base pixels whatever the zoom. Fitto, Medio
+/// and Ampio (12, 24, 48) therefore never look alike. Returns that step, the finer level's step
+/// (step / base) and how much of the finer level shows (0 → 1 as the step grows), so moving from
+/// one level to the next never jumps.
+pub fn pattern_levels(g: f64, z: f64, base: f64) -> (f32, f32, f32) {
+    let n = (-z.ln() / base.ln()).ceil();
+    let step = g * base.powf(n) * z;
+    let t = ((step / g).ln() / base.ln()).clamp(0.0, 1.0);
+    // Only in the second half, eased: the finer level stays out of the way most of the time.
+    let k = ((t - 0.5) * 2.0).clamp(0.0, 1.0);
+    let fade = k * k * (3.0 - 2.0 * k);
+    (step as f32, (step / base) as f32, fade as f32)
 }
 
 #[cfg(test)]
@@ -819,7 +1003,7 @@ pub mod picture {
             (el.x, el.y, el.w, el.h, el.z) = (x, y, w, h, out.len() as f64);
             out.push(Arc::new(el));
         };
-        let shape = |k: ShapeKind, fill: &str, text: Option<&str>| Kind::Shape(crate::model::Shape { shape: k, fill: fill.into(), stroke: "#1E1E1E".into(), stroke_width: 3.0, radius: 16.0, dash: false, points: None, text: text.map(str::to_string), font: None });
+        let shape = |k: ShapeKind, fill: &str, text: Option<&str>| Kind::Shape(crate::model::Shape { shape: k, fill: fill.into(), stroke: "#1E1E1E".into(), stroke_width: 3.0, radius: 16.0, text: text.map(str::to_string), ..Default::default() });
         add(40.0, 40.0, 160.0, 100.0, shape(ShapeKind::Rect, "transparent", None));
         add(240.0, 40.0, 160.0, 100.0, shape(ShapeKind::Ellipse, "#C7E5FF", Some("Ellisse con testo")));
         add(440.0, 40.0, 120.0, 100.0, shape(ShapeKind::Star, "#FFE066", None));
@@ -829,7 +1013,7 @@ pub mod picture {
         add(240.0, 180.0, 180.0, 80.0, Kind::Highlighter(Ink { points: pts.iter().enumerate().map(|(i, v)| if i % 3 == 2 { -1.0 } else { *v }).collect(), color: "#FFE066".into(), size: 22.0 }));
         add(440.0, 200.0, 140.0, 40.0, Kind::Line(Line { points: vec![0.0, 40.0, 140.0, 0.0], stroke: "#E03131".into(), stroke_width: 3.0, dash: false, arrow_start: false, arrow_end: true, from: None, to: None, tape: false, route: crate::model::Route::Straight, label: None }));
         add(600.0, 200.0, 140.0, 40.0, Kind::Line(Line { points: vec![0.0, 20.0, 140.0, 20.0], stroke: "#FFB3C7".into(), stroke_width: 28.0, dash: false, arrow_start: false, arrow_end: false, from: None, to: None, tape: true, route: crate::model::Route::Straight, label: None }));
-        add(40.0, 300.0, 220.0, 220.0, Kind::Sticky(Sticky { text: "Una nota adesiva con un po' di testo".into(), color: "#FFF3A3".into(), font: FontKind::Hand, align: Align::Center, author: Some("Anto".into()), hide_author: false }));
+        add(40.0, 300.0, 220.0, 220.0, Kind::Sticky(Sticky { text: "Una nota adesiva con un po' di testo".into(), color: "#FFF3A3".into(), font: FontKind::Hand, author: Some("Anto".into()), ..Default::default() }));
         add(300.0, 300.0, 0.0, 0.0, Kind::Text(Text { text: "Titolo in grassetto\nseconda riga".into(), color: "#1E1E1E".into(), font_size: 24.0, font: FontKind::Sans, align: Align::Left, bold: true, italic: false, fixed_width: false, strike: false }));
         add(300.0, 400.0, 64.0, 64.0, Kind::Stamp { emoji: "🎉".into() });
         add(400.0, 400.0, 64.0, 64.0, Kind::Stamp { emoji: "👍".into() });
@@ -861,13 +1045,13 @@ pub mod picture {
         }
         t.cells[2][2].fill = Some("#C9F2C7".into());
         add(20.0, 20.0, 0.0, Kind::Table(t));
-        add(20.0, 250.0, 460.0, Kind::Code(Code { code: "// Somma dei primi n numeri\nfn somma(n: u64) -> u64 {\n    (1..=n).sum() // 1 + 2 + … + n\n}\n\nlet totale = somma(10);\nprintln!(\"{totale}\");".into(), language: "rust".into(), light: false, font_size: 14.0 }));
+        add(20.0, 250.0, 460.0, Kind::Code(Code { code: "// Somma dei primi n numeri\nfn somma(n: u64) -> u64 {\n    (1..=n).sum() // 1 + 2 + … + n\n}\n\nlet totale = somma(10);\nprintln!(\"{totale}\");".into(), language: "rust".into(), light: false, font_size: 14.0, radius: None }));
         add(520.0, 20.0, 300.0, Kind::Widget(Widget::Poll { question: "Dove andiamo a pranzo?".into(), options: vec![PollOption { text: "Pizzeria".into(), votes: vec!["a".into(), "b".into()] }, PollOption { text: "Sushi".into(), votes: vec!["c".into()] }, PollOption { text: "Insalate".into(), votes: vec![] }] }));
         add(520.0, 330.0, 300.0, Kind::Widget(Widget::Checklist { title: "Prima della riunione".into(), items: vec![CheckItem { text: "Preparare le slide".into(), done: true }, CheckItem { text: "Prenotare la sala".into(), done: false }, CheckItem { text: String::new(), done: false }] }));
         add(860.0, 20.0, 220.0, Kind::Widget(Widget::Counter { label: "Idee raccolte".into(), value: 12 }));
-        add(860.0, 260.0, 300.0, Kind::Code(Code { code: "SELECT nome, COUNT(*)\nFROM idee\nWHERE voti > 3 -- le migliori\nGROUP BY nome;".into(), language: "sql".into(), light: true, font_size: 13.0 }));
+        add(860.0, 260.0, 300.0, Kind::Code(Code { code: "SELECT nome, COUNT(*)\nFROM idee\nWHERE voti > 3 -- le migliori\nGROUP BY nome;".into(), language: "sql".into(), light: true, font_size: 13.0, radius: None }));
         for (i, k) in [ShapeKind::Pill, ShapeKind::Process, ShapeKind::Document, ShapeKind::Cylinder, ShapeKind::Speech, ShapeKind::Chevron, ShapeKind::Trapezoid].into_iter().enumerate() {
-            let shape = Shape { shape: k, fill: "#E3F1FF".into(), stroke: "#1971C2".into(), stroke_width: 2.0, radius: 0.0, dash: false, points: None, text: Some(["Inizio", "Calcolo", "Report", "Dati", "Ciao!", "Fase", "Filtro"][i].into()), font: None };
+            let shape = Shape { shape: k, fill: "#E3F1FF".into(), stroke: "#1971C2".into(), stroke_width: 2.0, text: Some(["Inizio", "Calcolo", "Report", "Dati", "Ciao!", "Fase", "Filtro"][i].into()), ..Default::default() };
             let mut el = El::new(Kind::Shape(shape));
             (el.x, el.y, el.w, el.h) = (20.0 + i as f64 * 115.0, 500.0, 100.0, 80.0);
             els.push(Arc::new(el));
