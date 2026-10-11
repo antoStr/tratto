@@ -45,6 +45,9 @@ pub struct BoardUi {
     pub text: String,
     pub text_for: Option<String>,
     pub scroll_to: Option<String>,
+    /// In a narrow window, a panel opened from its pill anyway.
+    pub peek_left: bool,
+    pub peek_right: bool,
 }
 
 impl Default for BoardUi {
@@ -67,6 +70,8 @@ impl Default for BoardUi {
             text: String::new(),
             text_for: None,
             scroll_to: None,
+            peek_left: false,
+            peek_right: false,
         }
     }
 }
@@ -87,6 +92,10 @@ pub struct BoardScreen {
     pub(crate) last_presence: f64,
     #[cfg(not(target_arch = "wasm32"))]
     store: Store,
+    /// Writes the board to disk away from the interface (a big board takes a tenth of a
+    /// second, enough to make typing stutter); the newest state wins when several wait.
+    #[cfg(not(target_arch = "wasm32"))]
+    writer: Option<(std::sync::mpsc::Sender<Vec<u8>>, std::thread::JoinHandle<()>)>,
     /// The board shared with guests, while it is.
     #[cfg(not(target_arch = "wasm32"))]
     pub share: Option<crate::share::Share>,
@@ -128,6 +137,8 @@ impl BoardScreen {
             last_presence: 0.0,
             #[cfg(not(target_arch = "wasm32"))]
             store,
+            #[cfg(not(target_arch = "wasm32"))]
+            writer: None,
             #[cfg(not(target_arch = "wasm32"))]
             share: None,
             #[cfg(target_arch = "wasm32")]
@@ -252,6 +263,7 @@ impl BoardScreen {
         self.editor.stop_editing();
         self.editor.flush_preview();
         self.save();
+        self.finish_writing();
         self.save_camera();
         if self.thumb_due.is_some() {
             self.thumbnail(true);
@@ -265,8 +277,33 @@ impl BoardScreen {
         }
         self.saved_version = self.editor.board.version;
         let state = encode_state(&self.editor.board.doc);
-        if let Err(e) = self.store.save_ydoc(&self.id, &state) {
-            eprintln!("save failed: {e}");
+        let (store, id) = (self.store.clone(), self.id.clone());
+        let (tx, _) = self.writer.get_or_insert_with(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+            let handle = std::thread::Builder::new()
+                .name("tratto-save".into())
+                .spawn(move || {
+                    while let Ok(mut state) = rx.recv() {
+                        // Only the newest of the states waiting matters.
+                        while let Ok(newer) = rx.try_recv() {
+                            state = newer;
+                        }
+                        if let Err(e) = store.save_ydoc(&id, &state) {
+                            eprintln!("save failed: {e}");
+                        }
+                    }
+                })
+                .expect("save thread");
+            (tx, handle)
+        });
+        let _ = tx.send(state);
+    }
+
+    /// Waits for the board to be on disk (leaving it, closing the app).
+    fn finish_writing(&mut self) {
+        if let Some((tx, handle)) = self.writer.take() {
+            drop(tx);
+            let _ = handle.join();
         }
     }
 
@@ -470,7 +507,12 @@ impl BoardScreen {
         // Figma UI3: the panels are cards floating over the board, which runs underneath them.
         let prefs = &self.editor.prefs;
         let zen = prefs.zen;
-        let (show_left, show_right) = (!zen && !prefs.focus && prefs.left_panel, !zen && !prefs.focus && prefs.right_panel);
+        // A window too narrow for both panels and the board: the right one waits in its pill,
+        // and in a very narrow one the left one too.
+        let narrow = rect.width() < 1000.0;
+        let tiny = rect.width() < 720.0;
+        let (show_left, show_right) = (!zen && !prefs.focus && prefs.left_panel && (!tiny || self.ui.peek_left), !zen && !prefs.focus && prefs.right_panel && (!narrow || self.ui.peek_right));
+        ctx.data_mut(|d| d.insert_temp(Id::new("panels-shown"), (show_left, show_right)));
         let kl = ui::motion::presence(&ctx, Id::new("left-panel"), show_left);
         let kr = ui::motion::presence(&ctx, Id::new("right-panel"), show_right);
         const GAP: f32 = 8.0;
@@ -546,12 +588,13 @@ impl BoardScreen {
                     super::toolbar::minimap(&ctx, rect, &mut self.editor, &mut self.ui.minimap);
                 }
             }
-            if self.editor.prefs.focus || !self.editor.prefs.left_panel {
+            let (left_shown, right_shown) = ctx.data(|d| d.get_temp::<(bool, bool)>(Id::new("panels-shown"))).unwrap_or((true, true));
+            if !left_shown {
                 if let Some(a) = super::panels::focus_pill(&ctx, rect, self, dialogs) {
                     action = Some(a);
                 }
             }
-            if !self.editor.prefs.focus && !self.editor.prefs.right_panel {
+            if !right_shown && !self.editor.prefs.focus {
                 super::panels::right_pill(&ctx, rect, self);
             }
         } else {

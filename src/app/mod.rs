@@ -312,6 +312,41 @@ mod picture {
         std::env::var("TRATTO_TEXT").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0)
     }
 
+    /// How long closing a big board and typing in it take:
+    /// `TRATTO_BENCH_DB=dir/tratto.db cargo test --release time_close -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn time_close() {
+        let path = std::env::var("TRATTO_BENCH_DB").expect("TRATTO_BENCH_DB");
+        let store = Store::open(std::path::Path::new(&path)).unwrap();
+        let id = store.boards().unwrap()[0].id.clone();
+        let ctx = egui::Context::default();
+        let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), None).unwrap();
+        println!("elements {}", b.editor.board.len());
+        let mut s = crate::model::El::new(crate::model::Kind::Sticky(crate::model::Sticky::default()));
+        (s.w, s.h) = (220.0, 220.0);
+        let sid = s.id.clone();
+        b.editor.board.put([s]);
+        let t = crate::platform::now_ms();
+        for i in 0..20 {
+            b.editor.set_text(&sid, "x".repeat(i + 1));
+            b.editor.board.refresh();
+        }
+        println!("typing: {:.2} ms a key", (crate::platform::now_ms() - t) / 20.0);
+        let t = crate::platform::now_ms();
+        let els: Vec<std::sync::Arc<crate::model::El>> = b.editor.board.paint_order().to_vec();
+        let _ = crate::export::thumbnail(&els, &b.editor.board.meta(), &|_| None);
+        println!("thumbnail: {:.0} ms", crate::platform::now_ms() - t);
+        let t = crate::platform::now_ms();
+        let state = crate::doc::encode_state(&b.editor.board.doc);
+        let enc = crate::platform::now_ms() - t;
+        store.save_ydoc(&id, &state).unwrap();
+        println!("save: encode {enc:.0} ms, write {:.0} ms ({} KB)", crate::platform::now_ms() - t - enc, state.len() / 1024);
+        let t = crate::platform::now_ms();
+        b.close();
+        println!("close: {:.0} ms", crate::platform::now_ms() - t);
+    }
+
     /// Device pixels per point of the pictures (TRATTO_PPP=1.3 to see 130%).
     fn ppp() -> f32 {
         std::env::var("TRATTO_PPP").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0)
@@ -358,12 +393,19 @@ mod picture {
         let id = store.create("Diagramma di flusso", None).unwrap();
         let mut screen: Option<board::BoardScreen> = None;
         let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
-        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).with_pixels_per_point(ppp()).wgpu().build_ui(move |ui| {
+        // TRATTO_SIZE=1300x800 for a smaller window, TRATTO_MINIMAP=br for the minimap put down
+        // in the bottom right corner.
+        let size = std::env::var("TRATTO_SIZE").ok().and_then(|s| s.split_once('x').and_then(|(w, h)| Some(egui::vec2(w.parse().ok()?, h.parse().ok()?)))).unwrap_or(egui::vec2(1440.0, 900.0));
+        let mut prefs = Prefs::default();
+        if std::env::var("TRATTO_MINIMAP").is_ok_and(|v| v == "br") {
+            prefs.minimap_at = Some([1.0, 1.0]);
+        }
+        let mut harness = egui_kittest::Harness::builder().with_size(size).with_pixels_per_point(ppp()).wgpu().build_ui(move |ui| {
             let ctx = ui.ctx().clone();
             if screen.is_none() {
                 ui::install_fonts(&ctx);
                 ui::setup(&ctx, Theme::new(dark, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), text_scale());
-                let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), Some("flow".into())).unwrap();
+                let mut b = board::BoardScreen::open(&ctx, &store, &id, prefs.clone(), Some("flow".into())).unwrap();
                 b.editor.selection = vec![b.editor.board.all().iter().find(|e| e.shape().is_some()).unwrap().id.clone()];
                 b.editor.tool = if std::env::var_os("TRATTO_SELECT").is_some() { crate::editor::Tool::Select } else { crate::editor::Tool::Pen };
                 b.editor.prefs.focus = std::env::var_os("TRATTO_FOCUS").is_some();

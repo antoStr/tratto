@@ -144,7 +144,11 @@ pub fn left(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, dialogs: &mut
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 if small_icon_button(ui, "panel-left-close", "Nascondi il pannello", false).clicked() {
-                    b.editor.prefs.left_panel = false;
+                    if b.ui.peek_left {
+                        b.ui.peek_left = false;
+                    } else {
+                        b.editor.prefs.left_panel = false;
+                    }
                 }
                 if !b.host {
                     guest_buttons(ui, b, dialogs);
@@ -532,8 +536,10 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
                 let font = if folder { ui::medium(ui::px(11.0)) } else { egui::FontId::proportional(ui::px(11.0)) };
                 ui.painter().with_clip_rect((Rect::from_min_max(pos2(x, r.min.y), pos2(r.max.x - 52.0, r.max.y))).intersect(ui.clip_rect())).text(pos2(x, r.center().y), egui::Align2::LEFT_CENTER, &label, font, color);
             }
-            // Lock and hide, shown on hover or when on.
-            if !ro && piece.is_none() && (resp.hovered() || locked || hidden) && !renaming {
+            // Lock and hide, shown while the pointer is on the row (also on the buttons
+            // themselves, which take the hover from the row) or when on.
+            let over = ui.rect_contains_pointer(rect);
+            if !ro && piece.is_none() && (over || locked || hidden) && !renaming {
                 for (k, (name, tip, on)) in [("eye", if hidden { "Mostra" } else { "Nascondi" }, hidden), ("lock", if locked { "Sblocca" } else { "Blocca" }, locked)].into_iter().enumerate() {
                     let br = Rect::from_center_size(pos2(r.max.x - 12.0 - k as f32 * 22.0, r.center().y), vec2(20.0, 20.0));
                     let bresp = ui.interact(br, Id::new((name, &key)), Sense::click());
@@ -662,7 +668,11 @@ pub fn right(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
             ui.label(RichText::new("Design").font(ui::medium(ui::px(11.0))).color(t.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if small_icon_button(ui, "panel-right-close", "Nascondi il pannello", false).clicked() {
-                    b.editor.prefs.right_panel = false;
+                    if b.ui.peek_right {
+                        b.ui.peek_right = false;
+                    } else {
+                        b.editor.prefs.right_panel = false;
+                    }
                 }
                 zoom_menu(ui, &mut b.editor, &t);
                 super::live::spotlight_button(ui, &mut b.editor);
@@ -744,11 +754,11 @@ fn profile_popup(ui: &Ui, resp: &egui::Response, ed: &mut Editor) {
         ui::field_label(ui, "Il tuo colore");
         ui::hint(ui, "Del tuo cursore, della tua selezione e dei tuoi commenti, per chi è sulla lavagna con te.");
         let cur = ed.prefs.own_color().unwrap_or("").to_string();
-        if let Some(c) = ui::palette(ui, &PERSON_COLORS, &cur, false) {
+        if let Some(c) = ui::color_dots(ui, &PERSON_COLORS, &cur, "Il tuo colore") {
             ed.prefs.color = c;
         }
         ui::field_label(ui, "Puntatore laser");
-        if let Some(c) = ui::swatches(ui, &super::toolbar::LASER_COLORS, &ed.prefs.laser_color, false) {
+        if let Some(c) = ui::color_dots(ui, &super::toolbar::LASER_COLORS, &ed.prefs.laser_color, "Colore del puntatore laser") {
             ed.prefs.laser_color = c;
         }
     });
@@ -1470,6 +1480,9 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
                 if ui::icon_button(ui, "panel-left-open", if focus { "Mostra i pannelli" } else { "Mostra il pannello dei livelli" }, focus.then_some("Ctrl+\\"), vec2(24.0, 24.0), 16.0, false, false).clicked() {
                     if focus {
                         b.editor.toggle_focus();
+                    } else if b.editor.prefs.left_panel {
+                        // Hidden only because the window is narrow: shown over the board.
+                        b.ui.peek_left = true;
                     } else {
                         b.editor.prefs.left_panel = true;
                     }
@@ -1523,6 +1536,9 @@ pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
                 share_button(ui, b);
                 ui.add_space(2.0);
                 if small_icon_button(ui, "panel-right-open", "Mostra il pannello", false).clicked() {
+                    if b.editor.prefs.right_panel {
+                        b.ui.peek_right = true;
+                    }
                     b.editor.prefs.right_panel = true;
                     b.editor.prefs.focus = false;
                 }

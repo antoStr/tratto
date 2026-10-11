@@ -823,14 +823,15 @@ pub fn dialog(ui: &mut egui::Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
                 let share = b.share.as_ref().unwrap();
                 let url = v.url.clone().unwrap_or_default();
                 ui::field_label(ui, "Link di invito");
-                ui::row(ui, 34.0, |ui| {
-                    let mut shown = url.clone();
-                    ui.allocate_ui(egui::vec2(ui.available_width() - 120.0, 34.0), |ui| ui::text_field(ui, &mut shown, "", 400));
-                    ui.add_space(4.0);
+                // The button first, from the right; the link takes the rest of the row.
+                ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), ui::ctl(34.0)), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui::button(ui, "Copia link", Btn::Primary, Some("copy"), true, true).clicked() {
                         ui.ctx().copy_text(url.clone());
                         toasts.info("Link copiato: mandalo a chi vuoi.");
                     }
+                    ui.add_space(4.0);
+                    let mut shown = url.clone();
+                    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), ui::ctl(34.0)), egui::Layout::left_to_right(egui::Align::Center), |ui| ui::text_field(ui, &mut shown, "", 400));
                 });
                 ui::field_label(ui, "Chi ha il link");
                 let mut a = v.access;

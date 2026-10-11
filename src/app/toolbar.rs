@@ -492,6 +492,101 @@ fn toolbar_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme, id: &
     }
 }
 
+/// Width a toolbar button takes (with the gap after it).
+fn item_width(id: &str) -> f32 {
+    match id {
+        "pen" | "highlighter" | "tape" => 30.0 + 2.0,
+        "shape" => BTN + 14.0 + 4.0,
+        _ => BTN + 2.0,
+    }
+}
+
+/// A toolbar button that didn't fit, as a row of the "…" menu.
+fn overflow_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, id: &str) {
+    let name = crate::prefs::TOOLBAR_ITEMS.iter().find(|i| i.0 == id).map_or(id, |i| i.1);
+    let tool = match id {
+        "select" => Some(Tool::Select),
+        "hand" => Some(Tool::Hand),
+        "pen" => Some(Tool::Pen),
+        "highlighter" => Some(Tool::Highlighter),
+        "tape" => Some(Tool::Tape),
+        "eraser" => Some(Tool::Eraser),
+        "lasso" => Some(Tool::Lasso),
+        "sticky" => Some(Tool::Sticky),
+        "shape" => Some(Tool::Shape),
+        "arrow" => Some(Tool::Arrow),
+        "line" => Some(Tool::Line),
+        "text" => Some(Tool::Text),
+        "section" => Some(Tool::Section),
+        "table" => Some(Tool::Table),
+        "stamp" => Some(Tool::Stamp),
+        "comment" => Some(Tool::Comment),
+        "laser" => Some(Tool::Laser),
+        _ => None,
+    };
+    let icon_name = toolbar_icon(id);
+    match (id, tool) {
+        (_, Some(tool)) => {
+            if ui::menu_item(ui, Some(if ed.tool == tool { "check" } else { icon_name }), name, None, false).clicked() {
+                ed.set_tool(tool);
+                ed.prefs.tray = true;
+            }
+        }
+        ("ruler", _) => {
+            if ui::menu_item(ui, Some(icon_name), if ed.ruler.visible { "Nascondi righello" } else { "Mostra righello" }, Some("U"), false).clicked() {
+                ed.toggle_ruler();
+            }
+        }
+        ("chat", _) => {
+            if ui::menu_item(ui, Some(icon_name), name, Some("/"), false).clicked() {
+                st.chat = Some(String::new());
+            }
+        }
+        _ => {
+            // The "+": its additions one by one.
+            for (what, label, ic) in [(Payload::Code, "Blocco di codice", "code"), (Payload::Poll, "Sondaggio", "chart-column"), (Payload::Checklist, "Lista di cose da fare", "list-checks"), (Payload::Counter, "Contatore", "hash")] {
+                if ui::menu_item(ui, Some(ic), label, None, false).clicked() {
+                    insert_payload(ed, &what, None);
+                }
+            }
+            if ui::menu_item(ui, Some("image-plus"), "Immagine", Some("I"), false).clicked() {
+                ed.requests.push(crate::editor::Request::InsertImage);
+            }
+            if ui::menu_item(ui, Some("layout-template"), "Modelli", None, false).clicked() {
+                ed.prefs.left_panel = true;
+                ed.prefs.focus = false;
+                ed.requests.push(crate::editor::Request::Templates);
+            }
+        }
+    }
+}
+
+/// The icon of a toolbar button, in lists and menus.
+pub fn toolbar_icon(id: &str) -> &'static str {
+    match id {
+        "select" => "mouse-pointer-2",
+        "hand" => "hand",
+        "pen" => "pen",
+        "highlighter" => "highlighter",
+        "tape" => "rectangle-horizontal",
+        "eraser" => "eraser",
+        "lasso" => "lasso",
+        "ruler" => "ruler",
+        "sticky" => "sticky-note",
+        "shape" => "shapes",
+        "arrow" => "arrow-up-right",
+        "line" => "minus",
+        "text" => "type",
+        "section" => "square-dashed-top-solid",
+        "table" => "table",
+        "stamp" => "smile",
+        "comment" => "message-circle",
+        "chat" => "message-square-text",
+        "more" => "plus",
+        _ => "locate-fixed",
+    }
+}
+
 pub fn toolbar(ctx: &egui::Context, stage: Rect, ed: &mut Editor, st: &mut BoardUi) {
     let t = ui::theme(ctx);
     let top = ed.prefs.toolbar_pos == ToolbarPos::Top;
@@ -503,6 +598,25 @@ pub fn toolbar(ctx: &egui::Context, stage: Rect, ed: &mut Editor, st: &mut Board
         .filter(|id| !ed.read_only || matches!(id.as_str(), "select" | "hand" | "laser" | "chat"))
         .collect();
     let group = |id: &str| crate::prefs::TOOLBAR_ITEMS.iter().find(|i| i.0 == id).map_or(0, |i| i.2);
+    // A narrow window: the buttons from the end that don't fit go into a "…" menu (the one in
+    // use stays out, so its options keep their place).
+    let room = stage.width() - 40.0;
+    let width = |list: &[String]| {
+        let seps = list.windows(2).filter(|w| group(&w[0]) != group(&w[1])).count() as f32;
+        list.iter().map(|id| item_width(id)).sum::<f32>() + seps * 11.0
+    };
+    let mut shown = items.clone();
+    let mut hidden: Vec<String> = Vec::new();
+    while shown.len() > 2 && width(&shown) + if hidden.is_empty() { 0.0 } else { BTN + 13.0 } > room {
+        let current = |id: &str| match id {
+            "select" => ed.tool == Tool::Select,
+            "pen" => ed.tool == Tool::Pen,
+            _ => false,
+        };
+        let Some(at) = shown.iter().rposition(|id| !current(id) && id != "select") else { break };
+        hidden.insert(0, shown.remove(at));
+    }
+    let items = shown;
     // Centred on the part of the board the panels leave free; when it doesn't fit there, on the
     // whole window (it floats over the panels).
     let width = ctx.data(|d| d.get_temp::<Rect>(Id::new("toolbar-rect"))).map_or(0.0, |r| r.width());
@@ -523,13 +637,23 @@ pub fn toolbar(ctx: &egui::Context, stage: Rect, ed: &mut Editor, st: &mut Board
                     last = Some(g);
                     toolbar_item(ui, ed, st, &t, id, top);
                 }
+                if !hidden.is_empty() {
+                    sep(ui, &t);
+                    let r = icon_button(ui, "more-horizontal", "Altri strumenti che qui non entrano", None, vec2(BTN, BTN), ICON, false, false);
+                    egui::Popup::menu(&r).frame(ui::menu_frame(&t)).align(if top { egui::RectAlign::BOTTOM_END } else { egui::RectAlign::TOP_END }).show(|ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        for id in &hidden {
+                            overflow_item(ui, ed, st, id);
+                        }
+                    });
+                }
             });
         });
         ui.painter().set(under, contact.as_shape(card.response.rect, egui::CornerRadius::same(16)));
     });
     let bar = resp.response.rect;
     ctx.data_mut(|d| d.insert_temp(Id::new("toolbar-rect"), bar));
-    let tray_rect = if !ed.read_only && ed.prefs.tray { tray(ctx, bar, top, ed, &t) } else { None };
+    let tray_rect = if !ed.read_only && ed.prefs.tray { tray(ctx, bar, stage.width(), top, ed, &t) } else { None };
     // What the zoom controls and the minimap keep clear of.
     let bars = tray_rect.map_or(bar, |r| r.union(bar));
     ctx.data_mut(|d| d.insert_temp(Id::new("bottom-bars"), bars));
@@ -565,7 +689,7 @@ const PX: fn(f64) -> String = |v| format!("{} px", (v * 10.0).round() / 10.0);
 const PCT: fn(f64) -> String = |v| format!("{}%", (v * 100.0).round());
 
 /// The contextual tray above the toolbar: what the current tool can be set to.
-fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) -> Option<Rect> {
+fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t: &Theme) -> Option<Rect> {
     let tool = ed.tool;
     if !matches!(tool, Tool::Pen | Tool::Highlighter | Tool::Tape | Tool::Eraser | Tool::Shape | Tool::Line | Tool::Arrow | Tool::Text | Tool::Sticky | Tool::Stamp | Tool::Comment | Tool::Section | Tool::Table | Tool::Laser) {
         return None;
@@ -581,6 +705,11 @@ fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) -
     let rise = ui::motion::travel(ctx, k) * 10.0;
     let at = if top { pos2(bar.center().x, bar.max.y + 8.0 - rise) } else { pos2(bar.center().x, bar.min.y - 8.0 + rise) };
     let mut close = false;
+    // Too wide for the window: the sliders and pickers give up some of their length.
+    let natural = ctx.data(|d| d.get_temp::<f32>(Id::new(("tray-natural", format!("{tool:?}")))));
+    // About half of it (sliders, pickers) can give way; the swatches and buttons can't.
+    let squeeze = natural.map_or(1.0, |w| (1.0 - (w - (room - 24.0)) / (w * 0.5)).clamp(0.35, 1.0));
+    let sw = move |w: f32| (w * squeeze).round();
     // The tallest thing in the tray sets its height; everything else is centred on it.
     let h = match tool {
         Tool::Shape => 88.0,
@@ -605,9 +734,9 @@ fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) -
                         let i = ed.pen.min(p.pens.len() - 1);
                         sep_h(ui, t, h);
                         let pen = &mut p.pens[i];
-                        ui::slider_inline(ui, "Spessore", &mut pen.size, 1.0, 64.0, 0.5, true, PX, 196.0);
+                        ui::slider_inline(ui, "Spessore", &mut pen.size, 1.0, 64.0, 0.5, true, PX, sw(196.0));
                         ui.add_space(8.0);
-                        ui::slider_inline(ui, "Opacità", &mut pen.opacity, 0.1, 1.0, 0.05, false, PCT, 172.0);
+                        ui::slider_inline(ui, "Opacità", &mut pen.opacity, 0.1, 1.0, 0.05, false, PCT, sw(172.0));
                         sep_h(ui, t, h);
                         ui.spacing_mut().item_spacing.x = 2.0;
                         if icon_button(ui, "shapes", "Da tratto a forma: trasforma linee, cerchi e rettangoli disegnati a mano", None, vec2(32.0, 32.0), 18.0, p.ink_to_shape, false).clicked() {
@@ -623,24 +752,24 @@ fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) -
                             p.highlighter.color = c;
                         }
                         sep_h(ui, t, h);
-                        ui::slider_inline(ui, "Spessore", &mut p.highlighter.size, 4.0, 96.0, 0.0, true, PX, 196.0);
+                        ui::slider_inline(ui, "Spessore", &mut p.highlighter.size, 4.0, 96.0, 0.0, true, PX, sw(196.0));
                     }
                     Tool::Tape => {
                         if let Some(c) = ui::swatches(ui, &TAPE_COLORS, &p.tape.color, false) {
                             p.tape.color = c;
                         }
                         sep_h(ui, t, h);
-                        ui::slider_inline(ui, "Larghezza", &mut p.tape.size, 8.0, 120.0, 0.0, true, PX, 204.0);
+                        ui::slider_inline(ui, "Larghezza", &mut p.tape.size, 8.0, 120.0, 0.0, true, PX, sw(204.0));
                     }
                     Tool::Eraser => {
-                        ui::segmented(ui, &mut p.eraser.mode, &[(EraserMode::Pixel, "Pixel"), (EraserMode::Stroke, "Tratto intero")], 196.0);
+                        ui::segmented(ui, &mut p.eraser.mode, &[(EraserMode::Pixel, "Pixel"), (EraserMode::Stroke, "Tratto intero")], sw(196.0));
                         sep_h(ui, t, h);
                         let (r, _) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::hover());
                         let d = (p.eraser.size as f32).clamp(4.0, 26.0);
                         ui.painter().circle(r.center(), d / 2.0, t.bg2, Stroke::new(1.0, t.border_strong));
-                        ui::slider_inline(ui, "Dimensione", &mut p.eraser.size, 2.0, 240.0, 0.0, true, PX, 212.0);
+                        ui::slider_inline(ui, "Dimensione", &mut p.eraser.size, 2.0, 240.0, 0.0, true, PX, sw(212.0));
                         if p.eraser.mode == EraserMode::Pixel {
-                            ui::slider_inline(ui, "Forza", &mut p.eraser.strength, 0.1, 1.0, 0.05, false, PCT, 164.0);
+                            ui::slider_inline(ui, "Forza", &mut p.eraser.strength, 0.1, 1.0, 0.05, false, PCT, sw(164.0));
                         }
                     }
                     Tool::Shape | Tool::Line | Tool::Arrow => {
@@ -679,14 +808,14 @@ fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) -
                         }
                         color_pop(ui, "Contorno", &mut p.shape_style.stroke, false, true, top, t);
                         sep_h(ui, t, h);
-                        ui::slider_inline(ui, "Spessore", &mut p.shape_style.stroke_width, 0.5, 32.0, 0.5, true, PX, 196.0);
+                        ui::slider_inline(ui, "Spessore", &mut p.shape_style.stroke_width, 0.5, 32.0, 0.5, true, PX, sw(196.0));
                     }
                     Tool::Text => {
-                        font_picker(ui, &mut p.text.font, 168.0, t);
+                        font_picker(ui, &mut p.text.font, sw(168.0), t);
                         sep_h(ui, t, h);
                         color_pop(ui, "Colore testo", &mut p.text.color, false, false, top, t);
                         let mut size = p.text.font_size.round() as i64;
-                        if ui::segmented(ui, &mut size, &[(16, "S"), (24, "M"), (36, "L"), (56, "XL")], 150.0) {
+                        if ui::segmented(ui, &mut size, &[(16, "S"), (24, "M"), (36, "L"), (56, "XL")], sw(150.0)) {
                             p.text.font_size = size as f64;
                         }
                         if let Some(v) = ui::Num::new(Id::new("tray-font-size"), "icon:text-size", "Dimensione del testo in pixel: trascina per cambiarla", Some(p.text.font_size)).width(76.0).range(4.0, 400.0).show(ui) {
@@ -734,6 +863,10 @@ fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) -
     });
     if close {
         ed.prefs.tray = false;
+    }
+    // Its width at full size, measured while it is not squeezed.
+    if squeeze >= 1.0 {
+        ctx.data_mut(|d| d.insert_temp(Id::new(("tray-natural", format!("{tool:?}"))), shown.response.rect.width()));
     }
     Some(shown.response.rect)
 }
@@ -883,18 +1016,33 @@ pub fn stamp_picker(ui: &mut Ui, value: Option<&str>) -> Option<String> {
 /// Bottom right, Whiteboard style: minimap on/off, zoom in, zoom level (menu), zoom out.
 pub fn view_controls(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     let t = ui::theme(ctx);
-    // In the corner, unless the toolbar (or the options above it) reaches it: then just above
-    // them, gliding there.
+    // In the bottom right corner; when the toolbar, its options or the minimap are there, the
+    // first free place nearby: above the minimap, beside it, above the toolbar. It glides there.
     let bar = ctx.data(|d| d.get_temp::<Rect>(Id::new("bottom-bars")));
     let size = ctx.data(|d| d.get_temp::<egui::Vec2>(Id::new("view-controls-size"))).unwrap_or(vec2(40.0, 130.0));
     let corner = stage.max - vec2(16.0, 16.0);
-    let clash = bar.is_some_and(|b| b.intersects(Rect::from_min_max(corner - size - vec2(8.0, 8.0), corner)));
-    let lift = ui::motion::spring(ctx, Id::new("view-controls-lift"), if clash { bar.map_or(0.0, |b| (corner.y - b.min.y + 12.0).max(0.0)) } else { 0.0 }, 0.3, 0.9);
-    // The minimap put down in this corner: the controls step to its left.
     let mini = if ed.prefs.minimap { ctx.data(|d| d.get_temp::<Rect>(Id::new("minimap-rect"))) } else { None };
-    let spot = Rect::from_min_max(corner - size - vec2(0.0, lift), corner - vec2(0.0, lift));
-    let aside = ui::motion::spring(ctx, Id::new("view-controls-aside"), mini.filter(|m| m.expand(6.0).intersects(spot)).map_or(0.0, |m| (corner.x - m.min.x + 10.0).max(0.0)), 0.3, 0.9);
-    let resp = egui::Area::new(Id::new("view-controls")).pivot(egui::Align2::RIGHT_BOTTOM).fixed_pos(corner - vec2(aside, lift)).order(egui::Order::Foreground).show(ctx, |ui| {
+    let obstacles: Vec<Rect> = [bar, mini].into_iter().flatten().map(|r| r.expand(8.0)).collect();
+    let free = |p: Pos2| {
+        let r = Rect::from_min_max(p - size, p);
+        r.min.y >= stage.min.y + 8.0 && r.min.x >= stage.min.x + 8.0 && !obstacles.iter().any(|o| o.intersects(r))
+    };
+    let mut spots = vec![corner];
+    if let Some(m) = mini {
+        spots.push(pos2(corner.x, m.min.y - 10.0));
+        spots.push(pos2(m.min.x - 10.0, corner.y));
+    }
+    if let Some(b) = bar {
+        spots.push(pos2(corner.x, b.min.y - 12.0));
+        if let Some(m) = mini {
+            spots.push(pos2(corner.x, b.min.y.min(m.min.y) - 12.0));
+            spots.push(pos2(m.min.x - 10.0, b.min.y - 12.0));
+        }
+    }
+    let target = spots.iter().copied().find(|p| free(*p)).unwrap_or(*spots.last().unwrap());
+    let x = ui::motion::spring(ctx, Id::new("view-controls-x"), target.x, 0.3, 0.9);
+    let y = ui::motion::spring(ctx, Id::new("view-controls-y"), target.y, 0.3, 0.9);
+    let resp = egui::Area::new(Id::new("view-controls")).pivot(egui::Align2::RIGHT_BOTTOM).fixed_pos(pos2(x, y)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui::float_frame(&t).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
@@ -983,6 +1131,8 @@ pub struct Minimap {
     grab: Option<(f64, f64)>,
     /// Pointer offset from the card's corner while the card itself is being moved.
     moving: Option<egui::Vec2>,
+    /// The picture being drawn away from the interface, and how it maps the board.
+    job: Option<std::sync::mpsc::Receiver<(Option<egui::ColorImage>, Fit)>>,
 }
 
 /// What the minimap frames: the content, but never much less than a screenful around it, so a
@@ -1020,27 +1170,63 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
     }
     let (mw, mh) = ((MW - PAD * 2.0) as f64, (MH - PAD * 2.0) as f64);
     let quiet = now - m.seen_at;
-    if m.tex.is_none() || (m.drawn != version && m.grab.is_none() && quiet > 300.0) {
+    // The picture is drawn on another thread (tens of milliseconds on a big board, which
+    // would make typing and drawing stutter), one at a time.
+    if m.job.is_none() && (m.tex.is_none() || (m.drawn != version && m.grab.is_none() && quiet > 300.0)) {
         m.drawn = version;
         let content = union(ed.board.all().iter().filter(|e| !e.hidden).map(|e| crate::geom::aabb(e)));
         let fit = fit_for(map_area(content, ed.view()), mw, mh);
-        m.shown = Some(fit);
         let ppp = ctx.pixels_per_point() as f64;
         let (w, h) = ((mw * ppp) as u32, (mh * ppp) as u32);
         let b = BBox { x: -fit.x / fit.k, y: -fit.y / fit.k, w: mw / fit.k, h: mh / fit.k };
         let els = ed.board.paint_order().to_vec();
-        let env = crate::prims::Env { zoom: fit.k, pixel: Some(1.0 / (fit.k * ppp)), hairline: true, editing: None, comments: false, editing_cell: None, before: None, dark_board: crate::model::is_dark(&ed.board.meta().background) };
-        let bg = crate::model::color_or(&ed.board.meta().background, Color32::from_gray(0xF5));
-        let images = &ed.painter.images;
-        if let Some(pm) = crate::raster::render(&els, Some(bg), w, h, b, &env, &|k| images.pixmap(k)) {
-            let img = egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data());
-            match &mut m.tex {
-                Some(tex) => tex.set(img, egui::TextureOptions::LINEAR),
-                None => m.tex = Some(ctx.load_texture("minimap", img, egui::TextureOptions::LINEAR)),
+        let meta = ed.board.meta();
+        let dark = crate::model::is_dark(&meta.background);
+        let bg = crate::model::color_or(&meta.background, Color32::from_gray(0xF5));
+        // The pictures it needs, taken along (the image cache stays here).
+        let mut pics = std::collections::HashMap::new();
+        for el in &els {
+            let key = match &el.kind {
+                crate::model::Kind::Image { file_id } => crate::prims::ImageKey::File(file_id.clone()),
+                crate::model::Kind::Stamp { emoji } => crate::prims::ImageKey::Stamp(emoji.clone()),
+                _ => continue,
+            };
+            if let Some(p) = ed.painter.images.pixmap(&key) {
+                pics.insert(key, p);
             }
         }
+        let (tx, rx) = std::sync::mpsc::channel();
+        m.job = Some(rx);
+        let c = ctx.clone();
+        let draw = move || {
+            let env = crate::prims::Env { zoom: fit.k, pixel: Some(1.0 / (fit.k * ppp)), hairline: true, dark_board: dark, ..Default::default() };
+            let img = crate::raster::render(&els, Some(bg), w, h, b, &env, &|k| pics.get(k).cloned()).map(|pm| egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data()));
+            let _ = tx.send((img, fit));
+            c.request_repaint();
+        };
+        // A browser page has no threads to spare: there it is drawn at once.
+        #[cfg(target_arch = "wasm32")]
+        draw();
+        #[cfg(not(target_arch = "wasm32"))]
+        std::thread::spawn(draw);
     } else if m.drawn != version {
         ctx.request_repaint_after(std::time::Duration::from_millis((310.0 - quiet).max(10.0) as u64));
+    }
+    if let Some(rx) = &m.job {
+        match rx.try_recv() {
+            Ok((img, fit)) => {
+                m.job = None;
+                if let Some(img) = img {
+                    m.shown = Some(fit);
+                    match &mut m.tex {
+                        Some(tex) => tex.set(img, egui::TextureOptions::LINEAR),
+                        None => m.tex = Some(ctx.load_texture("minimap", img, egui::TextureOptions::LINEAR)),
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => m.job = None,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
     }
     let Some(f) = m.shown else { return };
     let view = ed.view();

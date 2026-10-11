@@ -156,18 +156,26 @@ pub fn settings(ctx: &egui::Context, open: &mut bool, p: &mut Prefs, host: bool)
             let (line, _) = ui.allocate_exact_size(vec2(1.0, SETTINGS_H), Sense::hover());
             ui.painter().vline(line.center().x, line.y_range(), Stroke::new(1.0, t.border));
             ui.add_space(20.0);
-            // The chosen section, fading in.
+            // The chosen section slides in from the side it comes from (from below the list
+            // when going down it, from above when going up), fading in.
             let content_w = SETTINGS_W - 32.0 - SIDEBAR_W - 21.0;
+            let index = tabs.iter().position(|x| x.0 == tab).unwrap_or(0) as f32;
+            let from_id = Id::new("settings-tab-from");
+            let (seen, dir) = ui.data(|d| d.get_temp::<(f32, f32)>(from_id)).unwrap_or((index, 0.0));
+            let dir = if seen != index { (index - seen).signum() } else { dir };
+            ui.data_mut(|d| d.insert_temp(from_id, (index, dir)));
             ui.vertical(|ui| {
                 ui.set_width(content_w);
                 ui.set_height(SETTINGS_H);
-                let k = ui::motion::entering(ui.ctx(), Id::new("settings-content"), tab).clamp(0.0, 1.0);
-                ui.multiply_opacity(k);
-                egui::ScrollArea::vertical().id_salt(("settings-scroll", tab)).auto_shrink(false).max_height(SETTINGS_H).show(ui, |ui| {
-                    ui.add_space(ui::motion::travel(ui.ctx(), k) * 8.0);
-                    ui.spacing_mut().item_spacing.y = 12.0;
-                    ui.set_width(content_w - 8.0);
-                    settings_section(ui, tab, p, host);
+                let k = ui::motion::entering(ui.ctx(), Id::new("settings-content"), tab);
+                ui.multiply_opacity(k.clamp(0.0, 1.0));
+                let shift = ui::motion::travel(ui.ctx(), k.clamp(0.0, 1.0)) * 28.0 * dir;
+                ui.with_visual_transform(egui::emath::TSTransform::from_translation(vec2(0.0, shift)), |ui| {
+                    egui::ScrollArea::vertical().id_salt(("settings-scroll", tab)).auto_shrink(false).max_height(SETTINGS_H).show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 12.0;
+                        ui.set_width(content_w - 8.0);
+                        settings_section(ui, tab, p, host);
+                    });
                 });
             });
         });
@@ -202,15 +210,16 @@ fn settings_section(ui: &mut egui::Ui, tab: SettingsTab, p: &mut Prefs, host: bo
         SettingsTab::Profile => {
             ui::heading(ui, "Profilo");
             ui::hint(ui, "Come ti vedono gli altri quando la lavagna è condivisa: il nome accanto al cursore e il colore del cursore, della selezione e dei commenti.");
+            profile_preview(ui, p);
             ui::field_label(ui, "Nome");
             ui::text_field(ui, &mut p.name, "Come ti vedranno gli altri", 40);
             ui::field_label(ui, "Il tuo colore");
             let cur = p.own_color().unwrap_or("").to_string();
-            if let Some(c) = ui::palette(ui, &super::panels::PERSON_COLORS, &cur, false) {
+            if let Some(c) = ui::color_dots(ui, &super::panels::PERSON_COLORS, &cur, "Il tuo colore") {
                 p.color = c;
             }
             ui::field_label(ui, "Colore del puntatore laser");
-            if let Some(c) = ui::swatches(ui, &super::toolbar::LASER_COLORS, &p.laser_color, false) {
+            if let Some(c) = ui::color_dots(ui, &super::toolbar::LASER_COLORS, &p.laser_color, "Colore del puntatore laser") {
                 p.laser_color = c;
             }
         }
@@ -348,6 +357,38 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
     ),
 ];
 
+/// How the others see you: your cursor with your name, in your colour, and your laser.
+fn profile_preview(ui: &mut egui::Ui, p: &Prefs) {
+    let t = ui::theme(ui.ctx());
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 84.0), Sense::hover());
+    ui.painter().rect_filled(r, 10.0, t.bg2);
+    let color = p.own_color().and_then(crate::model::parse_color).unwrap_or(Color32::from_rgb(0x0D, 0x99, 0xFF));
+    let name = if p.name.trim().is_empty() { "Il tuo nome".to_string() } else { p.name.trim().to_string() };
+    let tip = r.min + vec2(64.0, 22.0);
+    let arrow = [(2.0, 1.5), (15.5, 7.6), (9.0, 9.4), (6.9, 16.0)].map(|(a, b)| tip + vec2(a, b) * 1.4);
+    ui.painter().add(egui::Shape::convex_polygon(vec![arrow[0], arrow[1], arrow[2]], color, Stroke::NONE));
+    ui.painter().add(egui::Shape::convex_polygon(vec![arrow[0], arrow[2], arrow[3]], color, Stroke::NONE));
+    ui.painter().add(egui::Shape::closed_line(arrow.to_vec(), Stroke::new(1.4, Color32::WHITE)));
+    let on = if crate::model::is_dark(&crate::model::hex(color)) { Color32::WHITE } else { crate::model::DARK };
+    let g = ui.painter().layout_no_wrap(name, ui::medium(ui::px(11.0)), on);
+    let label = egui::Rect::from_min_size(tip + vec2(20.0, 22.0), g.size() + vec2(12.0, 4.0));
+    ui.painter().rect_filled(label, egui::CornerRadius { nw: 4, ne: 12, sw: 12, se: 12 }, color);
+    ui.painter().galley(label.min + vec2(6.0, 2.0), g, on);
+    // A short laser trail on the right.
+    let laser = crate::model::parse_color(&p.laser_color).unwrap_or(Color32::RED);
+    let pts: Vec<egui::Pos2> = (0..=16)
+        .map(|i| {
+            let s = i as f32 / 16.0;
+            pos2(r.max.x - 190.0 + s * 140.0, r.center().y + (s * std::f32::consts::TAU).sin() * 12.0)
+        })
+        .collect();
+    for (i, w) in pts.windows(2).enumerate() {
+        let k = (i + 1) as f32 / pts.len() as f32;
+        ui.painter().line_segment([w[0], w[1]], Stroke::new(2.0 + 3.0 * k, laser.gamma_multiply(0.2 + 0.8 * k)));
+    }
+    ui.painter().circle_filled(*pts.last().unwrap(), 3.0, Color32::WHITE);
+}
+
 /// Every shortcut, grouped, with what it does.
 fn shortcut_list(ui: &mut egui::Ui) {
     let t = ui::theme(ui.ctx());
@@ -369,32 +410,6 @@ pub fn shortcuts(ctx: &egui::Context, open: &mut bool) {
     let _ = dialog(ctx, "shortcuts", "Scorciatoie da tastiera", 640.0, open, |ui| {
         egui::ScrollArea::vertical().max_height(480.0).auto_shrink([false, true]).show(ui, shortcut_list);
     });
-}
-
-/// The icon of a toolbar button in the list of the settings.
-fn toolbar_icon(id: &str) -> &'static str {
-    match id {
-        "select" => "mouse-pointer-2",
-        "hand" => "hand",
-        "pen" => "pen",
-        "highlighter" => "highlighter",
-        "tape" => "rectangle-horizontal",
-        "eraser" => "eraser",
-        "lasso" => "lasso",
-        "ruler" => "ruler",
-        "sticky" => "sticky-note",
-        "shape" => "shapes",
-        "arrow" => "arrow-up-right",
-        "line" => "minus",
-        "text" => "type",
-        "section" => "square-dashed-top-solid",
-        "table" => "table",
-        "stamp" => "smile",
-        "comment" => "message-circle",
-        "chat" => "message-square-text",
-        "more" => "plus",
-        _ => "locate-fixed",
-    }
 }
 
 /// The toolbar as you want it: drag the buttons into order, show or hide each one, and keep
@@ -423,7 +438,7 @@ fn toolbar_settings(ui: &mut egui::Ui, p: &mut Prefs) {
         let r = row.shrink2(vec2(0.0, 2.0));
         ui.painter().rect_filled(r, ui::RADIUS, if being_dragged { t.selected } else { t.hover.gamma_multiply(h) });
         ui::icon(ui, "grip-vertical", pos2(r.min.x + 12.0, r.center().y), 14.0, t.icon2);
-        ui::icon(ui, toolbar_icon(id), pos2(r.min.x + 36.0, r.center().y), 16.0, if hidden { t.text3 } else { t.icon });
+        ui::icon(ui, super::toolbar::toolbar_icon(id), pos2(r.min.x + 36.0, r.center().y), 16.0, if hidden { t.text3 } else { t.icon });
         ui.painter().text(pos2(r.min.x + 56.0, r.center().y), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(ui::px(11.0)), if hidden { t.text3 } else { t.text });
         // Where a dragged button would go: a line above or below this row.
         if let Some(from) = resp.dnd_hover_payload::<usize>() {

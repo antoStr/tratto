@@ -1052,6 +1052,56 @@ pub fn menu_frame(t: &Theme) -> egui::Frame {
     egui::Frame::new().fill(t.menu).corner_radius(10).inner_margin(egui::Margin::same(6)).shadow(egui::Shadow { offset: [0, 6], blur: 16, spread: 0, color: black(0.18) })
 }
 
+/// Colours as round dots, the chosen one ringed, and a custom colour at the end; wraps to more
+/// rows when narrow. Returns the colour picked.
+pub fn color_dots(ui: &mut Ui, colors: &[&str], value: &str, custom_label: &str) -> Option<String> {
+    let t = theme(ui.ctx());
+    let mut picked = None;
+    let chosen = colors.iter().any(|c| c.eq_ignore_ascii_case(value));
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(4.0, 6.0);
+        for c in colors {
+            let (r, resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
+            let h = motion::hover(ui.ctx(), resp.id.with("h"), resp.hovered());
+            let on = c.eq_ignore_ascii_case(value);
+            let fill = crate::model::parse_color(c).unwrap_or(Color32::GRAY);
+            ui.painter().circle_filled(r.center(), 10.0 + h, fill);
+            ui.painter().circle_stroke(r.center(), 10.0 + h, Stroke::new(1.0, if t.dark { white(0.18) } else { black(0.12) }));
+            let k = motion::hover(ui.ctx(), resp.id.with("on"), on);
+            if k > 0.0 {
+                ui.painter().circle_stroke(r.center(), 13.0, Stroke::new(2.0, t.text.gamma_multiply(k)));
+            }
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, *c));
+            focus_ring(ui, &resp, r);
+            if tip(resp, c, None).clicked() {
+                picked = Some(c.to_string());
+            }
+        }
+        // The custom colour: a hue wheel, or the colour itself once chosen; it opens the picker.
+        let current = crate::model::parse_color(value).filter(|_| !value.is_empty() && !chosen);
+        let (r, resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
+        let h = motion::hover(ui.ctx(), resp.id.with("h"), resp.hovered());
+        match current {
+            Some(c) => {
+                ui.painter().circle_filled(r.center(), 10.0 + h, c);
+                ui.painter().circle_stroke(r.center(), 13.0, Stroke::new(2.0, t.text));
+            }
+            None => wheel(ui, r.center(), 10.0 + h),
+        }
+        let resp = tip(resp, custom_label, None);
+        egui::Popup::from_toggle_button_response(&resp).frame(float_frame(&t).inner_margin(egui::Margin::same(12))).gap(8.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+            ui.set_width(220.0);
+            heading(ui, custom_label);
+            ui.add_space(2.0);
+            let mut c = current.unwrap_or(Color32::from_rgb(0x0D, 0x99, 0xFF));
+            if color_picker(ui, resp.id.with("picker"), &mut c, 220.0) {
+                picked = Some(crate::model::hex(c));
+            }
+        });
+    });
+    picked
+}
+
 /// The name of a field, over it.
 pub fn field_label(ui: &mut Ui, text: &str) {
     let t = theme(ui.ctx());
