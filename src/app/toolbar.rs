@@ -1029,7 +1029,7 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
         let (w, h) = ((mw * ppp) as u32, (mh * ppp) as u32);
         let b = BBox { x: -fit.x / fit.k, y: -fit.y / fit.k, w: mw / fit.k, h: mh / fit.k };
         let els = ed.board.paint_order().to_vec();
-        let env = crate::prims::Env { zoom: fit.k, pixel: Some(1.0 / (fit.k * ppp)), hairline: true, editing: None, comments: false, editing_cell: None };
+        let env = crate::prims::Env { zoom: fit.k, pixel: Some(1.0 / (fit.k * ppp)), hairline: true, editing: None, comments: false, editing_cell: None, before: None };
         let bg = crate::model::color_or(&ed.board.meta().background, Color32::from_gray(0xF5));
         let images = &ed.painter.images;
         if let Some(pm) = crate::raster::render(&els, Some(bg), w, h, b, &env, &|k| images.pixmap(k)) {

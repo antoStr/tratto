@@ -149,7 +149,44 @@ fn clip(s: &str, size: f64, bold: bool, width: f64) -> String {
     format!("{}…", out.trim_end())
 }
 
-pub fn prims(el: &El, w: &Widget, alpha: f64, out: &mut Vec<Prim>) {
+/// How long a widget takes to show a change (a tick, a vote, a count), in ms.
+pub const ANIM_MS: f64 = 420.0;
+
+/// Ease out with a little overshoot, for things that pop into place.
+fn pop(t: f32) -> f32 {
+    egui::emath::easing::back_out(t.clamp(0.0, 1.0))
+}
+
+fn ease(t: f32) -> f32 {
+    egui::emath::easing::cubic_out(t.clamp(0.0, 1.0))
+}
+
+/// The first `k` (0 to 1) of a polyline.
+fn partial(pts: &[(f32, f32)], k: f32) -> Path {
+    let total: f32 = pts.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum();
+    let mut left = total * k.clamp(0.0, 1.0);
+    let mut p = Path::default();
+    p.move_to(pts[0].0, pts[0].1);
+    for w in pts.windows(2) {
+        let d = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+        if d <= 0.0 {
+            continue;
+        }
+        if left >= d {
+            p.line_to(w[1].0, w[1].1);
+            left -= d;
+        } else {
+            let t = left / d;
+            p.line_to(w[0].0 + (w[1].0 - w[0].0) * t, w[0].1 + (w[1].1 - w[0].1) * t);
+            break;
+        }
+    }
+    p
+}
+
+/// `before`: the widget as it was before its last change and how far (0 to 1) the change has
+/// played, so ticks, bars and counts move into their new state instead of jumping.
+pub fn prims(el: &El, w: &Widget, alpha: f64, before: Option<(&Widget, f32)>, out: &mut Vec<Prim>) {
     let (ew, eh) = (el.w as f32, el.h as f32);
     let l = layout(el, w);
     out.push(Prim::Fill { path: Path::round_rect(0.0, 0.0, ew, eh, [16.0; 4]), color: with_alpha(Color32::WHITE, alpha) });
@@ -162,13 +199,25 @@ pub fn prims(el: &El, w: &Widget, alpha: f64, out: &mut Vec<Prim>) {
         Widget::Poll { options, .. } => {
             let total: usize = options.iter().map(|o| o.votes.len()).sum();
             let most = options.iter().map(|o| o.votes.len()).max().unwrap_or(0);
-            for (p, o) in l.parts.iter().zip(options) {
+            // The share each option had before the last vote, for the bars to grow from.
+            let was: Option<(Vec<f32>, f32)> = match before {
+                Some((Widget::Poll { options: old, .. }, t)) if old.len() == options.len() => {
+                    let total = old.iter().map(|o| o.votes.len()).sum::<usize>().max(1) as f32;
+                    Some((old.iter().map(|o| o.votes.len() as f32 / total).collect(), ease(t)))
+                }
+                _ => None,
+            };
+            for (i, (p, o)) in l.parts.iter().zip(options).enumerate() {
                 let (x, y, pw, ph) = (p.x as f32, p.y as f32, p.w as f32, p.h as f32);
                 out.push(Prim::Fill { path: Path::round_rect(x, y, pw, ph, [10.0; 4]), color: with_alpha(TRACK, alpha) });
                 let n = o.votes.len();
-                if n > 0 {
-                    let k = n as f32 / total.max(1) as f32;
-                    let fill = if n == most { Color32::from_rgb(0xBD, 0xE3, 0xFF) } else { Color32::from_rgb(0xDD, 0xEE, 0xFB) };
+                let now = if n > 0 { n as f32 / total.max(1) as f32 } else { 0.0 };
+                let k = match &was {
+                    Some((old, t)) => old[i] + (now - old[i]) * t,
+                    None => now,
+                };
+                if k > 0.001 {
+                    let fill = if n == most && n > 0 { Color32::from_rgb(0xBD, 0xE3, 0xFF) } else { Color32::from_rgb(0xDD, 0xEE, 0xFB) };
                     out.push(Prim::Fill { path: Path::round_rect(x, y, (pw * k).max(20.0), ph, [10.0; 4]), color: with_alpha(fill, alpha) });
                 }
                 let count = if total > 0 { format!("{n} · {}%", (100.0 * n as f64 / total as f64).round()) } else { "0".into() };
@@ -184,26 +233,58 @@ pub fn prims(el: &El, w: &Widget, alpha: f64, out: &mut Vec<Prim>) {
             one_line(&votes, 12.0, false, Align::Left, 0.0, el.h - PAD - 12.0 * LINE_HEIGHT, PAD, MUTED, alpha, out);
         }
         Widget::Checklist { items, .. } => {
-            for (p, it) in l.parts.iter().zip(items) {
+            let old = match before {
+                Some((Widget::Checklist { items: old, .. }, t)) => Some((old, t)),
+                _ => None,
+            };
+            for (i, (p, it)) in l.parts.iter().zip(items).enumerate() {
                 let bx = (p.x + 6.0) as f32;
                 let by = (p.y + (p.h - 20.0) / 2.0) as f32;
-                if it.done {
-                    out.push(Prim::Fill { path: Path::round_rect(bx, by, 20.0, 20.0, [6.0; 4]), color: with_alpha(BRAND, alpha) });
-                    let mut tick = Path::default();
-                    tick.move_to(bx + 5.0, by + 10.5);
-                    tick.line_to(bx + 8.5, by + 14.0);
-                    tick.line_to(bx + 15.0, by + 6.5);
-                    out.push(Prim::Stroke { path: tick, width: 2.2, color: with_alpha(Color32::WHITE, alpha), round: true, dash: None });
-                } else {
-                    out.push(Prim::Stroke { path: Path::round_rect(bx + 0.75, by + 0.75, 18.5, 18.5, [5.5; 4]), width: 1.5, color: with_alpha(Color32::from_rgb(0xB3, 0xB3, 0xB3), alpha), round: true, dash: None });
+                // How far this item is into being ticked (1) or unticked (0).
+                let k = match old {
+                    Some((o, t)) if o.get(i).is_some_and(|x| x.done != it.done) => {
+                        if it.done { t } else { 1.0 - t }
+                    }
+                    _ => {
+                        if it.done { 1.0 } else { 0.0 }
+                    }
+                };
+                let ticking = k > 0.0 && k < 1.0;
+                // The empty box fades out as the filled one pops in over it.
+                if k < 1.0 {
+                    let a = if ticking { 1.0 - ease(k) as f64 } else { 1.0 };
+                    out.push(Prim::Stroke { path: Path::round_rect(bx + 0.75, by + 0.75, 18.5, 18.5, [5.5; 4]), width: 1.5, color: with_alpha(Color32::from_rgb(0xB3, 0xB3, 0xB3), alpha * a), round: true, dash: None });
+                }
+                if k > 0.0 {
+                    let s = if it.done { 0.45 + 0.55 * pop(k) } else { k };
+                    let (cx, cy) = (bx + 10.0, by + 10.0);
+                    let half = 10.0 * s;
+                    out.push(Prim::Fill { path: Path::round_rect(cx - half, cy - half, half * 2.0, half * 2.0, [6.0 * s; 4]), color: with_alpha(BRAND, alpha * (k as f64).min(1.0)) });
+                    // The tick draws itself in, a beat after the box.
+                    let tk = if ticking && it.done { ((k - 0.25) / 0.75).clamp(0.0, 1.0) } else { k };
+                    if tk > 0.0 {
+                        let tick = partial(&[(bx + 5.0, by + 10.5), (bx + 8.5, by + 14.0), (bx + 15.0, by + 6.5)], ease(tk));
+                        out.push(Prim::Stroke { path: tick, width: 2.2, color: with_alpha(Color32::WHITE, alpha), round: true, dash: None });
+                    }
                 }
                 let left = p.x + 6.0 + 32.0;
                 let label = clip(if it.text.is_empty() { "Cosa da fare" } else { &it.text }, BODY, false, p.w - 44.0);
-                let color = if it.done || it.text.is_empty() { MUTED } else { INK };
+                let color = if it.text.is_empty() {
+                    MUTED
+                } else {
+                    // Grey as it gets done, dark again as it is undone.
+                    let m = ease(k);
+                    Color32::from_rgb(
+                        (INK.r() as f32 + (MUTED.r() as f32 - INK.r() as f32) * m) as u8,
+                        (INK.g() as f32 + (MUTED.g() as f32 - INK.g() as f32) * m) as u8,
+                        (INK.b() as f32 + (MUTED.b() as f32 - INK.b() as f32) * m) as u8,
+                    )
+                };
                 one_line(&label, BODY, false, Align::Left, 0.0, p.y + (p.h - BODY * LINE_HEIGHT) / 2.0, left, color, alpha, out);
-                if it.done {
+                if k > 0.0 {
+                    // The strike sweeps across the words.
                     let face = text::font(FontKind::Sans, false, false).face;
-                    let lw = text::measure(face, &label, BODY);
+                    let lw = text::measure(face, &label, BODY) * ease(k) as f64;
                     let cy = (p.y + p.h / 2.0) as f32;
                     let mut strike = Path::default();
                     strike.move_to(left as f32, cy);
@@ -214,14 +295,28 @@ pub fn prims(el: &El, w: &Widget, alpha: f64, out: &mut Vec<Prim>) {
             let done = items.iter().filter(|i| i.done).count();
             let (bx, by, bw) = (PAD as f32, (el.h - PAD - 6.0) as f32, (el.w - PAD * 2.0) as f32);
             out.push(Prim::Fill { path: Path::round_rect(bx, by, bw, 6.0, [3.0; 4]), color: with_alpha(TRACK, alpha) });
-            if done > 0 {
-                out.push(Prim::Fill { path: Path::round_rect(bx, by, (bw * done as f32 / items.len().max(1) as f32).max(6.0), 6.0, [3.0; 4]), color: with_alpha(Color32::from_rgb(0x14, 0xAE, 0x5C), alpha) });
+            let share = |n: usize, of: usize| n as f32 / of.max(1) as f32;
+            let k = match old {
+                Some((o, t)) => {
+                    let was = share(o.iter().filter(|i| i.done).count(), o.len());
+                    was + (share(done, items.len()) - was) * ease(t)
+                }
+                None => share(done, items.len()),
+            };
+            if k > 0.001 {
+                out.push(Prim::Fill { path: Path::round_rect(bx, by, (bw * k).max(6.0), 6.0, [3.0; 4]), color: with_alpha(Color32::from_rgb(0x14, 0xAE, 0x5C), alpha) });
             }
             one_line(&format!("{done} di {} fatte", items.len()), 12.0, false, Align::Right, 0.0, el.h - PAD - 12.0 - 12.0 * LINE_HEIGHT, el.w - PAD, MUTED, alpha, out);
         }
         Widget::Counter { value, .. } => {
             let top = l.title_top + l.title_lines.len().max(1) as f64 * TITLE * LINE_HEIGHT + 8.0;
-            one_line(&value.to_string(), 44.0, true, Align::Center, el.w, top, 0.0, INK, alpha, out);
+            // A new count bumps up a little and settles.
+            let bump = match before {
+                Some((Widget::Counter { value: old, .. }, t)) if old != value => (t * std::f32::consts::PI).sin() as f64 * 0.18,
+                _ => 0.0,
+            };
+            let size = 44.0 * (1.0 + bump);
+            one_line(&value.to_string(), size, true, Align::Center, el.w, top - (size - 44.0) * LINE_HEIGHT / 2.0, 0.0, INK, alpha, out);
             for p in &l.parts {
                 let (cx, cy) = ((p.x + p.w / 2.0) as f32, (p.y + p.h / 2.0) as f32);
                 let r = (p.w / 2.0) as f32;
@@ -251,6 +346,27 @@ fn placeholder(w: &Widget) -> &'static str {
 mod tests {
     use super::*;
     use crate::model::{CheckItem, Kind, PollOption};
+
+    /// A tick half-way: `TRATTO_SHOT=out.png cargo test tick_frames`.
+    #[test]
+    fn tick_frames() {
+        let Ok(path) = std::env::var("TRATTO_SHOT") else { return };
+        let item = |done| CheckItem { text: "Comprare il pane".into(), done };
+        let before = Widget::Checklist { title: "Spesa".into(), items: vec![item(false), item(false)] };
+        let mut el = El::new(Kind::Widget(Widget::Checklist { title: "Spesa".into(), items: vec![item(true), item(false)] }));
+        el.w = WIDGET_W;
+        fit(&mut el);
+        let els = vec![std::sync::Arc::new(el.clone())];
+        let (w, h) = (el.w as u32, el.h as u32);
+        let mut strip = tiny_skia::Pixmap::new(w * 4, h).unwrap();
+        for (i, t) in [0.15f32, 0.35, 0.6, 1.0].into_iter().enumerate() {
+            let env = crate::prims::Env { before: Some((&before, t)), ..Default::default() };
+            let view = crate::geom::BBox { x: 0.0, y: 0.0, w: el.w, h: el.h };
+            let pm = crate::raster::render(&els, Some(Color32::from_gray(0xF5)), w, h, view, &env, &|_| None).unwrap();
+            strip.draw_pixmap((i as u32 * w) as i32, 0, pm.as_ref(), &tiny_skia::PixmapPaint::default(), tiny_skia::Transform::identity(), None);
+        }
+        strip.save_png(path).unwrap();
+    }
 
     #[test]
     fn one_vote_each_and_clicks_land_where_drawn() {

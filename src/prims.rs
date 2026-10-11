@@ -206,11 +206,13 @@ pub struct Env<'a> {
     pub comments: bool,
     /// Table cell being typed in (its text is in the text box, not drawn).
     pub editing_cell: Option<(usize, usize)>,
+    /// A widget changing: how it was, and how far (0 to 1) the change has played.
+    pub before: Option<(&'a crate::model::Widget, f32)>,
 }
 
 impl Default for Env<'_> {
     fn default() -> Self {
-        Env { zoom: 1.0, pixel: None, hairline: false, editing: None, comments: false, editing_cell: None }
+        Env { zoom: 1.0, pixel: None, hairline: false, editing: None, comments: false, editing_cell: None, before: None }
     }
 }
 
@@ -718,7 +720,7 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
         Kind::Image { file_id } => out.push(Prim::Image { key: ImageKey::File(file_id.clone()), x: 0.0, y: 0.0, w, h, alpha: alpha as f32 }),
         Kind::Table(t) => crate::table::prims(el, t, alpha, if editing { env.editing_cell } else { None }, &mut out),
         Kind::Code(c) => crate::code::prims(el, c, alpha, editing, &mut out),
-        Kind::Widget(wd) => crate::widgets::prims(el, wd, alpha, &mut out),
+        Kind::Widget(wd) => crate::widgets::prims(el, wd, alpha, env.before, &mut out),
         Kind::Stamp { emoji } => out.push(Prim::Image { key: ImageKey::Stamp(emoji.clone()), x: 0.0, y: 0.0, w, h, alpha: alpha as f32 }),
     }
     out

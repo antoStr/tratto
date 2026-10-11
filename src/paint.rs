@@ -306,11 +306,13 @@ pub struct Painter {
     /// Every element id seen so far, and when the new ones arrived: they pop in.
     known: std::collections::HashSet<String>,
     born: HashMap<String, f64>,
+    /// Widgets showing a change: how they were drawn before it, and when it came.
+    changing: HashMap<String, (Arc<El>, f64)>,
 }
 
 impl Painter {
     pub fn new(images: Images) -> Painter {
-        Painter { cache: HashMap::new(), erased: HashMap::new(), zoom_at: (0.0, 0.0), glyphs: HashMap::new(), fill: FillTessellator::new(), stroke: StrokeTessellator::new(), images, frame: 0, last_len: (0, 0), known: Default::default(), born: HashMap::new() }
+        Painter { cache: HashMap::new(), erased: HashMap::new(), zoom_at: (0.0, 0.0), glyphs: HashMap::new(), fill: FillTessellator::new(), stroke: StrokeTessellator::new(), images, frame: 0, last_len: (0, 0), known: Default::default(), born: HashMap::new(), changing: HashMap::new() }
     }
 
     /// Paints the elements that are on screen; returns whether any visible element is.
@@ -360,13 +362,30 @@ impl Painter {
             let zoom_bound = matches!(el.kind, Kind::Section { .. } | Kind::Comment { .. });
             let editing = f.editing == Some(el.id.as_str());
             let key = Key { bucket, editing, cell: if editing { f.editing_cell } else { None }, zoom: if zoom_bound { z.to_bits() } else { 0 }, thin: el.ink().is_some_and(|i| i.size <= pixel) };
+            // A widget whose state changed (ticked, voted, counted) plays the change.
+            if el.widget().is_some()
+                && let Some(e) = self.cache.get(&el.id)
+                && !Arc::ptr_eq(&e.el, el)
+                && e.el.widget().is_some()
+                && e.el.kind != el.kind
+            {
+                let old = e.el.clone();
+                self.changing.insert(el.id.clone(), (old, now));
+            }
+            let change = self.changing.get(&el.id).filter(|(_, t0)| now - t0 < crate::widgets::ANIM_MS).cloned();
+            if change.is_some() {
+                ctx.request_repaint();
+            } else {
+                self.changing.remove(&el.id);
+            }
             let built = match self.cache.get_mut(&el.id) {
-                Some(e) if Arc::ptr_eq(&e.el, el) && e.key == key => {
+                Some(e) if Arc::ptr_eq(&e.el, el) && e.key == key && change.is_none() => {
                     e.used = self.frame;
                     e.built.clone()
                 }
                 _ => {
-                    let env = Env { zoom: z, pixel: Some(pixel), hairline: false, editing: f.editing, comments: true, editing_cell: f.editing_cell };
+                    let before = change.as_ref().and_then(|(old, t0)| old.widget().map(|w| (w, ((now - t0) / crate::widgets::ANIM_MS) as f32)));
+                    let env = Env { zoom: z, pixel: Some(pixel), hairline: false, editing: f.editing, comments: true, editing_cell: f.editing_cell, before };
                     let built = Rc::new(self.build(el, &env, tolerance(bucket, f.pixels_per_point)));
                     self.cache.insert(el.id.clone(), Entry { el: el.clone(), key, built: built.clone(), used: self.frame });
                     built
@@ -459,7 +478,7 @@ impl Painter {
         };
         let fresh = self.erased.get(&el.id).is_some_and(|e| Arc::ptr_eq(&e.el, el) && (e.zoom == z || !settled) && (e.zoom != z || covers(e)));
         if !fresh {
-            let env = Env { zoom: z, pixel: Some(1.0 / k), hairline: false, editing: f.editing, comments: true, editing_cell: f.editing_cell };
+            let env = Env { zoom: z, pixel: Some(1.0 / k), hairline: false, editing: f.editing, comments: true, editing_cell: f.editing_cell, before: None };
             let images = &self.images;
             let fetch = |key: &ImageKey| images.pixmap(key);
             let now = crate::platform::now_ms();
