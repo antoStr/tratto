@@ -187,7 +187,7 @@ pub fn stamp_pixmap(emoji: &str) -> Option<Arc<Pixmap>> {
     if let Some(p) = map.get(emoji) {
         return Some(p.clone());
     }
-    let p = Arc::new(crate::assets::rasterize_svg(crate::assets::stamp(emoji)?.svg, 512)?);
+    let p = Arc::new(crate::assets::stamp_pixmap(crate::assets::stamp(emoji)?, 160)?);
     map.insert(emoji.to_string(), p.clone());
     Some(p)
 }

@@ -511,7 +511,7 @@ fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) -
     // The tallest thing in the tray sets its height; everything else is centred on it.
     let h = match tool {
         Tool::Shape => 88.0,
-        Tool::Stamp => 62.0,
+        Tool::Stamp => 96.0,
         _ => TRAY_H,
     };
     let shown = egui::Area::new(Id::new(("tray", format!("{tool:?}")))).pivot(pivot).fixed_pos(at).order(egui::Order::Foreground).show(ctx, |ui| {
@@ -777,27 +777,31 @@ pub fn font_picker(ui: &mut Ui, value: &mut FontKind, width: f32, t: &Theme) -> 
     changed
 }
 
-/// The reactions, drawn with the same pictures as on the board.
+/// The reactions, drawn with the same pictures as on the board, eight to a row.
 pub fn stamp_picker(ui: &mut Ui, value: Option<&str>) -> Option<String> {
     let t = ui::theme(ui.ctx());
+    const CELL: f32 = 32.0;
+    let cols = 8;
+    let rows = crate::assets::STAMPS.len().div_ceil(cols);
+    let (area, _) = ui.allocate_exact_size(vec2(CELL * cols as f32, CELL * rows as f32), Sense::hover());
     let mut picked = None;
-    egui::Grid::new("stamps").spacing(vec2(2.0, 2.0)).show(ui, |ui| {
-        for (i, s) in crate::assets::STAMPS.iter().enumerate() {
-            let (r, resp) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::click());
-            let on = value == Some(s.emoji);
-            if on {
-                ui.painter().rect_filled(r, ui::RADIUS, t.selected);
-            }
-            ui::hover_fill(ui, resp.id, r, resp.hovered() && !on, ui::RADIUS as f32, t.hover);
-            ui::icons::picture(ui, &format!("stamp:{}", s.emoji), s.svg, Rect::from_center_size(r.center(), vec2(22.0, 22.0)));
-            if ui::tip(resp, s.name, None).clicked() {
-                picked = Some(s.emoji.to_string());
-            }
-            if i % 8 == 7 {
-                ui.end_row();
-            }
+    for (i, s) in crate::assets::STAMPS.iter().enumerate() {
+        let r = Rect::from_min_size(area.min + vec2((i % cols) as f32 * CELL, (i / cols) as f32 * CELL), vec2(CELL, CELL)).shrink(1.0);
+        let resp = ui.interact(r, ui.id().with(("stamp", i)), Sense::click());
+        let on = value == Some(s.emoji);
+        if on {
+            ui.painter().rect_filled(r, ui::RADIUS, t.selected);
         }
-    });
+        ui::hover_fill(ui, resp.id, r, resp.hovered() && !on, ui::RADIUS as f32, t.hover);
+        // A little bigger under the pointer, as if picked up.
+        let k = ui::motion::hover(ui.ctx(), resp.id.with("grow"), resp.hovered());
+        let size = 24.0 + 3.0 * k;
+        ui::icons::bitmap(ui, &format!("stamp:{}", s.emoji), Rect::from_center_size(r.center(), vec2(size, size)), |px| crate::assets::stamp_pixmap(s, px));
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, s.name));
+        if ui::tip(resp, s.name, None).clicked() {
+            picked = Some(s.emoji.to_string());
+        }
+    }
     picked
 }
 

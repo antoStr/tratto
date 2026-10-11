@@ -753,7 +753,7 @@ impl Images {
         if !self.tex.contains_key(key) {
             match key {
                 ImageKey::Stamp(emoji) => {
-                    let img = crate::assets::stamp(emoji).and_then(|s| crate::assets::rasterize_svg(s.svg, 256)).map(|p| ColorImage::from_rgba_premultiplied([p.width() as usize, p.height() as usize], p.data()));
+                    let img = crate::assets::stamp(emoji).and_then(|s| crate::assets::stamp_pixmap(s, 160)).map(|p| ColorImage::from_rgba_premultiplied([p.width() as usize, p.height() as usize], p.data()));
                     let state = match img {
                         Some(img) => Img::Ready(ctx.load_texture(format!("stamp:{emoji}"), img, TEXTURE)),
                         None => Img::Failed,

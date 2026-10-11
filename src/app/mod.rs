@@ -621,6 +621,14 @@ mod picture {
                         ed.selection = vec![first];
                         b.ui.menu = Some(egui::pos2(520.0, 300.0));
                     }
+                    "stamp" => {
+                        for (i, s) in crate::assets::STAMPS.iter().take(8).enumerate() {
+                            let mut e = crate::model::El::new(crate::model::Kind::Stamp { emoji: s.emoji.into() });
+                            (e.x, e.y, e.w, e.h) = (-300.0 + i as f64 * 90.0, -380.0, 72.0, 72.0);
+                            ed.board.put([e]);
+                        }
+                        ed.tool = crate::editor::Tool::Stamp;
+                    }
                     "hover" => {
                         let first = ed.board.all().iter().find(|e| e.shape().is_some()).unwrap().id.clone();
                         ed.hover_adds = Some(first);

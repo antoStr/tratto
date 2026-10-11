@@ -56,6 +56,27 @@ pub fn picture(ui: &Ui, key: &str, svg: &'static [u8], rect: Rect) {
     }
 }
 
+/// A picture made at the size shown (a reaction), in its own colours.
+pub fn bitmap(ui: &Ui, key: &str, rect: Rect, make: impl FnOnce(u32) -> Option<tiny_skia::Pixmap>) {
+    let px = pixels(ui, rect.width().max(rect.height()));
+    let cache_key = (key.to_string(), px);
+    let hit = ui.ctx().data(|d| d.get_temp::<Cache>(Id::new("icons")).and_then(|c| c.0.get(&cache_key).cloned()));
+    let tex = match hit {
+        Some(t) => t,
+        None => {
+            let tex = make(px).map(|pm| {
+                let img = ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data());
+                ui.ctx().load_texture(format!("bitmap:{key}:{px}"), img, TextureOptions::LINEAR)
+            });
+            ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<Cache>(Id::new("icons")).0.insert(cache_key, tex.clone()));
+            tex
+        }
+    };
+    if let Some(tex) = tex {
+        paint(ui, &tex, rect.center(), px, Color32::WHITE);
+    }
+}
+
 pub fn logo(ui: &Ui, rect: Rect) {
     picture(ui, "logo", crate::assets::LOGO, rect);
 }
