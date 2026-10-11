@@ -525,6 +525,45 @@ mod picture {
         }
     }
 
+    /// A widget dragged from the "+" lands where it is let go, not in the middle.
+    #[test]
+    fn a_widget_dragged_onto_the_board_lands_under_the_pointer() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let id = store.create("Trascina", None).unwrap();
+        let mut screen: Option<board::BoardScreen> = None;
+        let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
+        let out = std::rc::Rc::new(std::cell::RefCell::new(None::<egui::Pos2>));
+        let seen = out.clone();
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui(move |ui| {
+            let ctx = ui.ctx().clone();
+            if screen.is_none() {
+                ui::install_fonts(&ctx);
+                ui::setup(&ctx, Theme::new(false, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
+                screen = Some(board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), None).unwrap());
+                return;
+            }
+            let b = screen.as_mut().unwrap();
+            b.ui(ui, &mut toasts, &mut dialogs);
+            let w = b.editor.board.all().iter().find(|e| e.widget().is_some()).cloned();
+            *seen.borrow_mut() = w.map(|e| b.editor.to_screen(e.x + e.w / 2.0, e.y + e.h / 2.0) + b.editor.origin.to_vec2());
+        });
+        harness.run_steps(5);
+        let from = egui::pos2(700.0, 860.0);
+        harness.input_mut().events.push(egui::Event::PointerMoved(from));
+        harness.input_mut().events.push(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        harness.step();
+        super::toolbar::start_drag(&harness.ctx, super::toolbar::Payload::Checklist, "Lista", "list-checks");
+        let to = egui::pos2(600.0, 350.0);
+        for k in 1..=10 {
+            harness.input_mut().events.push(egui::Event::PointerMoved(from + (to - from) * (k as f32 / 10.0)));
+            harness.step();
+        }
+        harness.input_mut().events.push(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        harness.run_steps(3);
+        let at = out.borrow().expect("a checklist on the board");
+        assert!(at.distance(to) < 2.0, "centred where it was let go: {at:?}");
+    }
+
     /// A comment written with the keyboard: the pin goes down, its box takes the typing, Enter
     /// sends it.
     #[test]

@@ -557,6 +557,7 @@ impl BoardScreen {
             ctx.data_mut(|d| d.remove::<Rect>(Id::new("bottom-bars")));
         }
         super::live::top_bars(&ctx, rect, &mut self.editor);
+        super::toolbar::insert_drag(&ctx, stage, &mut self.editor);
         if zen {
             super::panels::zen_pill(&ctx, rect, &mut self.editor);
         }

@@ -202,32 +202,102 @@ fn sep(ui: &mut Ui, t: &Theme) {
 /// Height of the tray's row for a tool: everything in it sits on one centre line.
 const TRAY_H: f32 = 32.0;
 
-/// A bar of the colour the tool will use under its icon, like Office's font-colour button.
-/// FigJam's "+": code, widgets, pictures and templates, in a light card of big tiles.
+/// Something taken from the "+" card or the templates, being dragged onto the board.
+#[derive(Clone, PartialEq)]
+pub enum Payload {
+    Code,
+    Poll,
+    Checklist,
+    Counter,
+    Template(&'static str),
+}
+
+/// What a payload adds, at `at` (or in the middle of the view).
+pub fn insert_payload(ed: &mut Editor, what: &Payload, at: Option<crate::geom::Pt>) {
+    use crate::model::{CheckItem, PollOption, Widget};
+    match what {
+        Payload::Code => ed.insert_code(at),
+        Payload::Poll => ed.insert_widget(Widget::Poll { question: String::new(), options: (1..=3).map(|n| PollOption { text: format!("Opzione {n}"), votes: Vec::new() }).collect() }, at),
+        Payload::Checklist => ed.insert_widget(Widget::Checklist { title: String::new(), items: (0..3).map(|_| CheckItem { text: String::new(), done: false }).collect() }, at),
+        Payload::Counter => ed.insert_widget(Widget::Counter { label: String::new(), value: 0 }, at),
+        Payload::Template(id) => {
+            if let Some(t) = crate::templates::TEMPLATES.iter().find(|t| t.id == *id) {
+                match at {
+                    Some(p) => ed.insert((t.build)(), Some(p), false, false),
+                    None => ed.insert((t.build)(), None, true, true),
+                }
+            }
+        }
+    }
+}
+
+/// Starts dragging something onto the board: it follows the pointer until let go.
+pub fn start_drag(ctx: &egui::Context, what: Payload, label: &str, icon_name: &'static str) {
+    ctx.data_mut(|d| d.insert_temp(Id::new("insert-drag"), (what, label.to_string(), icon_name)));
+    ui::motion::reset(ctx, Id::new("insert-drag-card"));
+    egui::Popup::close_all(ctx);
+}
+
+/// The thing being dragged onto the board: a small card under the pointer; let go over the
+/// board, it lands there (over a panel or the toolbar, nothing happens).
+pub fn insert_drag(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
+    let Some((what, label, icon_name)) = ctx.data(|d| d.get_temp::<(Payload, String, &'static str)>(Id::new("insert-drag"))) else { return };
+    let t = ui::theme(ctx);
+    let (pos, down) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down()));
+    let Some(pos) = pos else { return };
+    // Over the board itself, not over a panel, a bar or a card floating on it.
+    let over_board = stage.contains(pos) && ctx.layer_id_at(pos).is_none_or(|l| l.order == egui::Order::Background);
+    if !down {
+        ctx.data_mut(|d| d.remove::<(Payload, String, &'static str)>(Id::new("insert-drag")));
+        if over_board && !ed.read_only {
+            let at = ed.to_world(ed.screen_pt(pos));
+            insert_payload(ed, &what, Some(at));
+        }
+        return;
+    }
+    let k = ui::motion::appear(ctx, Id::new("insert-drag-card"), true);
+    let lift = ui::motion::spring(ctx, Id::new("insert-drag-lift"), if over_board { 1.0 } else { 0.0 }, 0.25, 0.8);
+    egui::Area::new(Id::new("insert-drag-card")).fixed_pos(pos + vec2(12.0, 12.0)).order(egui::Order::Tooltip).interactable(false).show(ctx, |ui| {
+        ui.set_opacity(k.clamp(0.0, 1.0) * (0.75 + 0.25 * lift));
+        ui::float_frame(&t).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+            ui::row(ui, 24.0, |ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
+                icon(ui, icon_name, r.center(), 16.0, t.icon);
+                ui.label(RichText::new(&label).font(ui::medium(ui::sizes(ui.ctx()).fs)).color(t.text));
+            });
+        });
+    });
+    ctx.set_cursor_icon(if over_board { egui::CursorIcon::Grabbing } else { egui::CursorIcon::NoDrop });
+    ctx.request_repaint();
+}
+
+/// FigJam's "+": code, widgets, pictures and templates, in a light card of big tiles. A tile
+/// clicked adds in the middle of the view; dragged, it goes where it is let go.
 fn more_tools(ui: &mut Ui, ed: &mut Editor, t: &Theme, top: bool) {
     let r = icon_button(ui, "plus", "Altri strumenti", None, vec2(BTN, BTN), ICON, false, false);
     egui::Popup::menu(&r).frame(ui::float_frame(t).inner_margin(egui::Margin::same(8))).align(if top { egui::RectAlign::BOTTOM } else { egui::RectAlign::TOP }).gap(10.0).show(|ui| {
-        use crate::model::{CheckItem, PollOption, Widget};
-        ui.label(egui::RichText::new("Aggiungi").font(ui::medium(11.0)).color(t.text2));
+        ui.label(egui::RichText::new("Aggiungi: clicca, o trascina sulla lavagna").font(ui::medium(11.0)).color(t.text2));
         ui.add_space(4.0);
-        let items: [(&str, &str, &str); 6] = [
-            ("code", "Blocco di codice", "Codice con i colori della sintassi"),
-            ("chart-column", "Sondaggio", "Ognuno vota un'opzione"),
-            ("list-checks", "Lista di cose da fare", "Caselle da spuntare insieme"),
-            ("hash", "Contatore", "Un numero con + e −"),
-            ("image-plus", "Immagine", "Dal computer"),
-            ("layout-template", "Modelli", "Brainstorming, Kanban e altri"),
+        let items: [(&str, &str, &str, Option<Payload>); 6] = [
+            ("code", "Blocco di codice", "Codice con i colori della sintassi", Some(Payload::Code)),
+            ("chart-column", "Sondaggio", "Ognuno vota un'opzione", Some(Payload::Poll)),
+            ("list-checks", "Lista di cose da fare", "Caselle da spuntare insieme", Some(Payload::Checklist)),
+            ("hash", "Contatore", "Un numero con + e −", Some(Payload::Counter)),
+            ("image-plus", "Immagine", "Dal computer", None),
+            ("layout-template", "Modelli", "Brainstorming, Kanban e altri", None),
         ];
         egui::Grid::new("more-tools").spacing(vec2(6.0, 6.0)).show(ui, |ui| {
-            for (i, (icon_name, label, hint)) in items.into_iter().enumerate() {
-                if tile(ui, icon_name, label, hint, t).clicked() {
-                    match i {
-                        0 => ed.insert_code(),
-                        1 => ed.insert_widget(Widget::Poll { question: String::new(), options: (1..=3).map(|n| PollOption { text: format!("Opzione {n}"), votes: Vec::new() }).collect() }),
-                        2 => ed.insert_widget(Widget::Checklist { title: String::new(), items: (0..3).map(|_| CheckItem { text: String::new(), done: false }).collect() }),
-                        3 => ed.insert_widget(Widget::Counter { label: String::new(), value: 0 }),
-                        4 => ed.requests.push(crate::editor::Request::InsertImage),
-                        _ => {
+            for (i, (icon_name, label, hint, payload)) in items.into_iter().enumerate() {
+                let resp = tile(ui, icon_name, label, hint, t, payload.is_some());
+                if let Some(p) = &payload
+                    && resp.drag_started()
+                {
+                    start_drag(ui.ctx(), p.clone(), label, icon_name);
+                } else if resp.clicked() {
+                    match payload {
+                        Some(p) => insert_payload(ed, &p, None),
+                        None if i == 4 => ed.requests.push(crate::editor::Request::InsertImage),
+                        None => {
                             ed.prefs.left_panel = true;
                             ed.prefs.focus = false;
                             ed.requests.push(crate::editor::Request::Templates);
@@ -243,8 +313,8 @@ fn more_tools(ui: &mut Ui, ed: &mut Editor, t: &Theme, top: bool) {
 }
 
 /// A big tile of the "+" card: icon on a tinted square, name and a line about it.
-fn tile(ui: &mut Ui, name: &str, label: &str, hint: &str, t: &Theme) -> egui::Response {
-    let (r, resp) = ui.allocate_exact_size(vec2(216.0, 48.0), Sense::click());
+fn tile(ui: &mut Ui, name: &str, label: &str, hint: &str, t: &Theme, draggable: bool) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(vec2(216.0, 48.0), if draggable { Sense::click_and_drag() } else { Sense::click() });
     let k = ui::motion::hover(ui.ctx(), resp.id, resp.hovered());
     let s = ui::motion::press(ui.ctx(), resp.id, resp.is_pointer_button_down_on());
     let r2 = Rect::from_center_size(r.center(), r.size() * s);
@@ -254,6 +324,9 @@ fn tile(ui: &mut Ui, name: &str, label: &str, hint: &str, t: &Theme) -> egui::Re
     icon(ui, name, sq.center(), 18.0, if t.dark { Color32::WHITE } else { ui::mix(t.brand, 0.75, Color32::BLACK) });
     ui.painter().text(pos2(sq.max.x + 10.0, r2.center().y - 7.0), egui::Align2::LEFT_CENTER, label, ui::medium(12.0), t.text);
     ui.painter().text(pos2(sq.max.x + 10.0, r2.center().y + 8.0), egui::Align2::LEFT_CENTER, hint, egui::FontId::proportional(11.0), t.text2);
+    if draggable && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
     ui::focus_ring(ui, &resp, r);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     resp

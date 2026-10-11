@@ -2226,17 +2226,17 @@ impl Editor {
         self.insert_here(El::new(Kind::Table(t)), p, false);
     }
 
-    pub fn insert_code(&mut self) {
+    pub fn insert_code(&mut self, at: Option<Pt>) {
         let k = self.world_size(1.0);
         let mut el = El::new(Kind::Code(Code { code: String::new(), language: self.prefs.code_language.clone(), light: false, font_size: 14.0 * k, radius: None }));
         el.w = 520.0 * k;
-        self.insert_here(el, None, true);
+        self.insert_here(el, at, true);
     }
 
-    pub fn insert_widget(&mut self, w: Widget) {
+    pub fn insert_widget(&mut self, w: Widget, at: Option<Pt>) {
         let mut el = El::new(Kind::Widget(w));
         el.w = WIDGET_W;
-        self.insert_here(el, None, false);
+        self.insert_here(el, at, false);
         // Its texts are edited in the side panel.
         self.prefs.right_panel = true;
         self.prefs.focus = false;

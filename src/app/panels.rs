@@ -613,8 +613,13 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
 fn templates(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.add_space(16.0);
+            ui::hint(ui, "Clicca per aggiungere, o trascina sulla lavagna.");
+        });
+        ui.add_space(4.0);
         for tpl in crate::templates::TEMPLATES.iter() {
-            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 72.0), Sense::click());
+            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 72.0), Sense::click_and_drag());
             let r = rect.shrink2(vec2(8.0, 4.0));
             ui::hover_fill(ui, resp.id, r, resp.hovered(), ui::RADIUS as f32, t.hover);
             let art = Rect::from_min_size(r.min + vec2(6.0, 6.0), vec2(80.0, 52.0));
@@ -623,8 +628,13 @@ fn templates(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
             ui.painter().text(pos2(tx, r.min.y + 18.0), egui::Align2::LEFT_CENTER, tpl.name, ui::medium(11.0), t.text);
             let g = ui.painter().layout(tpl.description.to_string(), egui::FontId::proportional(10.0), t.text2, r.max.x - tx - 6.0);
             ui.painter().galley(pos2(tx, r.min.y + 28.0), g, t.text2);
-            if resp.clicked() {
+            if resp.drag_started() {
+                super::toolbar::start_drag(ui.ctx(), super::toolbar::Payload::Template(tpl.id), tpl.name, "layout-template");
+            } else if resp.clicked() {
                 ed.insert((tpl.build)(), None, true, true);
+            }
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
             }
         }
     });
