@@ -324,6 +324,35 @@ impl Drop for Share {
     }
 }
 
+/// Ties the tunnel to Tratto: however Tratto ends (closed, crashed, killed), Windows ends the
+/// tunnel with it, so it never stays behind holding its file (which blocks updates).
+#[cfg(windows)]
+fn tie_to_app(child: &std::process::Child) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject};
+    // One job for the app's lifetime: its handle closes when Tratto's process ends.
+    static JOB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let job = *JOB.get_or_init(|| {
+        // SAFETY: plain Win32 calls; the info struct is zeroed then filled, and its size is given.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return 0;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info as *const _ as *const std::ffi::c_void, std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32);
+            job as usize
+        }
+    });
+    if job != 0 {
+        // SAFETY: the job handle lives as long as the app; the child's handle is valid here.
+        unsafe {
+            AssignProcessToJobObject(job as windows_sys::Win32::Foundation::HANDLE, child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE);
+        }
+    }
+}
+
 /// Opens a Cloudflare quick tunnel to the local port; the link appears when it is ready.
 fn open_tunnel(shared: Arc<Shared>, bin: PathBuf, port: u16, slot: Arc<Mutex<Option<std::process::Child>>>) {
     let fail = |shared: &Shared, msg: String| {
@@ -345,6 +374,8 @@ fn open_tunnel(shared: Arc<Shared>, bin: PathBuf, port: u16, slot: Arc<Mutex<Opt
         Ok(c) => c,
         Err(e) => return fail(&shared, format!("Impossibile avviare la condivisione: {e}")),
     };
+    #[cfg(windows)]
+    tie_to_app(&child);
     let stderr = child.stderr.take().unwrap();
     *lock(&slot) = Some(child);
     let started = Instant::now();
@@ -928,6 +959,41 @@ pub fn requests(ctx: &egui::Context, b: &mut BoardScreen) {
 
 #[cfg(test)]
 mod tests {
+    /// A tunnel tied to Tratto dies with it, even when Tratto is killed: this test runs itself
+    /// again as the "app", which starts a long-running child tied to it, and is then killed.
+    #[cfg(windows)]
+    #[test]
+    fn the_tunnel_dies_with_the_app() {
+        if let Some(file) = std::env::var_os("TRATTO_JOB_CHILD") {
+            let child = std::process::Command::new("ping").args(["-n", "60", "127.0.0.1"]).stdout(std::process::Stdio::null()).spawn().unwrap();
+            super::tie_to_app(&child);
+            std::fs::write(file, child.id().to_string()).unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            return;
+        }
+        let file = std::env::temp_dir().join(format!("tratto-job-{}.txt", std::process::id()));
+        let exe = std::env::current_exe().unwrap();
+        let mut app = std::process::Command::new(exe).args(["share::tests::the_tunnel_dies_with_the_app", "--exact", "--test-threads=1"]).env("TRATTO_JOB_CHILD", &file).stdout(std::process::Stdio::null()).spawn().unwrap();
+        let start = std::time::Instant::now();
+        let pid = loop {
+            if let Some(p) = std::fs::read_to_string(&file).ok().and_then(|s| s.trim().parse::<u32>().ok()) {
+                break p;
+            }
+            assert!(start.elapsed().as_secs() < 20, "the child started");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        let _ = std::fs::remove_file(&file);
+        let alive = |pid: u32| {
+            let o = std::process::Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/NH"]).output().unwrap();
+            String::from_utf8_lossy(&o.stdout).contains(&pid.to_string())
+        };
+        assert!(alive(pid), "running while the app runs");
+        app.kill().unwrap();
+        let _ = app.wait();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert!(!alive(pid), "gone with the app");
+    }
+
     use super::*;
 
     /// A guest asks to enter, is let in, connects, edits; a view-only guest can't.

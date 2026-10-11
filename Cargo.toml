@@ -1,6 +1,6 @@
 [package]
 name = "tratto"
-version = "2.3.1"
+version = "2.3.2"
 edition = "2024"
 description = "Lavagna infinita con penna e condivisione sicura"
 authors = ["antoStr <antostr.dev@gmail.com>"]
@@ -29,6 +29,10 @@ appdata-paths = ["$APPDATA/Tratto"]
 # Tratto 1.x (Electron) lived in %LOCALAPPDATA%\Programs\Tratto: its own uninstaller removes it
 # silently, keeping the boards (they stay in %APPDATA%\Tratto, where this version reads them).
 preinstall-section = '''
+Section StopTunnel
+  ; A sharing tunnel left running (Tratto closed badly) would keep its file locked.
+  nsExec::Exec 'taskkill /F /IM tratto-cloudflared.exe'
+SectionEnd
 Section RemoveTratto1
   IfFileExists "$LOCALAPPDATA\Programs\Tratto\Uninstall Tratto.exe" 0 done
     ExecWait '"$LOCALAPPDATA\Programs\Tratto\Uninstall Tratto.exe" /S _?=$LOCALAPPDATA\Programs\Tratto'
@@ -85,7 +89,7 @@ wasm-bindgen-futures = "0.4.79"
 web-sys = { version = "0.3.106", features = ["WebSocket", "MessageEvent", "BinaryType", "CloseEvent", "Window", "Location", "Storage", "HtmlCanvasElement", "Document", "Element", "Blob", "Url", "HtmlAnchorElement"] }
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_Pointer", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_Pointer", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 # The icon of Tratto.exe (and of its shortcuts).
 [target."cfg(windows)".build-dependencies]
