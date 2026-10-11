@@ -69,8 +69,16 @@ pub fn presence(ctx: &Context, id: Id, shown: bool) -> f32 {
     if shown { spring(ctx, id, 1.0, 0.36, 0.82) } else { spring(ctx, id, 0.0, 0.2, 1.0) }
 }
 
-/// Like `presence`, for something that is drawn only while shown: starts from 0 the first time.
+/// Like `presence`, for something that is drawn only while shown: starts from 0 each time it
+/// comes back, also when nothing told it that it had gone (it simply was not drawn for a frame).
 pub fn appear(ctx: &Context, id: Id, shown: bool) -> f32 {
+    let pass = ctx.cumulative_pass_nr();
+    let seen = id.with("seen");
+    let last = ctx.data(|d| d.get_temp::<u64>(seen));
+    ctx.data_mut(|d| d.insert_temp(seen, pass));
+    if last.is_some_and(|l| pass > l + 1) {
+        reset(ctx, id);
+    }
     if reduced(ctx) {
         let fade = id.with("fade");
         if shown && ctx.data(|d| d.get_temp::<Spring>(id)).is_none() {
@@ -146,6 +154,25 @@ mod tests {
         }
         assert_eq!(x, 100.0, "settled exactly");
         assert!(peak > 100.0 && peak < 110.0, "a small overshoot, not a wobble: {peak}");
+    }
+
+    #[test]
+    fn what_appears_again_after_a_pause_rises_in_again() {
+        let ctx = Context::default();
+        let id = Id::new("a");
+        let mut frame = |show: bool| {
+            ctx.begin_pass(egui::RawInput { predicted_dt: 1.0 / 60.0, ..Default::default() });
+            let k = if show { Some(appear(&ctx, id, true)) } else { None };
+            ctx.end_pass().textures_delta.clear();
+            k
+        };
+        assert!(frame(true).unwrap() < 0.1, "starts from nothing");
+        for _ in 0..120 {
+            frame(true);
+        }
+        assert_eq!(frame(true), Some(1.0));
+        frame(false);
+        assert!(frame(true).unwrap() < 0.1, "not drawn for a frame: starts again");
     }
 
     #[test]

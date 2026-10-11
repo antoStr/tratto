@@ -194,6 +194,8 @@ pub struct Frame<'a> {
     pub pixels_per_point: f32,
     pub editing: Option<&'a str>,
     pub editing_cell: Option<(usize, usize)>,
+    /// Elements shown away from their place for a moment (moved by someone else, gliding).
+    pub glides: Option<&'a HashMap<String, (f64, f64)>>,
 }
 
 type GlyphMesh = Rc<(Vec<[f32; 2]>, Vec<u32>)>;
@@ -371,7 +373,8 @@ impl Painter {
                 }
             };
             // screen = (o + v) · z + cam + origin, computed in f64 so far-away boards stay exact.
-            let (ax, ay) = (built.ox * z + f.cam.x + f.origin.x as f64, built.oy * z + f.cam.y + f.origin.y as f64);
+            let (gx, gy) = f.glides.and_then(|g| g.get(&el.id)).copied().unwrap_or((0.0, 0.0));
+            let (ax, ay) = ((built.ox + gx) * z + f.cam.x + f.origin.x as f64, (built.oy + gy) * z + f.cam.y + f.origin.y as f64);
             // Popping in: a quick grow with a little overshoot, and a fade, about its centre.
             let (k, fade) = self.born.get(&el.id).map_or((1.0, 1.0), |t| {
                 let t = ((now - t) / POP_MS).clamp(0.0, 1.0) as f32;
@@ -1071,7 +1074,7 @@ pub mod picture {
             let view = BBox { x: 0.0, y: 0.0, w: rect.width() as f64, h: rect.height() as f64 };
             let mut shapes = Vec::new();
             background(&mut shapes, rect, &cam, &meta, 1.0);
-            painter.paint(ui.ctx(), &mut shapes, &els, &Frame { cam, origin: rect.min, view, pixels_per_point: 1.0, editing: None, editing_cell: None });
+            painter.paint(ui.ctx(), &mut shapes, &els, &Frame { cam, origin: rect.min, view, pixels_per_point: 1.0, editing: None, editing_cell: None, glides: None });
             ui.painter().extend(shapes);
         });
         harness.run();
@@ -1092,7 +1095,7 @@ pub mod picture {
             let view = BBox { x: -cam.x / cam.z, y: -cam.y / cam.z, w: rect.width() as f64 / cam.z, h: rect.height() as f64 / cam.z };
             let mut shapes = Vec::new();
             background(&mut shapes, rect, &cam, &meta, 1.0);
-            painter.paint(ui.ctx(), &mut shapes, &els, &Frame { cam, origin: rect.min, view, pixels_per_point: 1.0, editing: None, editing_cell: None });
+            painter.paint(ui.ctx(), &mut shapes, &els, &Frame { cam, origin: rect.min, view, pixels_per_point: 1.0, editing: None, editing_cell: None, glides: None });
             ui.painter().extend(shapes);
         });
         harness.run();

@@ -304,7 +304,8 @@ fn when(t: f64) -> String {
 pub fn comment_thread(ctx: &egui::Context, ed: &mut Editor, st: &mut BoardUi) {
     let t = ui::theme(ctx);
     let open_id = Id::new("comment-open");
-    let was: Option<String> = ctx.data(|d| d.get_temp(open_id));
+    // Stored as Option<String> (no comment open is remembered too), read back as the same type.
+    let was: Option<String> = ctx.data(|d| d.get_temp::<Option<String>>(open_id)).flatten();
     if was != ed.comment {
         // Closing a new comment without writing anything takes the pin away again.
         if let Some(old) = &was

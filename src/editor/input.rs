@@ -22,7 +22,24 @@ pub struct InputState {
     ate_tab: bool,
     /// When the last frame's input was read: the moves of this frame are spread since then.
     last_t: f64,
+    /// The mouse button let go while writing or erasing, not yet taken as the end of the
+    /// stroke: a worn switch (or a "chattering" one, as on some gaming mice) lets go for a few
+    /// milliseconds while the button is still held, and the stroke must not break there.
+    pending_up: Option<PendingUp>,
 }
+
+struct PendingUp {
+    /// When it was let go (ms) and where (canvas coordinates).
+    t: f64,
+    s: Pos2,
+    m: Modifiers,
+    /// Moves after it, kept until we know whether they belong to the stroke.
+    moves: Vec<(Pos2, f64)>,
+}
+
+/// A press this soon after letting go, near where it was let go, is the same stroke.
+const BOUNCE_MS: f64 = 45.0;
+const BOUNCE_PX: f32 = 64.0;
 
 fn kind_of(touch: u64) -> PointerKind {
     match crate::pen::state(touch) {
@@ -57,6 +74,19 @@ impl Editor {
                 Event::PointerButton { pos, button, pressed, modifiers } => {
                     self.input.modifiers = modifiers;
                     let s = self.screen_pt(pos);
+                    if pressed && let Some(up) = self.input.pending_up.take() {
+                        // The system's own timing when there is one (Windows), else our frames'.
+                        let quick = crate::pen::button_gap().map_or(t - up.t <= BOUNCE_MS, |g| (g as f64) <= BOUNCE_MS);
+                        if button == PointerButton::Primary && self.input.touch_began.is_none() && quick && up.s.distance(s) <= BOUNCE_PX {
+                            // A bounce: the stroke goes on, with the moves made meanwhile.
+                            for (q, qt) in up.moves {
+                                self.on_move(q, modifiers, qt);
+                            }
+                            self.input.down = true;
+                            continue;
+                        }
+                        self.release(up);
+                    }
                     if pressed {
                         let (kind, pointer, force) = match self.input.touch_began.take() {
                             Some((id, f)) => (kind_of(id), id, f),
@@ -87,8 +117,12 @@ impl Editor {
                         }
                     } else if self.input.down && (button == PointerButton::Primary || button == PointerButton::Middle) {
                         self.input.down = false;
-                        self.on_up(s, modifiers, false);
                         self.input.touch_pointer = None;
+                        if button == PointerButton::Primary && self.input.kind == Some(PointerKind::Mouse) && matches!(self.gesture, Some(Gesture::Draw(_) | Gesture::Erase { .. })) {
+                            self.input.pending_up = Some(PendingUp { t, s, m: modifiers, moves: Vec::new() });
+                        } else {
+                            self.on_up(s, modifiers, false);
+                        }
                     }
                 }
                 Event::PointerMoved(pos) => {
@@ -96,13 +130,20 @@ impl Editor {
                     let t = at(&mut nth);
                     // Writing, erasing or drawing a lasso with the mouse: first the positions the
                     // system folded into this move, so fast curves keep their shape.
+                    let mut pts = Vec::new();
                     if self.input.kind == Some(PointerKind::Mouse) && matches!(self.gesture, Some(Gesture::Draw(_) | Gesture::Erase { .. } | Gesture::Lasso { .. })) {
                         let ppp = ctx.pixels_per_point();
-                        for (x, y) in crate::pen::mouse_trail((pos.x * ppp, pos.y * ppp)) {
-                            self.on_move(self.screen_pt(egui::pos2(x / ppp, y / ppp)), m, t);
+                        pts.extend(crate::pen::mouse_trail((pos.x * ppp, pos.y * ppp)).into_iter().map(|(x, y)| self.screen_pt(egui::pos2(x / ppp, y / ppp))));
+                    }
+                    pts.push(self.screen_pt(pos));
+                    match &mut self.input.pending_up {
+                        Some(up) => up.moves.extend(pts.into_iter().map(|p| (p, t))),
+                        None => {
+                            for p in pts {
+                                self.on_move(p, m, t);
+                            }
                         }
                     }
-                    self.on_move(self.screen_pt(pos), m, t);
                 }
                 Event::PointerGone => self.on_leave(),
                 Event::MouseWheel { unit, delta, modifiers, .. } => {
@@ -141,6 +182,16 @@ impl Editor {
                 _ => {}
             }
         }
+        // Let go for good: the stroke ends where the button went up.
+        if let Some(up) = self.input.pending_up.take() {
+            if t - up.t > BOUNCE_MS {
+                self.release(up);
+            } else {
+                let wait = (BOUNCE_MS - (t - up.t)).max(1.0) as u64 + 1;
+                self.input.pending_up = Some(up);
+                ctx.request_repaint_after(std::time::Duration::from_millis(wait));
+            }
+        }
         if let Some(p) = double_click {
             self.on_double_click(self.screen_pt(p));
         }
@@ -155,6 +206,15 @@ impl Editor {
         self.tick();
         if hovered || self.gesture.is_some() {
             ctx.set_cursor_icon(self.cursor());
+        }
+    }
+
+    /// The end of a stroke whose release waited for a possible bounce; the moves since then
+    /// only move the pointer.
+    fn release(&mut self, up: PendingUp) {
+        self.on_up(up.s, up.m, false);
+        for (q, qt) in up.moves {
+            self.on_move(q, up.m, qt);
         }
     }
 
@@ -636,7 +696,7 @@ impl Editor {
             }
             Gesture::Draw(d) => {
                 if cancel {
-                    self.presence.set("live", Value::Null);
+                    self.presence.end_live();
                 } else {
                     self.commit_draw(d);
                 }

@@ -433,7 +433,10 @@ mod picture {
             }
             press(&mut harness, *pts.last().unwrap(), false);
             harness.step();
+            // A hand takes longer than a bouncing switch to press again.
+            std::thread::sleep(std::time::Duration::from_millis(60));
         }
+        harness.step();
         let (strokes, tool, note) = state.borrow().clone();
         assert_eq!(strokes.len(), 3, "one stroke per word: {strokes:?}");
         assert!(strokes.iter().all(|n| *n > 150), "no point of the loops lost: {strokes:?}");
@@ -448,6 +451,7 @@ mod picture {
             harness.step();
             press(&mut harness, dot, false);
             harness.step();
+            std::thread::sleep(std::time::Duration::from_millis(60));
         }
         harness.run_steps(5);
         let (strokes, tool, _) = state.borrow().clone();
@@ -456,6 +460,112 @@ mod picture {
         if let Some(path) = shot {
             harness.render().unwrap().save(path).unwrap();
         }
+    }
+
+    /// A gaming mouse (1000 Hz) on a fast screen, and on a slow one: the switch bounces (lets go
+    /// for a few milliseconds) in the middle of a word, and the word stays one stroke; a real
+    /// lift ends it.
+    #[test]
+    fn a_bouncing_mouse_button_does_not_break_the_stroke() {
+        for moves_per_frame in [6usize, 33] {
+            let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+            let id = store.create("Rimbalzi", None).unwrap();
+            let mut screen: Option<board::BoardScreen> = None;
+            let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
+            let strokes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<usize>::new()));
+            let out = strokes.clone();
+            let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui(move |ui| {
+                let ctx = ui.ctx().clone();
+                if screen.is_none() {
+                    ui::install_fonts(&ctx);
+                    ui::setup(&ctx, Theme::new(false, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
+                    let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), None).unwrap();
+                    b.editor.tool = crate::editor::Tool::Pen;
+                    screen = Some(b);
+                    return;
+                }
+                let b = screen.as_mut().unwrap();
+                b.ui(ui, &mut toasts, &mut dialogs);
+                *out.borrow_mut() = b.editor.board.all().iter().filter_map(|e| e.ink().map(|i| i.points.len() / 3)).collect();
+            });
+            harness.run_steps(5);
+            let button = |h: &mut egui_kittest::Harness, p: egui::Pos2, down: bool| {
+                h.input_mut().events.push(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: down, modifiers: egui::Modifiers::NONE });
+            };
+            let pts: Vec<egui::Pos2> = (0..=600).map(|i| {
+                let t = i as f32 / 600.0 * std::f32::consts::TAU * 5.0;
+                egui::pos2(420.0 + i as f32 * 0.8 - 18.0 * t.sin(), 400.0 - 18.0 * (1.0 - t.cos()))
+            }).collect();
+            harness.input_mut().events.push(egui::Event::PointerMoved(pts[0]));
+            harness.step();
+            button(&mut harness, pts[0], true);
+            for (i, p) in pts.iter().enumerate() {
+                harness.input_mut().events.push(egui::Event::PointerMoved(*p));
+                // Bounces: one inside a frame, one across two frames.
+                if i == 200 {
+                    button(&mut harness, *p, false);
+                    button(&mut harness, *p, true);
+                }
+                if i == 400 {
+                    button(&mut harness, *p, false);
+                    harness.step();
+                    button(&mut harness, *p, true);
+                }
+                if i % moves_per_frame == moves_per_frame - 1 {
+                    harness.step();
+                }
+            }
+            button(&mut harness, *pts.last().unwrap(), false);
+            harness.step();
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            harness.run_steps(2);
+            let s = strokes.borrow().clone();
+            assert_eq!(s.len(), 1, "one stroke at {moves_per_frame} moves a frame: {s:?}");
+            assert!(s[0] > 400, "every loop kept: {s:?}");
+        }
+    }
+
+    /// A comment written with the keyboard: the pin goes down, its box takes the typing, Enter
+    /// sends it.
+    #[test]
+    fn a_comment_can_be_written() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let id = store.create("Commenti", None).unwrap();
+        let mut screen: Option<board::BoardScreen> = None;
+        let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
+        let out = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let seen = out.clone();
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui(move |ui| {
+            let ctx = ui.ctx().clone();
+            if screen.is_none() {
+                ui::install_fonts(&ctx);
+                ui::setup(&ctx, Theme::new(false, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
+                let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), None).unwrap();
+                b.editor.tool = crate::editor::Tool::Comment;
+                screen = Some(b);
+                return;
+            }
+            let b = screen.as_mut().unwrap();
+            b.ui(ui, &mut toasts, &mut dialogs);
+            *seen.borrow_mut() = b.editor.board.all().iter().filter_map(|e| match &e.kind {
+                crate::model::Kind::Comment { thread } => Some(thread.iter().map(|m| m.text.clone()).collect::<Vec<_>>().join("|")),
+                _ => None,
+            }).collect();
+        });
+        harness.run_steps(5);
+        let at = egui::pos2(700.0, 400.0);
+        harness.input_mut().events.push(egui::Event::PointerMoved(at));
+        harness.step();
+        harness.input_mut().events.push(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        harness.step();
+        harness.input_mut().events.push(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        harness.run_steps(4);
+        assert_eq!(out.borrow().len(), 1, "a pin on the board");
+        harness.input_mut().events.push(egui::Event::Text("Ciao a tutti".into()));
+        harness.step();
+        harness.input_mut().events.push(egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+        harness.run_steps(3);
+        assert_eq!(out.borrow().as_slice(), ["Ciao a tutti"], "the message is in the thread");
     }
 
     /// Situations to look at: `TRATTO_SHOT=out.png TRATTO_SCENE=table cargo test scene_picture`

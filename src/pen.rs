@@ -44,6 +44,18 @@ pub fn mouse_trail(_to: (f32, f32)) -> Vec<(f32, f32)> {
     Vec::new()
 }
 
+/// How long (ms) the left button was up before the latest press, as the system timed it; None
+/// outside Windows, where the caller falls back on frame times.
+#[cfg(windows)]
+pub fn button_gap() -> Option<u32> {
+    *imp::GAP.lock().ok()?
+}
+
+#[cfg(not(windows))]
+pub fn button_gap() -> Option<u32> {
+    None
+}
+
 #[cfg(windows)]
 pub use imp::hook;
 
@@ -59,7 +71,7 @@ mod imp {
     use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GMMP_USE_DISPLAY_POINTS, GetMouseMovePointsEx, MOUSEMOVEPOINT};
     use windows_sys::Win32::UI::Input::Pointer::{GetPointerPenInfo, GetPointerType, POINTER_PEN_INFO};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MSG, PEN_FLAG_BARREL, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PT_PEN, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_POINTERDOWN, WM_POINTERUP, WM_POINTERUPDATE};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MSG, PEN_FLAG_BARREL, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PT_PEN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_POINTERDOWN, WM_POINTERUP, WM_POINTERUPDATE};
 
     pub static PENS: Mutex<Option<HashMap<u64, super::PenState>>> = Mutex::new(None);
 
@@ -72,6 +84,9 @@ mod imp {
     pub static TRAILS: Mutex<VecDeque<Trail>> = Mutex::new(VecDeque::new());
     /// The last mouse position seen, as the history reports it: time and 16-bit screen x, y.
     static LAST: Mutex<Option<(u32, i32, i32)>> = Mutex::new(None);
+    /// When the left button last went up, and how long it stayed up before the latest press.
+    static UP: Mutex<Option<u32>> = Mutex::new(None);
+    pub static GAP: Mutex<Option<u32>> = Mutex::new(None);
 
     /// Screen coordinates from the mouse history are 16 bits: back to signed for monitors left
     /// of or above the main one.
@@ -98,10 +113,18 @@ mod imp {
         if n <= 1 {
             return;
         }
-        // Newest first; the first is the move itself. Stop at the previous move.
+        // Newest first; the first is the move itself. Stop at the previous move. A mouse polled
+        // at 1000 Hz puts several points in the same millisecond: those of the previous move's
+        // millisecond are taken only if the previous move itself is found after them.
         let mut points = Vec::new();
+        let mut same_ms = Vec::new();
+        let mut found = false;
         for p in &buf[1..n as usize] {
-            if p.time < lt || (p.time == lt && p.x == lx && p.y == ly) || points.len() >= 62 {
+            if p.time < lt || points.len() >= 62 {
+                break;
+            }
+            if p.time == lt && p.x == lx && p.y == ly {
+                found = true;
                 break;
             }
             let mut q = POINT { x: signed(p.x), y: signed(p.y) };
@@ -109,8 +132,13 @@ mod imp {
             if unsafe { ScreenToClient(msg.hwnd, &mut q) } == 0 {
                 return;
             }
-            points.push((q.x, q.y));
+            if p.time == lt { same_ms.push((q.x, q.y)) } else { points.push((q.x, q.y)) }
         }
+        if found {
+            points.extend(same_ms);
+        }
+        // Repeats add nothing (the history holds a point per poll, moved or not).
+        points.dedup();
         if points.is_empty() {
             return;
         }
@@ -129,6 +157,17 @@ mod imp {
     pub fn hook(msg: *const c_void) -> bool {
         // SAFETY: winit passes a pointer to the MSG it is about to dispatch.
         let msg = unsafe { &*(msg as *const MSG) };
+        if msg.message == WM_LBUTTONUP {
+            if let Ok(mut up) = UP.lock() {
+                *up = Some(msg.time);
+            }
+            return false;
+        }
+        if msg.message == WM_LBUTTONDOWN
+            && let (Ok(up), Ok(mut gap)) = (UP.lock(), GAP.lock())
+        {
+            *gap = up.map(|u| msg.time.wrapping_sub(u));
+        }
         if matches!(msg.message, WM_MOUSEMOVE | WM_LBUTTONDOWN) {
             mouse_move(msg);
             return false;

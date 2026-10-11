@@ -357,7 +357,7 @@ impl Editor {
             let id = egui::Id::new(("peer-cursor", key));
             let (x, y) = match ctx.data(|d| d.get_temp::<(f64, f64)>(id)) {
                 Some((px, py)) => {
-                    let k = 1.0 - (-dt / 0.07).exp();
+                    let k = 1.0 - (-dt / 0.045).exp();
                     let (nx, ny) = (px + (x - px) * k, py + (y - py) * k);
                     if (x - nx).hypot(y - ny) * self.cam.z < 0.3 {
                         (x, y)

@@ -121,6 +121,10 @@ pub struct Presence {
     pub local: serde_json::Map<String, Value>,
     pub peers: Vec<(u64, Value)>,
     pub dirty: bool,
+    /// The stroke being drawn goes out in pieces: which stroke, and how many of its points the
+    /// others already have.
+    live_sid: u64,
+    live_sent: usize,
 }
 
 impl Presence {
@@ -129,6 +133,11 @@ impl Presence {
             self.local.insert(k.into(), v);
             self.dirty = true;
         }
+    }
+    /// The stroke being drawn is finished (or dropped): the others stop showing it.
+    pub fn end_live(&mut self) {
+        self.local.insert("live".into(), Value::Null);
+        self.dirty = true;
     }
     pub fn peer(&self, id: u64) -> Option<&Value> {
         self.peers.iter().find(|(c, _)| *c == id).map(|(_, v)| v)
@@ -181,6 +190,8 @@ pub(crate) struct Draw {
     /// Last raw position, added at release so the line ends exactly where the pen lifted.
     raw: Option<Pos2>,
     pointer: u64,
+    /// Tells this stroke's pieces apart from the previous one's, for the others.
+    sid: u64,
 }
 
 pub(crate) struct Touched {
@@ -715,7 +726,8 @@ impl Editor {
 
     fn schedule_flush(&mut self) {
         if self.flush_due.is_none() {
-            self.flush_due = Some(now() + 110.0);
+            // With others on the board, about 30 times a second, so they see it move smoothly.
+            self.flush_due = Some(now() + if self.presence.peers.is_empty() { 110.0 } else { 33.0 });
         }
     }
 
@@ -811,6 +823,7 @@ impl Editor {
             use_pressure: kind == PointerKind::Pen && self.prefs.pressure && !hl,
             raw: None,
             pointer,
+            sid: (now() * 1000.0) as u64,
         })));
     }
 
@@ -832,15 +845,27 @@ impl Editor {
             pressure = ink::stored_pressure(p) as f64;
         }
         push_draw_point(g, &cam, pt(s.x, s.y), pressure, false);
-        let rnd = stroke_round(g.size);
-        let tail = &g.pts[g.pts.len().saturating_sub(3000)..];
-        let pts: Vec<Value> = tail.iter().enumerate().map(|(i, &v)| json!(if i % 3 == 2 { r2(v) } else { rnd(v) as f64 })).collect();
-        let live = json!({ "pts": pts, "color": g.color, "size": g.size, "hl": g.hl, "op": g.opacity });
-        self.presence.set("live", live);
+        // The others get the new points with the next presence message.
+        self.presence.dirty = true;
+    }
+
+    /// What goes to the others now: this person's state, with the stroke being drawn as the
+    /// points added since the last message (they put the pieces back together).
+    pub fn presence_message(&mut self) -> Value {
+        let mut state = self.presence.local.clone();
+        if let Some(Gesture::Draw(g)) = &self.gesture {
+            let n = g.pts.len() / 3;
+            let from = if self.presence.live_sid == g.sid { self.presence.live_sent.min(n) } else { 0 };
+            let rnd = stroke_round(g.size);
+            let pts: Vec<Value> = g.pts[from * 3..].iter().enumerate().map(|(i, &v)| json!(if i % 3 == 2 { r2(v) } else { rnd(v) as f64 })).collect();
+            state.insert("live".into(), json!({ "sid": g.sid, "from": from, "pts": pts, "color": g.color, "size": g.size, "hl": g.hl, "op": g.opacity }));
+            (self.presence.live_sid, self.presence.live_sent) = (g.sid, n);
+        }
+        Value::Object(state)
     }
 
     fn commit_draw(&mut self, mut g: Box<Draw>) {
-        self.presence.set("live", Value::Null);
+        self.presence.end_live();
         // The filter trails the pen slightly: finish exactly where it was lifted.
         if let Some(raw) = g.raw
             && !g.pts.is_empty()
@@ -1654,7 +1679,7 @@ impl Editor {
     /// Ends whatever gesture is in progress (Escape, a second finger…).
     pub fn cancel_gesture(&mut self) {
         if matches!(self.gesture, Some(Gesture::Draw(_))) {
-            self.presence.set("live", Value::Null);
+            self.presence.end_live();
         }
         self.gesture = None;
         self.preview.clear();

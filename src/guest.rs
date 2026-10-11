@@ -271,9 +271,9 @@ impl BoardScreen {
                         let v: Value = serde_json::from_slice(&m[1..]).unwrap_or_default();
                         let Some(id) = v["id"].as_u64() else { continue };
                         let peers = &mut self.editor.presence.peers;
-                        peers.retain(|(p, _)| *p != id);
+                        let prev = peers.iter().position(|(p, _)| *p == id).map(|i| peers.remove(i).1);
                         if v["state"].is_object() {
-                            peers.push((id, v["state"].clone()));
+                            peers.push((id, net::merge_presence(prev.as_ref(), v["state"].clone())));
                             peers.sort_by_key(|p| p.0);
                         }
                     }
@@ -326,7 +326,7 @@ impl BoardScreen {
             if wait <= 0.0 {
                 ed.presence.dirty = false;
                 self.last_presence = now();
-                link.send(PRESENCE, Value::Object(ed.presence.local.clone()).to_string().as_bytes());
+                link.send(PRESENCE, ed.presence_message().to_string().as_bytes());
             } else {
                 link.ctx.request_repaint_after(std::time::Duration::from_millis(wait as u64 + 1));
             }

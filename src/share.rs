@@ -16,6 +16,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use axum::serve::ListenerExt;
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -204,6 +205,11 @@ impl Share {
         let (tx, rx) = oneshot::channel::<()>();
         let app = router(shared.clone());
         rt.spawn(async move {
+            // Small messages (a cursor, a few points of a stroke) go out at once: without this,
+            // Nagle's algorithm holds them back, up to a fifth of a second on Windows.
+            let listener = listener.tap_io(|tcp| {
+                let _ = tcp.set_nodelay(true);
+            });
             let _ = axum::serve(listener, app.into_make_service()).with_graceful_shutdown(async move {
                 let _ = rx.await;
             }).await;
@@ -271,7 +277,10 @@ impl Share {
     }
 
     pub fn set_host_presence(&self, state: Value) {
-        lock(&self.shared.inner).host_state = state.clone();
+        {
+            let mut i = lock(&self.shared.inner);
+            i.host_state = net::merge_presence(Some(&i.host_state), state.clone());
+        }
         self.shared.send_all(Shared::presence_msg(0, &state), None);
     }
 
@@ -741,7 +750,7 @@ async fn conn(socket: WebSocket, s: Arc<Shared>, ip: String) {
                             continue;
                         }
                         if let Some(p) = lock(&s.inner).peers.get_mut(&id) {
-                            p.state = state.clone();
+                            p.state = net::merge_presence(Some(&p.state), state.clone());
                         }
                         s.send_all(Shared::presence_msg(id, &state), Some(id));
                         (s.notify)();

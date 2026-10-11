@@ -20,8 +20,21 @@ pub const REMOTE: &str = "remote";
 #[derive(Default)]
 struct Changes {
     keys: HashSet<String>,
+    /// Changed by someone else (or by undo): moves there glide instead of jumping.
+    remote: HashSet<String>,
     all: bool,
     other: bool,
+}
+
+/// Elements moved by someone else slide to their new place over this long (ms): their moves
+/// arrive some thirty times a second, and gliding between them hides the steps.
+pub const GLIDE_MS: f64 = 90.0;
+
+#[derive(Clone, Copy)]
+struct Glide {
+    /// Where it was shown when the move came, and when.
+    from: (f64, f64),
+    t0: f64,
 }
 
 pub struct Board {
@@ -42,6 +55,7 @@ pub struct Board {
     /// Bumped on every change, for caches outside the board.
     pub version: u64,
     last_local: f64,
+    glides: HashMap<String, Glide>,
 }
 
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -59,7 +73,13 @@ impl Board {
             let (c, n) = (changes.clone(), notify.clone());
             elements.observe("board", move |txn: &TransactionMut, e: &MapEvent| {
                 let mut c = c.lock().unwrap();
-                c.keys.extend(e.keys(txn).keys().map(|k| k.to_string()));
+                let remote = txn.origin().is_some_and(|o| o.as_ref() != LOCAL.as_bytes());
+                for k in e.keys(txn).keys() {
+                    c.keys.insert(k.to_string());
+                    if remote {
+                        c.remote.insert(k.to_string());
+                    }
+                }
                 drop(c);
                 n();
             });
@@ -84,7 +104,7 @@ impl Board {
         undo.expand_scope(&doc, &elements);
         undo.expand_scope(&doc, &meta);
         undo.expand_scope(&doc, &groups);
-        let mut b = Board { doc, elements, meta, groups, timer, votes, undo, els: HashMap::new(), sorted: None, painted: None, changes, version: 0, last_local: 0.0 };
+        let mut b = Board { doc, elements, meta, groups, timer, votes, undo, els: HashMap::new(), sorted: None, painted: None, changes, version: 0, last_local: 0.0, glides: HashMap::new() };
         b.refresh();
         b
     }
@@ -99,10 +119,27 @@ impl Board {
         if c.all {
             self.els = self.elements.iter(&txn).filter_map(|(k, v)| parse(k, &v).map(|el| (k.to_string(), Arc::new(el)))).collect();
         } else {
+            let now = crate::platform::now_ms();
             for k in c.keys {
                 match self.elements.get(&txn, &k).and_then(|v| parse(&k, &v)) {
-                    Some(el) => self.els.insert(k, Arc::new(el)),
-                    None => self.els.remove(&k),
+                    Some(el) => {
+                        // Moved by someone else, same size and turn: glide from where it is shown.
+                        if c.remote.contains(&k)
+                            && let Some(old) = self.els.get(&k)
+                            && (old.x != el.x || old.y != el.y)
+                            && old.w == el.w
+                            && old.h == el.h
+                            && old.rotation == el.rotation
+                        {
+                            let from = self.shown_at(old, now);
+                            self.glides.insert(k.clone(), Glide { from, t0: now });
+                        }
+                        self.els.insert(k, Arc::new(el))
+                    }
+                    None => {
+                        self.glides.remove(&k);
+                        self.els.remove(&k)
+                    }
                 };
             }
         }
@@ -110,6 +147,33 @@ impl Board {
         self.painted = None;
         self.version += 1;
         true
+    }
+
+    /// Where an element is shown while it glides (its own place otherwise).
+    fn shown_at(&self, el: &El, now: f64) -> (f64, f64) {
+        match self.glides.get(&el.id) {
+            Some(g) => {
+                let t = ((now - g.t0) / GLIDE_MS).clamp(0.0, 1.0);
+                let e = 1.0 - (1.0 - t).powi(3);
+                (g.from.0 + (el.x - g.from.0) * e, g.from.1 + (el.y - g.from.1) * e)
+            }
+            None => (el.x, el.y),
+        }
+    }
+
+    /// How far each gliding element is shown from its real place (board units); finished glides
+    /// are forgotten. Empty when nothing glides.
+    pub fn glide_offsets(&mut self) -> HashMap<String, (f64, f64)> {
+        let now = crate::platform::now_ms();
+        self.glides.retain(|_, g| now - g.t0 < GLIDE_MS);
+        self.glides
+            .keys()
+            .filter_map(|id| self.els.get(id))
+            .map(|el| {
+                let (x, y) = self.shown_at(el, now);
+                (el.id.clone(), (x - el.x, y - el.y))
+            })
+            .collect()
     }
 
     /// Elements bottom to top.
