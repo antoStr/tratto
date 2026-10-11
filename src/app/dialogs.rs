@@ -1,6 +1,6 @@
 //! Dialogs: settings, keyboard shortcuts, export and sharing.
 
-use egui::{Color32, Id, RichText, Sense, Stroke, pos2, vec2};
+use egui::{Color32, Id, Rect, RichText, Sense, Stroke, pos2, vec2};
 
 use super::Toasts;
 use super::board::BoardScreen;
@@ -89,8 +89,11 @@ fn row(ui: &mut egui::Ui, label: &str, hint: Option<&str>, control: impl FnOnce(
 enum SettingsTab {
     #[default]
     Access,
+    Profile,
     Look,
+    Toolbar,
     Pen,
+    Keys,
     Updates,
 }
 
@@ -99,7 +102,7 @@ pub const ACCENTS: [(&str, &str); 7] = [("#0D99FF", "Blu"), ("#7B61FF", "Viola")
 /// Opens the settings on a section (0 Accessibilità … 3 Aggiornamenti), for pictures in tests.
 #[cfg(test)]
 pub fn open_settings_tab(ctx: &egui::Context, n: usize) {
-    let tab = [SettingsTab::Access, SettingsTab::Look, SettingsTab::Pen, SettingsTab::Updates][n.min(3)];
+    let tab = [SettingsTab::Access, SettingsTab::Profile, SettingsTab::Look, SettingsTab::Toolbar, SettingsTab::Pen, SettingsTab::Keys, SettingsTab::Updates][n.min(6)];
     ctx.data_mut(|d| d.insert_temp(Id::new("settings-tab"), tab));
 }
 
@@ -115,11 +118,16 @@ pub fn settings(ctx: &egui::Context, open: &mut bool, p: &mut Prefs, host: bool)
     let mut tab: SettingsTab = ctx.data(|d| d.get_temp(tab_id)).unwrap_or_default();
     let _ = dialog(ctx, "settings", "Impostazioni", SETTINGS_W, open, |ui| {
         let t = ui::theme(ui.ctx());
-        let tabs: &[(SettingsTab, &str, &str)] = if host {
-            &[(SettingsTab::Access, "person", "Accessibilità"), (SettingsTab::Look, "palette", "Personalizzazione"), (SettingsTab::Pen, "pen", "Penna"), (SettingsTab::Updates, "refresh-cw", "Aggiornamenti")]
-        } else {
-            &[(SettingsTab::Access, "person", "Accessibilità"), (SettingsTab::Look, "palette", "Personalizzazione"), (SettingsTab::Pen, "pen", "Penna")]
-        };
+        let all: &[(SettingsTab, &str, &str)] = &[
+            (SettingsTab::Access, "person", "Accessibilità"),
+            (SettingsTab::Profile, "user-round", "Profilo"),
+            (SettingsTab::Look, "palette", "Personalizzazione"),
+            (SettingsTab::Toolbar, "sliders-horizontal", "Barra degli strumenti"),
+            (SettingsTab::Pen, "pen", "Penna"),
+            (SettingsTab::Keys, "keyboard", "Scorciatoie"),
+            (SettingsTab::Updates, "refresh-cw", "Aggiornamenti"),
+        ];
+        let tabs: &[(SettingsTab, &str, &str)] = if host { all } else { &all[..all.len() - 1] };
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             // Sections.
@@ -190,6 +198,26 @@ fn settings_section(ui: &mut egui::Ui, tab: SettingsTab, p: &mut Prefs, host: bo
             ui::switch(ui, &mut p.high_contrast, "Contrasto elevato: testi secondari più scuri e bordi ben visibili");
             ui::switch(ui, &mut p.big_handles, "Maniglie di selezione più grandi, più facili da prendere con la penna e con le dita");
             ui::switch(ui, &mut p.reduce_motion, "Riduci il movimento: niente scorrimenti, rimbalzi o ingrandimenti, solo dissolvenze");
+        }
+        SettingsTab::Profile => {
+            ui::heading(ui, "Profilo");
+            ui::hint(ui, "Come ti vedono gli altri quando la lavagna è condivisa: il nome accanto al cursore e il colore del cursore, della selezione e dei commenti.");
+            ui::field_label(ui, "Nome");
+            ui::text_field(ui, &mut p.name, "Come ti vedranno gli altri", 40);
+            ui::field_label(ui, "Il tuo colore");
+            let cur = p.own_color().unwrap_or("").to_string();
+            if let Some(c) = ui::palette(ui, &super::panels::PERSON_COLORS, &cur, false) {
+                p.color = c;
+            }
+            ui::field_label(ui, "Colore del puntatore laser");
+            if let Some(c) = ui::swatches(ui, &super::toolbar::LASER_COLORS, &p.laser_color, false) {
+                p.laser_color = c;
+            }
+        }
+        SettingsTab::Toolbar => toolbar_settings(ui, p),
+        SettingsTab::Keys => {
+            ui::heading(ui, "Scorciatoie da tastiera");
+            shortcut_list(ui);
         }
         SettingsTab::Look => {
             ui::heading(ui, "Personalizzazione");
@@ -320,24 +348,177 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
     ),
 ];
 
+/// Every shortcut, grouped, with what it does.
+fn shortcut_list(ui: &mut egui::Ui) {
+    let t = ui::theme(ui.ctx());
+    for (group, list) in SHORTCUTS {
+        ui::heading(ui, group);
+        egui::Grid::new(group).num_columns(2).spacing(vec2(24.0, 6.0)).show(ui, |ui| {
+            for (label, keys) in list.iter() {
+                ui.label(RichText::new(*label).color(t.text));
+                ui.label(RichText::new(*keys).color(t.text2));
+                ui.end_row();
+            }
+        });
+        ui.add_space(8.0);
+    }
+    ui::hint(ui, "Con la penna: il tasto laterale seleziona col lazo (un tocco apre il menu), la parte superiore cancella. Tieni premuto per aprire il menu. Con due dita sposti e ingrandisci la lavagna.");
+}
+
 pub fn shortcuts(ctx: &egui::Context, open: &mut bool) {
     let _ = dialog(ctx, "shortcuts", "Scorciatoie da tastiera", 640.0, open, |ui| {
-        let t = ui::theme(ui.ctx());
-        egui::ScrollArea::vertical().max_height(480.0).auto_shrink([false, true]).show(ui, |ui| {
-            for (group, list) in SHORTCUTS {
-                ui::heading(ui, group);
-                egui::Grid::new(group).num_columns(2).spacing(vec2(24.0, 6.0)).show(ui, |ui| {
-                    for (label, keys) in list.iter() {
-                        ui.label(RichText::new(*label).color(t.text));
-                        ui.label(RichText::new(*keys).color(t.text2));
-                        ui.end_row();
-                    }
-                });
-                ui.add_space(8.0);
-            }
-            ui::hint(ui, "Con la penna: il tasto laterale seleziona col lazo (un tocco apre il menu), la parte superiore cancella. Tieni premuto per aprire il menu. Con due dita sposti e ingrandisci la lavagna.");
-        });
+        egui::ScrollArea::vertical().max_height(480.0).auto_shrink([false, true]).show(ui, shortcut_list);
     });
+}
+
+/// The icon of a toolbar button in the list of the settings.
+fn toolbar_icon(id: &str) -> &'static str {
+    match id {
+        "select" => "mouse-pointer-2",
+        "hand" => "hand",
+        "pen" => "pen",
+        "highlighter" => "highlighter",
+        "tape" => "rectangle-horizontal",
+        "eraser" => "eraser",
+        "lasso" => "lasso",
+        "ruler" => "ruler",
+        "sticky" => "sticky-note",
+        "shape" => "shapes",
+        "arrow" => "arrow-up-right",
+        "line" => "minus",
+        "text" => "type",
+        "section" => "square-dashed-top-solid",
+        "table" => "table",
+        "stamp" => "smile",
+        "comment" => "message-circle",
+        "chat" => "message-square-text",
+        "more" => "plus",
+        _ => "locate-fixed",
+    }
+}
+
+/// The toolbar as you want it: drag the buttons into order, show or hide each one, and keep
+/// toolbars under a name to switch between them.
+fn toolbar_settings(ui: &mut egui::Ui, p: &mut Prefs) {
+    let t = ui::theme(ui.ctx());
+    ui::heading(ui, "Barra degli strumenti");
+    ui::hint(ui, "Trascina i pulsanti per cambiarne l'ordine, e scegli quali vedere. Le linee sottili tra i gruppi compaiono da sole.");
+    let mut items = crate::prefs::toolbar_items(&p.toolbar_order);
+    let mut moved: Option<(usize, usize)> = None;
+    let dragging = egui::DragAndDrop::has_payload_of_type::<usize>(ui.ctx());
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let n = items.len();
+    for (i, id) in items.clone().iter().enumerate() {
+        let name = crate::prefs::TOOLBAR_ITEMS.iter().find(|x| x.0 == id).map_or("", |x| x.1);
+        let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click_and_drag());
+        let hidden = p.toolbar_hidden.contains(id);
+        let h = ui::motion::hover(ui.ctx(), resp.id.with("h"), resp.hovered() && !dragging);
+        let being_dragged = resp.dragged();
+        if being_dragged {
+            resp.dnd_set_drag_payload(i);
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        } else if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+        let r = row.shrink2(vec2(0.0, 2.0));
+        ui.painter().rect_filled(r, ui::RADIUS, if being_dragged { t.selected } else { t.hover.gamma_multiply(h) });
+        ui::icon(ui, "grip-vertical", pos2(r.min.x + 12.0, r.center().y), 14.0, t.icon2);
+        ui::icon(ui, toolbar_icon(id), pos2(r.min.x + 36.0, r.center().y), 16.0, if hidden { t.text3 } else { t.icon });
+        ui.painter().text(pos2(r.min.x + 56.0, r.center().y), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(ui::sizes(ui.ctx()).fs), if hidden { t.text3 } else { t.text });
+        // Where a dragged button would go: a line above or below this row.
+        if let Some(from) = resp.dnd_hover_payload::<usize>() {
+            let below = ui.ctx().input(|i| i.pointer.hover_pos()).is_some_and(|q| q.y > r.center().y);
+            let y = if below { row.max.y } else { row.min.y };
+            ui.painter().hline(r.x_range(), y, Stroke::new(2.0, t.brand));
+            if let Some(f) = resp.dnd_release_payload::<usize>() {
+                let to = if below { i + 1 } else { i };
+                moved = Some((*f, to));
+            }
+            let _ = from;
+        }
+        // Up, down, and shown or not.
+        let mut x = r.max.x - 4.0;
+        let mut button = |ui: &mut egui::Ui, name: &str, label: &str, on: bool| {
+            let b = Rect::from_min_size(pos2(x - 24.0, r.center().y - 12.0), vec2(24.0, 24.0));
+            x -= 26.0;
+            let resp = ui.put(b, |ui: &mut egui::Ui| ui::small_icon_button(ui, name, label, on));
+            resp.clicked()
+        };
+        if button(ui, if hidden { "eye-off" } else { "eye" }, if hidden { "Mostra nella barra" } else { "Nascondi dalla barra" }, false) {
+            if hidden {
+                p.toolbar_hidden.retain(|x| x != id);
+            } else {
+                p.toolbar_hidden.push(id.clone());
+            }
+        }
+        // The arrows show under the pointer only, so the list stays calm.
+        let over = ui.rect_contains_pointer(row) && !dragging;
+        if over && i + 1 < n && button(ui, "arrow-down", "Sposta più a destra", false) {
+            moved = Some((i, i + 2));
+        }
+        if over && i > 0 && button(ui, "arrow-up", "Sposta più a sinistra", false) {
+            moved = Some((i, i - 1));
+        }
+    }
+    if let Some((from, to)) = moved
+        && from < items.len()
+    {
+        let it = items.remove(from);
+        let to = if to > from { to - 1 } else { to };
+        items.insert(to.min(items.len()), it);
+        p.toolbar_order = items.clone();
+    }
+    ui.spacing_mut().item_spacing.y = 12.0;
+    ui.add_space(8.0);
+    ui::row(ui, 28.0, |ui| {
+        if ui::button(ui, "Ripristina la barra predefinita", Btn::Secondary, Some("rotate-ccw"), false, true).clicked() {
+            p.toolbar_order = crate::prefs::toolbar_default();
+            p.toolbar_hidden.clear();
+        }
+    });
+    ui.add_space(4.0);
+    ui::heading(ui, "Profili della barra");
+    ui::hint(ui, "Salva la barra così com'è con un nome, per esempio «Lezione» o «Diagrammi», e ritrovala con un clic.");
+    let mut remove = None;
+    if p.toolbar_profiles.is_empty() {
+        ui::hint(ui, "Nessun profilo salvato.");
+    }
+    for (i, prof) in p.toolbar_profiles.clone().iter().enumerate() {
+        ui::row(ui, 30.0, |ui| {
+            let current = crate::prefs::toolbar_items(&prof.order) == crate::prefs::toolbar_items(&p.toolbar_order) && prof.hidden == p.toolbar_hidden;
+            ui::icon(ui, if current { "check" } else { "sliders-horizontal" }, ui.cursor().min + vec2(8.0, 15.0), 14.0, if current { t.brand } else { t.icon2 });
+            ui.add_space(20.0);
+            ui.label(RichText::new(&prof.name).color(t.text));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui::small_icon_button(ui, "trash-2", "Elimina il profilo", false).clicked() {
+                    remove = Some(i);
+                }
+                if !current && ui::button(ui, "Usa", Btn::Secondary, None, false, true).clicked() {
+                    p.toolbar_order = crate::prefs::toolbar_items(&prof.order);
+                    p.toolbar_hidden = prof.hidden.clone();
+                }
+            });
+        });
+    }
+    if let Some(i) = remove {
+        p.toolbar_profiles.remove(i);
+    }
+    let nid = Id::new("toolbar-profile-name");
+    let mut name: String = ui.data(|d| d.get_temp(nid)).unwrap_or_default();
+    ui::row(ui, 34.0, |ui| {
+        ui.allocate_ui(vec2(ui.available_width() - 150.0, 34.0), |ui| ui::text_field(ui, &mut name, "Nome del profilo", 30));
+        ui.add_space(6.0);
+        let ok = !name.trim().is_empty();
+        if ui::button(ui, "Salva profilo", Btn::Primary, Some("save"), true, ok).clicked() && ok {
+            let prof = crate::prefs::ToolbarProfile { name: name.trim().to_string(), order: crate::prefs::toolbar_items(&p.toolbar_order), hidden: p.toolbar_hidden.clone() };
+            match p.toolbar_profiles.iter_mut().find(|x| x.name == prof.name) {
+                Some(x) => *x = prof,
+                None => p.toolbar_profiles.push(prof),
+            }
+            name.clear();
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(nid, name));
 }
 
 /* ---------------- export ---------------- */
@@ -371,7 +552,7 @@ pub fn export(ctx: &egui::Context, open: &mut bool, selection_first: bool, b: &m
     let mut run = false;
     let mut copy = false;
     let host = b.host;
-    let mut still = true;
+    let mut still = *open;
     let _ = dialog(ctx, "export", "Esporta", 420.0, &mut still, |ui| {
         let mut formats = vec![(Format::Png, "PNG"), (Format::Jpg, "JPG"), (Format::Svg, "SVG"), (Format::Pdf, "PDF")];
         if host {

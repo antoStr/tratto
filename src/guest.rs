@@ -661,8 +661,8 @@ impl eframe::App for GuestApp {
                 card(ui, &t, |ui| {
                     ui.label(RichText::new(format!("Ti hanno invitato su «{title}»")).font(ui::medium(16.0)).color(t.text));
                     ui::hint(ui, if view { "Potrai guardare la lavagna dal vivo. Chi ti ha invitato deve farti entrare." } else { "Potrai disegnare e scrivere insieme agli altri. Chi ti ha invitato deve farti entrare." });
-                    ui.label(RichText::new("Il tuo nome").font(ui::medium(11.0)).color(t.text));
-                    let edit = ui.add(egui::TextEdit::singleline(name).hint_text("Come ti vedranno gli altri").char_limit(40).desired_width(f32::INFINITY));
+                    ui::field_label(ui, "Il tuo nome");
+                    let edit = ui::text_field(ui, name, "Come ti vedranno gli altri", 40);
                     if let Some(e) = error {
                         ui.label(RichText::new(e).color(t.danger_text));
                     }

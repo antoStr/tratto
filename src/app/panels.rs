@@ -118,18 +118,16 @@ fn type_icon(el: &El) -> &'static str {
 
 pub fn left(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, dialogs: &mut Dialogs) -> Option<Action> {
     let t = ui::theme(ui.ctx());
-    let mut action = None;
-    // Header: app menu, name, status.
+    let action = None;
+    // Header: name and status.
     let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::hover());
     ui.painter().hline(head.x_range(), head.max.y - 0.5, Stroke::new(1.0, t.border));
     ui.scope_builder(egui::UiBuilder::new().max_rect(head.shrink2(vec2(8.0, 6.0))), |ui| {
         ui.horizontal_centered(|ui| {
-            if let Some(a) = app_menu(ui, b, dialogs) {
-                action = Some(a);
-            }
+            ui.add_space(6.0);
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                title(ui, b, toasts, 140.0);
+                title(ui, b, toasts, 150.0);
                 let saved = b.is_saved();
                 ui.horizontal(|ui| {
                     let (r, _) = ui.allocate_exact_size(vec2(8.0, 12.0), Sense::hover());
@@ -144,8 +142,12 @@ pub fn left(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, dialogs: &mut
                 });
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
                 if small_icon_button(ui, "panel-left-close", "Nascondi il pannello", false).clicked() {
                     b.editor.prefs.left_panel = false;
+                }
+                if !b.host {
+                    guest_buttons(ui, b, dialogs);
                 }
             });
         });
@@ -222,52 +224,14 @@ fn title(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, width: f32) {
     }
 }
 
-fn app_menu(ui: &mut Ui, b: &mut BoardScreen, dialogs: &mut Dialogs) -> Option<Action> {
-    let t = ui::theme(ui.ctx());
-    let (r, resp) = ui.allocate_exact_size(vec2(40.0, 32.0), Sense::click());
-    ui::hover_fill(ui, resp.id, r, resp.hovered(), ui::RADIUS as f32, t.hover);
-    ui::icons::logo(ui, Rect::from_center_size(r.center() - vec2(6.0, 0.0), vec2(20.0, 20.0)));
-    icon(ui, "chevron-down", r.center() + vec2(13.0, 0.0), 12.0, t.icon2);
-    let resp = ui::tip(resp, "Menu principale", None);
-    let mut action = None;
-    egui::Popup::menu(&resp).frame(ui::menu_frame(&t)).show(|ui| {
-        ui.spacing_mut().item_spacing.y = 0.0;
-        if b.host {
-            if ui::menu_item(ui, Some("arrow-left"), "Torna alle lavagne", None, false).clicked() {
-                action = Some(Action::Home);
-            }
-            if ui::menu_item(ui, Some("plus"), "Nuova lavagna", None, false).clicked() {
-                action = Some(Action::New { template: None });
-            }
-            ui::menu_sep(ui);
-        }
-        if !b.editor.read_only && ui::menu_item(ui, Some("image-plus"), "Inserisci immagine…", Some("I"), false).clicked() {
-            b.editor.requests.push(crate::editor::Request::InsertImage);
-        }
-        if ui::menu_item(ui, Some("download"), "Esporta…", Some("Ctrl+Maiusc+E"), false).clicked() {
-            b.ui.export = Some(false);
-        }
-        ui::menu_sep(ui);
-        ui.label(RichText::new("Tema").size(10.0).color(t.menu_text2));
-        for (v, label, ic) in [(prefs::Theme::System, "Come il sistema", "monitor"), (prefs::Theme::Light, "Chiaro", "sun"), (prefs::Theme::Dark, "Scuro", "moon")] {
-            let on = b.editor.prefs.theme == v;
-            if ui::menu_item(ui, Some(if on { "check" } else { ic }), label, None, false).clicked() {
-                b.editor.prefs.theme = v;
-            }
-        }
-        ui::menu_sep(ui);
-        if ui::menu_item(ui, Some("settings-2"), "Impostazioni…", Some("Ctrl+,"), false).clicked() {
-            dialogs.settings = true;
-        }
-        let focus = b.editor.prefs.focus;
-        if ui::menu_item(ui, Some("panels-top-left"), if focus { "Mostra i pannelli" } else { "Nascondi i pannelli" }, Some("Ctrl+\\"), false).clicked() {
-            b.editor.toggle_focus();
-        }
-        if ui::menu_item(ui, Some("keyboard"), "Scorciatoie da tastiera", Some("?"), false).clicked() {
-            b.ui.shortcuts = true;
-        }
-    });
-    action
+/// A guest's way to the settings and to zen mode (the desktop app has them in its tab bar).
+fn guest_buttons(ui: &mut Ui, b: &mut BoardScreen, dialogs: &mut Dialogs) {
+    if small_icon_button(ui, "scan", "Modalità zen: solo la lavagna (Ctrl+Maiusc+\\)", false).clicked() {
+        b.editor.prefs.zen = true;
+    }
+    if small_icon_button(ui, "settings", "Impostazioni (Ctrl+,)", false).clicked() {
+        dialogs.settings = true;
+    }
 }
 
 /* ---------- layers ---------- */
@@ -729,23 +693,54 @@ pub fn participants(ui: &mut Ui, ed: &mut Editor) {
     for (id, name, color) in list.iter().take(4) {
         let following = id.is_some() && ed.following == *id;
         let resp = ui::avatar(ui, name.trim_end_matches(" (tu)"), *color, 24.0);
-        if following {
-            ui.painter().circle_stroke(resp.rect.center(), 13.5, Stroke::new(2.0, *color));
+        let h = ui::motion::hover(ui.ctx(), resp.id.with("ring"), resp.hovered());
+        if following || h > 0.0 {
+            ui.painter().circle_stroke(resp.rect.center(), 13.5, Stroke::new(2.0, color.gamma_multiply(if following { 1.0 } else { h })));
         }
         let tip = match id {
-            None => name.clone(),
+            None => format!("{name}: il tuo profilo"),
             Some(_) if following => format!("Smetti di seguire {name}"),
             Some(_) => format!("Segui {name}"),
         };
-        if ui::tip(resp, &tip, None).clicked()
-            && let Some(id) = id
-        {
-            ed.follow(if following { None } else { Some(*id) });
+        let resp = ui::tip(resp, &tip, None);
+        match id {
+            Some(id) => {
+                if resp.clicked() {
+                    ed.follow(if following { None } else { Some(*id) });
+                }
+            }
+            None => profile_popup(ui, &resp, ed),
         }
     }
     if list.len() > 4 {
         ui.label(RichText::new(format!("+{}", list.len() - 4)).size(10.0));
     }
+}
+
+/// Colours a person can pick for themselves.
+pub const PERSON_COLORS: [&str; 10] = ["#0D99FF", "#9747FF", "#F24822", "#14AE5C", "#FFA629", "#E84393", "#00B5CE", "#7B61FF", "#FF7262", "#1E1E1E"];
+
+/// The profile, under your avatar: the name and colour the others see (cursor, selection,
+/// comments), and the laser's colour.
+fn profile_popup(ui: &Ui, resp: &egui::Response, ed: &mut Editor) {
+    let t = ui::theme(ui.ctx());
+    egui::Popup::from_toggle_button_response(resp).frame(ui::float_frame(&t).inner_margin(egui::Margin::same(14))).align(egui::RectAlign::BOTTOM_START).gap(8.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_width(244.0);
+        ui.spacing_mut().item_spacing.y = 8.0;
+        ui::heading(ui, "Il tuo profilo");
+        ui::field_label(ui, "Nome");
+        ui::text_field(ui, &mut ed.prefs.name, "Come ti vedranno gli altri", 40);
+        ui::field_label(ui, "Il tuo colore");
+        ui::hint(ui, "Del tuo cursore, della tua selezione e dei tuoi commenti, per chi è sulla lavagna con te.");
+        let cur = ed.prefs.own_color().unwrap_or("").to_string();
+        if let Some(c) = ui::palette(ui, &PERSON_COLORS, &cur, false) {
+            ed.prefs.color = c;
+        }
+        ui::field_label(ui, "Puntatore laser");
+        if let Some(c) = ui::swatches(ui, &super::toolbar::LASER_COLORS, &ed.prefs.laser_color, false) {
+            ed.prefs.laser_color = c;
+        }
+    });
 }
 
 fn share_button(ui: &mut Ui, b: &mut BoardScreen) {
@@ -831,6 +826,8 @@ pub fn background_fields(ui: &mut Ui, meta: &mut BoardMeta) {
             let m = BoardMeta { pattern: *p, grid_size: 14.0, ..meta.clone() };
             crate::paint::background(&mut shapes, art, &crate::geom::Camera { x: 7.0, y: 9.0, z: 1.0 }, &m, ui.ctx().pixels_per_point());
             ui.painter().with_clip_rect(art).extend(shapes);
+            // The pattern is drawn square: the panel's colour rounds its corners off.
+            ui.painter().rect_stroke(art, ui::RADIUS, Stroke::new(3.0, t.bg), egui::StrokeKind::Outside);
             let on = meta.pattern == *p;
             ui.painter().rect_stroke(art, ui::RADIUS, Stroke::new(if on { 2.0 } else { 1.0 }, if on { t.brand } else { t.border }), egui::StrokeKind::Inside);
             ui.painter().text(pos2(r.center().x, r.max.y - 7.0), egui::Align2::CENTER_CENTER, pattern_label(*p), egui::FontId::proportional(10.0), t.text2);
@@ -1409,12 +1406,15 @@ const CELL_COLORS: [&str; 8] = ["#F5F5F5", "#FFF3A3", "#C9F2C7", "#C7E5FF", "#FF
 /// Left panel closed (or focus mode): this pill stays at the top left to bring it back.
 pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs: &mut Dialogs) -> Option<Action> {
     let t = ui::theme(ctx);
-    let mut action = None;
     egui::Area::new(Id::new("focus-pill")).fixed_pos(stage.min + vec2(12.0, 12.0)).order(egui::Order::Foreground).show(ctx, |ui| {
-        ui::float_frame(&t).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                action = app_menu(ui, b, dialogs);
-                ui.label(RichText::new(&b.title).font(ui::medium(11.0)).color(t.text));
+        ui::float_frame(&t).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+            ui::row(ui, 24.0, |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(RichText::new(&b.title).font(ui::medium(ui::sizes(ui.ctx()).fs)).color(t.text));
+                ui.spacing_mut().item_spacing.x = 2.0;
+                if !b.host {
+                    guest_buttons(ui, b, dialogs);
+                }
                 let focus = b.editor.prefs.focus;
                 if ui::icon_button(ui, "panel-left-open", if focus { "Mostra i pannelli" } else { "Mostra il pannello dei livelli" }, focus.then_some("Ctrl+\\"), vec2(24.0, 24.0), 16.0, false, false).clicked() {
                     if focus {
@@ -1426,7 +1426,23 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
             });
         });
     });
-    action
+    None
+}
+
+/// Zen mode's way out: a quiet button in the corner that wakes up under the pointer.
+pub fn zen_pill(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
+    let t = ui::theme(ctx);
+    let k = ui::motion::appear(ctx, Id::new("zen-pill"), true);
+    let near = ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| p.distance(stage.max - vec2(40.0, 30.0)) < 140.0);
+    let wake = ui::motion::hover(ctx, Id::new("zen-pill-wake"), near);
+    egui::Area::new(Id::new("zen-pill")).pivot(egui::Align2::RIGHT_BOTTOM).fixed_pos(stage.max - vec2(16.0, 16.0 - ui::motion::travel(ctx, k) * 10.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+        ui.set_opacity(k.clamp(0.0, 1.0) * (0.35 + 0.65 * wake));
+        ui::float_frame(&t).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
+            if ui::button(ui, "Esci dalla modalità zen", Btn::Ghost, Some("minimize-2"), false, true).on_hover_text("Esc o Ctrl+Maiusc+\\").clicked() {
+                ed.prefs.zen = false;
+            }
+        });
+    });
 }
 
 /// Right panel closed: people, share and the way back, floating at the top right.
@@ -1440,15 +1456,21 @@ pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
     };
     let x = ui::motion::spring(ctx, Id::new("right-pill-x"), x, 0.3, 0.9);
     egui::Area::new(Id::new("right-pill")).pivot(egui::Align2::RIGHT_TOP).fixed_pos(pos2(x, stage.min.y + 12.0)).order(egui::Order::Foreground).show(ctx, |ui| {
-        ui::float_frame(&t).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
-            ui.horizontal(|ui| {
+        ui::float_frame(&t).inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
+            ui::row(ui, 28.0, |ui| {
+                let line = |ui: &mut Ui| {
+                    let (r, _) = ui.allocate_exact_size(vec2(13.0, 28.0), Sense::hover());
+                    ui.painter().vline(r.center().x, (r.center().y - 9.0)..=(r.center().y + 9.0), Stroke::new(1.0, t.border));
+                };
                 participants(ui, &mut b.editor);
-                ui.add_space(6.0);
-                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.spacing_mut().item_spacing.x = 4.0;
+                line(ui);
                 super::live::timer_button(ui, &mut b.editor);
                 super::live::vote_button(ui, &mut b.editor);
                 super::live::spotlight_button(ui, &mut b.editor);
+                line(ui);
                 share_button(ui, b);
+                ui.add_space(2.0);
                 if small_icon_button(ui, "panel-right-open", "Mostra il pannello", false).clicked() {
                     b.editor.prefs.right_panel = true;
                     b.editor.prefs.focus = false;

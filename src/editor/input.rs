@@ -849,6 +849,7 @@ impl Editor {
                 Key::Num0 => self.zoom_to(1.0),
                 Key::CloseBracket if !ro => self.order(if m.shift { Order::Front } else { Order::Forward }),
                 Key::OpenBracket if !ro => self.order(if m.shift { Order::Back } else { Order::Backward }),
+                Key::Backslash if m.shift => self.prefs.zen = !self.prefs.zen,
                 Key::Backslash => self.toggle_focus(),
                 Key::G if !ro => {
                     if m.shift { self.ungroup() } else { self.group() }
@@ -882,6 +883,8 @@ impl Editor {
                 self.cancel_gesture();
             } else if !self.selection.is_empty() {
                 self.selection.clear();
+            } else if self.prefs.zen {
+                self.prefs.zen = false;
             } else {
                 self.set_tool(Tool::Select);
             }

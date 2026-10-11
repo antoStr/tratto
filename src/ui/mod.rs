@@ -260,6 +260,8 @@ pub fn setup(ctx: &egui::Context, t: Theme, text_scale: f32) {
         v.widgets.active.bg_stroke = Stroke::new(1.0, t.brand);
         v.interact_cursor = Some(egui::CursorIcon::Default);
         v.button_frame = true;
+        // Lists end where their area ends: nothing scrolls under the headers above them.
+        v.clip_rect_margin = 0.0;
     });
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
 }
@@ -1030,6 +1032,39 @@ pub fn card_shadows(t: &Theme) -> [egui::Shadow; 2] {
 /// Frame of a dark popup menu.
 pub fn menu_frame(t: &Theme) -> egui::Frame {
     egui::Frame::new().fill(t.menu).corner_radius(10).inner_margin(egui::Margin::same(6)).shadow(egui::Shadow { offset: [0, 6], blur: 16, spread: 0, color: black(0.18) })
+}
+
+/// The name of a field, over it.
+pub fn field_label(ui: &mut Ui, text: &str) {
+    let t = theme(ui.ctx());
+    ui.label(RichText::new(text).font(medium(sizes(ui.ctx()).fs)).color(t.text));
+}
+
+/// A one-line text field as wide as the space, roomy enough to read what is typed: a soft grey
+/// well, a darker edge under the pointer, the accent around it while typing.
+pub fn text_field(ui: &mut Ui, value: &mut String, hint: &str, limit: usize) -> Response {
+    let t = theme(ui.ctx());
+    let s = sizes(ui.ctx());
+    let font = FontId::proportional(s.md);
+    let h = (s.md * 1.35 + 16.0).max(34.0).round();
+    let w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
+    let well = ui.painter().add(egui::Shape::Noop);
+    let edit = egui::TextEdit::singleline(value)
+        .hint_text(RichText::new(hint).color(t.text3))
+        .char_limit(limit)
+        .frame(egui::Frame::NONE)
+        .font(font)
+        .text_color(t.text)
+        .vertical_align(egui::Align::Center)
+        .margin(egui::Margin::symmetric(10, 0))
+        .desired_width(w);
+    let resp = ui.put(rect, edit);
+    let hk = motion::hover(ui.ctx(), resp.id.with("well-h"), resp.hovered() && !resp.has_focus());
+    let fk = motion::hover(ui.ctx(), resp.id.with("well-f"), resp.has_focus());
+    let edge = blend(blend(t.border, t.border_strong, hk), t.brand, fk);
+    ui.painter().set(well, egui::Shape::Rect(egui::epaint::RectShape::new(rect, 8.0, blend(t.bg2, t.bg, fk), Stroke::new(1.0 + fk * 0.5, edge), egui::StrokeKind::Inside)));
+    resp
 }
 
 /// Section title in the panels.

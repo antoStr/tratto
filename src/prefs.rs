@@ -160,6 +160,74 @@ pub struct Prefs {
     pub minimap_at: Option<[f32; 2]>,
     /// Rows and columns of the next table.
     pub table_size: [u8; 2],
+    /// This person's colour: cursor, avatar and comments ("" picks one by itself).
+    pub color: String,
+    pub laser_color: String,
+    /// The options of the current tool show above the toolbar.
+    pub tray: bool,
+    /// Zen mode: nothing but the board.
+    pub zen: bool,
+    /// The toolbar's buttons in order (see `TOOLBAR_ITEMS`), and those left out.
+    pub toolbar_order: Vec<String>,
+    pub toolbar_hidden: Vec<String>,
+    /// Toolbars saved under a name, to switch between them.
+    pub toolbar_profiles: Vec<ToolbarProfile>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ToolbarProfile {
+    pub name: String,
+    pub order: Vec<String>,
+    pub hidden: Vec<String>,
+}
+
+/// Every button the toolbar can have: id, name, and the group it sits with (a thin line
+/// separates groups).
+pub const TOOLBAR_ITEMS: [(&str, &str, u8); 20] = [
+    ("select", "Seleziona", 0),
+    ("hand", "Mano", 0),
+    ("pen", "Penna", 1),
+    ("highlighter", "Evidenziatore", 1),
+    ("tape", "Nastro adesivo", 1),
+    ("eraser", "Gomma", 1),
+    ("lasso", "Lazo", 1),
+    ("ruler", "Righello", 1),
+    ("sticky", "Nota adesiva", 2),
+    ("shape", "Forme", 2),
+    ("arrow", "Connettore", 2),
+    ("line", "Linea", 2),
+    ("text", "Testo", 2),
+    ("section", "Sezione", 2),
+    ("table", "Tabella", 2),
+    ("stamp", "Reazioni", 3),
+    ("comment", "Commento", 3),
+    ("chat", "Chat vicino al cursore", 3),
+    ("more", "Altri strumenti (+)", 3),
+    ("laser", "Puntatore laser", 4),
+];
+
+pub fn toolbar_default() -> Vec<String> {
+    TOOLBAR_ITEMS.iter().map(|i| i.0.to_string()).collect()
+}
+
+/// The toolbar's buttons in order: the saved order, without unknown ids or repeats, and with
+/// any button it doesn't know yet (added by a newer Tratto) where it is by default.
+pub fn toolbar_items(order: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for id in order {
+        if TOOLBAR_ITEMS.iter().any(|i| i.0 == id) && !out.contains(id) {
+            out.push(id.clone());
+        }
+    }
+    for (k, (id, _, _)) in TOOLBAR_ITEMS.iter().enumerate() {
+        if !out.iter().any(|o| o == id) {
+            // After the button that comes before it by default, if there is one.
+            let at = TOOLBAR_ITEMS[..k].iter().rev().find_map(|p| out.iter().position(|o| o == p.0)).map_or(0, |i| i + 1);
+            out.insert(at, id.to_string());
+        }
+    }
+    out
 }
 
 pub const DEFAULT_ACCENT: &str = "#0D99FF";
@@ -200,6 +268,13 @@ impl Default for Prefs {
             reduce_motion: false,
             minimap_at: None,
             table_size: [3, 3],
+            color: String::new(),
+            laser_color: "#FF3B30".into(),
+            tray: true,
+            zen: false,
+            toolbar_order: toolbar_default(),
+            toolbar_hidden: Vec::new(),
+            toolbar_profiles: Vec::new(),
         }
     }
 }
@@ -228,7 +303,20 @@ impl Prefs {
         p.text_scale = p.text_scale.clamp(0.8, 1.6);
         p.minimap_at = p.minimap_at.filter(|a| a.iter().all(|v| v.is_finite())).map(|a| a.map(|v| v.clamp(0.0, 1.0)));
         p.table_size = p.table_size.map(|v| v.clamp(1, 20));
+        p.toolbar_order = toolbar_items(&p.toolbar_order);
+        if crate::model::parse_color(&p.laser_color).is_none() || p.laser_color.len() != 7 {
+            p.laser_color = Prefs::default().laser_color;
+        }
+        if !p.color.is_empty() && (p.color.len() != 7 || crate::model::parse_color(&p.color).is_none()) {
+            p.color.clear();
+        }
+        p.toolbar_profiles.truncate(20);
         p
+    }
+
+    /// This person's colour, if they chose one.
+    pub fn own_color(&self) -> Option<&str> {
+        (!self.color.is_empty()).then_some(self.color.as_str())
     }
 
     pub fn to_json(&self) -> String {
@@ -258,5 +346,18 @@ mod tests {
         assert_eq!(Prefs::from_json("not json"), Prefs::default());
         let round = Prefs::from_json(&Prefs::default().to_json());
         assert_eq!(round, Prefs::default());
+    }
+
+    #[test]
+    fn a_saved_toolbar_keeps_its_order_and_gains_new_buttons() {
+        let order: Vec<String> = ["laser", "pen", "bogus", "pen", "select"].iter().map(|s| s.to_string()).collect();
+        let items = toolbar_items(&order);
+        assert_eq!(items.len(), TOOLBAR_ITEMS.len());
+        // The saved ones keep their order; "highlighter" comes after "pen" by default, so it
+        // lands right after it.
+        let at = |id: &str| items.iter().position(|i| i == id).unwrap();
+        assert!(at("laser") < at("pen") && at("pen") < at("select"));
+        assert_eq!(at("highlighter"), at("pen") + 1);
+        assert_eq!(items[0], "laser");
     }
 }

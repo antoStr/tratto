@@ -788,13 +788,9 @@ pub fn dialog(ui: &mut egui::Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
     match view {
         None => {
             ui::hint(ui, "Invita qualcuno a lavorare con te su questa lavagna. Riceverà un link da aprire nel browser (Windows, Mac, Linux, tablet), senza installare niente. Possono esserci fino a 30 persone insieme.");
-            ui.label(RichText::new("Il tuo nome").font(ui::medium(11.0)).color(t.text));
-            let before = b.editor.prefs.name.clone();
-            ui.add(egui::TextEdit::singleline(&mut b.editor.prefs.name).hint_text("Come ti vedranno gli altri").char_limit(40).desired_width(f32::INFINITY));
-            if b.editor.prefs.name != before {
-                b.update_identity();
-            }
-            ui.label(RichText::new("Chi ha il link").font(ui::medium(11.0)).color(t.text));
+            ui::field_label(ui, "Il tuo nome");
+            ui::text_field(ui, &mut b.editor.prefs.name, "Come ti vedranno gli altri", 40);
+            ui::field_label(ui, "Chi ha il link");
             ui::segmented(ui, &mut access, &[(Access::Edit, "Può modificare"), (Access::View, "Può solo guardare")], ui.available_width());
             ui::switch(ui, &mut auto, "Fai entrare senza chiedermelo");
             ui.add_space(4.0);
@@ -826,16 +822,17 @@ pub fn dialog(ui: &mut egui::Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
             Status::Live => {
                 let share = b.share.as_ref().unwrap();
                 let url = v.url.clone().unwrap_or_default();
-                ui.label(RichText::new("Link di invito").font(ui::medium(11.0)).color(t.text));
-                ui.horizontal(|ui| {
+                ui::field_label(ui, "Link di invito");
+                ui::row(ui, 34.0, |ui| {
                     let mut shown = url.clone();
-                    ui.add(egui::TextEdit::singleline(&mut shown).desired_width(ui.available_width() - 110.0).interactive(true));
-                    if ui::button(ui, "Copia link", Btn::Primary, Some("copy"), false, true).clicked() {
+                    ui.allocate_ui(egui::vec2(ui.available_width() - 120.0, 34.0), |ui| ui::text_field(ui, &mut shown, "", 400));
+                    ui.add_space(4.0);
+                    if ui::button(ui, "Copia link", Btn::Primary, Some("copy"), true, true).clicked() {
                         ui.ctx().copy_text(url.clone());
                         toasts.info("Link copiato: mandalo a chi vuoi.");
                     }
                 });
-                ui.label(RichText::new("Chi ha il link").font(ui::medium(11.0)).color(t.text));
+                ui::field_label(ui, "Chi ha il link");
                 let mut a = v.access;
                 if ui::segmented(ui, &mut a, &[(Access::Edit, "Può modificare"), (Access::View, "Può solo guardare")], ui.available_width()) {
                     share.set_access(a);

@@ -108,14 +108,6 @@ fn sep(ui: &mut Ui, t: &Theme) {
 /// Height of the tray's row for a tool: everything in it sits on one centre line.
 const TRAY_H: f32 = 32.0;
 
-fn tool_button(ui: &mut Ui, ed: &mut Editor, tool: Tool, name: &str, label: &str, kbd: Option<&str>) -> egui::Response {
-    let r = icon_button(ui, name, label, kbd, vec2(BTN, BTN), ICON, false, ed.tool == tool);
-    if r.clicked() {
-        ed.set_tool(tool);
-    }
-    r
-}
-
 /// A bar of the colour the tool will use under its icon, like Office's font-colour button.
 /// FigJam's "+": code, widgets, pictures and templates, in a light card of big tiles.
 fn more_tools(ui: &mut Ui, ed: &mut Editor, t: &Theme, top: bool) {
@@ -173,38 +165,34 @@ fn tile(ui: &mut Ui, name: &str, label: &str, hint: &str, t: &Theme) -> egui::Re
     resp
 }
 
-/// FigJam's marker drawer: pen, highlighter and washi tape drawn as the real things, in the colour
-/// they will draw with. They peek out of the toolbar, rise a little under the pointer and stand
-/// up when chosen, on springs.
-fn drawer(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
-    const SLOT: f32 = 28.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(SLOT * 3.0 + 6.0, BTN), Sense::hover());
+/// One marker of FigJam's drawer: pen, highlighter or washi tape drawn as the real thing, in the
+/// colour it will draw with. It peeks out of the toolbar, rises a little under the pointer and
+/// stands up when chosen, on a spring.
+fn drawer_slot(ui: &mut Ui, ed: &mut Editor, t: &Theme, tool: Tool) -> egui::Response {
+    const SLOT: f32 = 30.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(SLOT, BTN), Sense::hover());
     // The drawer runs into the toolbar's bottom edge: the tools vanish into it.
     let clip = Rect::from_min_max(pos2(rect.min.x, rect.min.y - 6.0), pos2(rect.max.x, rect.max.y + 5.0));
     let pen = ed.prefs.pens.get(ed.pen).cloned().unwrap_or_default();
-    let items = [
-        (Tool::Pen, "Penna", "P", pen.color.clone()),
-        (Tool::Highlighter, "Evidenziatore", "M", ed.prefs.highlighter.color.clone()),
-        (Tool::Tape, "Nastro adesivo", "W", ed.prefs.tape.color.clone()),
-    ];
-    for (i, (tool, label, kbd, color)) in items.into_iter().enumerate() {
-        let slot = Rect::from_min_size(pos2(rect.min.x + 3.0 + i as f32 * SLOT, rect.min.y - 6.0), vec2(SLOT, BTN + 11.0));
-        let resp = ui.interact(slot, ui.id().with(("drawer", i)), Sense::click());
-        let on = ed.tool == tool;
-        let lift = ui::motion::spring(ui.ctx(), resp.id.with("lift"), if on { 1.0 } else if resp.hovered() { 0.45 } else { 0.0 }, 0.3, 0.7);
-        let top = slot.min.y + 18.0 - 14.0 * lift;
-        let c = crate::model::parse_color(&color).unwrap_or(crate::model::DARK);
-        let p = ui.painter().with_clip_rect(clip);
-        match tool {
-            Tool::Pen => marker(&p, slot.center().x, top, c, t, 11.0, false),
-            Tool::Highlighter => marker(&p, slot.center().x, top, c, t, 15.0, true),
-            _ => tape_roll(&p, slot.center().x, top, c, t),
-        }
-        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, label));
-        if ui::tip(resp, label, Some(kbd)).clicked() {
-            ed.set_tool(tool);
-        }
+    let (label, kbd, color) = match tool {
+        Tool::Pen => ("Penna", "P", pen.color.clone()),
+        Tool::Highlighter => ("Evidenziatore", "M", ed.prefs.highlighter.color.clone()),
+        _ => ("Nastro adesivo", "W", ed.prefs.tape.color.clone()),
+    };
+    let slot = Rect::from_min_size(pos2(rect.min.x + 1.0, rect.min.y - 6.0), vec2(SLOT - 2.0, BTN + 11.0));
+    let resp = ui.interact(slot, ui.id().with(("drawer", format!("{tool:?}"))), Sense::click());
+    let on = ed.tool == tool;
+    let lift = ui::motion::spring(ui.ctx(), resp.id.with("lift"), if on { 1.0 } else if resp.hovered() { 0.45 } else { 0.0 }, 0.3, 0.7);
+    let top = slot.min.y + 18.0 - 14.0 * lift;
+    let c = crate::model::parse_color(&color).unwrap_or(crate::model::DARK);
+    let p = ui.painter().with_clip_rect(clip);
+    match tool {
+        Tool::Pen => marker(&p, slot.center().x, top, c, t, 11.0, false),
+        Tool::Highlighter => marker(&p, slot.center().x, top, c, t, 15.0, true),
+        _ => tape_roll(&p, slot.center().x, top, c, t),
     }
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, label));
+    ui::tip(resp, label, Some(kbd))
 }
 
 /// A marker standing in the drawer: coloured tip, collar, light body.
@@ -248,86 +236,149 @@ fn sticky_pad(ui: &Ui, c: Pos2, color: Color32, t: &Theme, lift: f32) {
 }
 
 
+/// Picks a tool from the toolbar; the tool already chosen opens or closes its options instead.
+fn pick(ed: &mut Editor, tool: Tool) {
+    if ed.tool == tool {
+        ed.prefs.tray = !ed.prefs.tray;
+    } else {
+        ed.set_tool(tool);
+        ed.prefs.tray = true;
+    }
+}
+
+/// One button of the toolbar, by its id (see `prefs::TOOLBAR_ITEMS`).
+fn toolbar_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme, id: &str, top: bool) {
+    let ctx = ui.ctx().clone();
+    let simple = |ui: &mut Ui, ed: &mut Editor, tool: Tool, name: &str, label: &str, kbd: Option<&str>| {
+        if icon_button(ui, name, label, kbd, vec2(BTN, BTN), ICON, false, ed.tool == tool).clicked() {
+            pick(ed, tool);
+        }
+    };
+    match id {
+        "select" => simple(ui, ed, Tool::Select, "mouse-pointer-2", "Seleziona", Some("V")),
+        "hand" => simple(ui, ed, Tool::Hand, "hand", "Mano", Some("H")),
+        "pen" | "highlighter" | "tape" => {
+            let tool = match id {
+                "pen" => Tool::Pen,
+                "highlighter" => Tool::Highlighter,
+                _ => Tool::Tape,
+            };
+            if drawer_slot(ui, ed, t, tool).clicked() {
+                pick(ed, tool);
+            }
+        }
+        "eraser" => simple(ui, ed, Tool::Eraser, "eraser", "Gomma", Some("E")),
+        "lasso" => simple(ui, ed, Tool::Lasso, "lasso", "Lazo", Some("Q")),
+        "ruler" => {
+            let on = ed.ruler.visible;
+            if icon_button(ui, "ruler", if on { "Nascondi righello" } else { "Mostra righello" }, Some("U"), vec2(BTN, BTN), ICON, on, false).clicked() {
+                ed.toggle_ruler();
+            }
+        }
+        "sticky" => {
+            // A little pad in the colour the next note will have.
+            let r = icon_button(ui, "", "Nota adesiva", Some("S"), vec2(BTN, BTN), ICON, false, ed.tool == Tool::Sticky);
+            if r.clicked() {
+                pick(ed, Tool::Sticky);
+            }
+            sticky_pad(ui, r.rect.center(), crate::model::color_or(&ed.prefs.sticky_color, Color32::YELLOW), t, ui::motion::hover(&ctx, r.id.with("lift"), r.hovered()));
+        }
+        "shape" => {
+            let shape = ed.prefs.last_shape;
+            let (label, kbd) = SHAPES.iter().find(|s| s.0 == shape).map_or(("Forma", None), |s| (s.1, s.2));
+            let r = icon_button(ui, "", label, kbd, vec2(BTN, BTN), ICON, false, ed.tool == Tool::Shape);
+            if r.clicked() {
+                pick(ed, Tool::Shape);
+            }
+            shape_icon(ui, shape, r.rect.center(), ICON, if ed.tool == Tool::Shape { Color32::WHITE } else { t.icon });
+            let (cr, chevron) = ui.allocate_exact_size(vec2(14.0, BTN), Sense::click());
+            ui::hover_fill(ui, chevron.id, cr, chevron.hovered(), 4.0, t.hover);
+            icon(ui, "chevron-down", cr.center(), 12.0, t.icon2);
+            egui::Popup::menu(&chevron).frame(ui::menu_frame(t)).align(if top { egui::RectAlign::BOTTOM } else { egui::RectAlign::TOP }).show(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for (k, label, kbd) in SHAPES {
+                    let resp = ui::menu_item(ui, None, label, kbd, false);
+                    shape_icon(ui, k, pos2(resp.rect.min.x + 12.0, resp.rect.center().y), 14.0, t.menu_text);
+                    if resp.clicked() {
+                        ed.prefs.last_shape = k;
+                        ed.set_tool(Tool::Shape);
+                    }
+                }
+            });
+        }
+        "arrow" => simple(ui, ed, Tool::Arrow, "arrow-up-right", "Connettore e freccia: parti da una forma per collegarla", Some("X")),
+        "line" => simple(ui, ed, Tool::Line, "minus", "Linea", Some("L")),
+        "text" => simple(ui, ed, Tool::Text, "type", "Testo", Some("T")),
+        "section" => simple(ui, ed, Tool::Section, "square-dashed-top-solid", "Sezione", Some("Maiusc+S")),
+        "table" => simple(ui, ed, Tool::Table, "table", "Tabella", None),
+        "stamp" => simple(ui, ed, Tool::Stamp, "smile", "Reazioni", None),
+        "comment" => simple(ui, ed, Tool::Comment, "message-circle", "Commento", Some("C")),
+        "chat" => {
+            let on = st.chat.is_some();
+            if icon_button(ui, "message-square-text", "Chat vicino al cursore: scrivi e gli altri lo leggono accanto al tuo puntatore", Some("/"), vec2(BTN, BTN), ICON, on, false).clicked() {
+                st.chat = if on { None } else { Some(String::new()) };
+            }
+        }
+        "more" => more_tools(ui, ed, t, top),
+        "laser" => laser_button(ui, ed),
+        _ => {}
+    }
+}
+
 pub fn toolbar(ctx: &egui::Context, stage: Rect, ed: &mut Editor, st: &mut BoardUi) {
     let t = ui::theme(ctx);
     let top = ed.prefs.toolbar_pos == ToolbarPos::Top;
     let anchor = if top { egui::Align2::CENTER_TOP } else { egui::Align2::CENTER_BOTTOM };
     let dy = if top { 16.0 } else { -16.0 };
-    let resp = egui::Area::new(Id::new("toolbar")).anchor(anchor, [stage.center().x - ctx.content_rect().center().x, dy + if top { stage.min.y } else { stage.max.y - ctx.content_rect().max.y }]).order(egui::Order::Foreground).show(ctx, |ui| {
+    let items: Vec<String> = crate::prefs::toolbar_items(&ed.prefs.toolbar_order)
+        .into_iter()
+        .filter(|id| !ed.prefs.toolbar_hidden.contains(id))
+        .filter(|id| !ed.read_only || matches!(id.as_str(), "select" | "hand" | "laser" | "chat"))
+        .collect();
+    let group = |id: &str| crate::prefs::TOOLBAR_ITEMS.iter().find(|i| i.0 == id).map_or(0, |i| i.2);
+    // Centred on the part of the board the panels leave free; when it doesn't fit there, on the
+    // whole window (it floats over the panels).
+    let width = ctx.data(|d| d.get_temp::<Rect>(Id::new("toolbar-rect"))).map_or(0.0, |r| r.width());
+    let cx = if width > stage.width() - 16.0 { 0.0 } else { stage.center().x - ctx.content_rect().center().x };
+    let resp = egui::Area::new(Id::new("toolbar")).anchor(anchor, [cx, dy + if top { stage.min.y } else { stage.max.y - ctx.content_rect().max.y }]).order(egui::Order::Foreground).show(ctx, |ui| {
         // FigJam's toolbar: a big friendly card with the markers waiting in a drawer.
         let [contact, soft] = ui::card_shadows(&t);
         let under = ui.painter().add(egui::Shape::Noop);
         let card = egui::Frame::new().fill(t.bg).stroke(Stroke::new(1.0, t.border)).corner_radius(16).shadow(soft).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
             ui::row(ui, BTN, |ui| {
                 ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
-                tool_button(ui, ed, Tool::Select, "mouse-pointer-2", "Seleziona", Some("V"));
-                tool_button(ui, ed, Tool::Hand, "hand", "Mano", Some("H"));
-                sep(ui, &t);
-                if ed.read_only {
-                    laser_button(ui, ed);
-                    return;
-                }
-                drawer(ui, ed, &t);
-                tool_button(ui, ed, Tool::Eraser, "eraser", "Gomma", Some("E"));
-                tool_button(ui, ed, Tool::Lasso, "lasso", "Lazo", Some("Q"));
-                let on = ed.ruler.visible;
-                if icon_button(ui, "ruler", if on { "Nascondi righello" } else { "Mostra righello" }, Some("U"), vec2(BTN, BTN), ICON, on, false).clicked() {
-                    ed.toggle_ruler();
-                }
-                sep(ui, &t);
-                // The sticky tool drawn as a little pad in the colour the next note will have.
-                let r = tool_button(ui, ed, Tool::Sticky, "", "Nota adesiva", Some("S"));
-                sticky_pad(ui, r.rect.center(), crate::model::color_or(&ed.prefs.sticky_color, Color32::YELLOW), &t, ui::motion::hover(ctx, r.id.with("lift"), r.hovered()));
-                // Shape tool with its menu of shapes.
-                let shape = ed.prefs.last_shape;
-                let (label, kbd) = SHAPES.iter().find(|s| s.0 == shape).map_or(("Forma", None), |s| (s.1, s.2));
-                let r = tool_button(ui, ed, Tool::Shape, "", label, kbd);
-                shape_icon(ui, shape, r.rect.center(), ICON, if ed.tool == Tool::Shape { Color32::WHITE } else { t.icon });
-                let (cr, chevron) = ui.allocate_exact_size(vec2(14.0, BTN), Sense::click());
-                ui::hover_fill(ui, chevron.id, cr, chevron.hovered(), 4.0, t.hover);
-                icon(ui, "chevron-down", cr.center(), 12.0, t.icon2);
-                egui::Popup::menu(&chevron).frame(ui::menu_frame(&t)).align(if top { egui::RectAlign::BOTTOM } else { egui::RectAlign::TOP }).show(|ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    for (k, label, kbd) in SHAPES {
-                        let resp = ui::menu_item(ui, None, label, kbd, false);
-                        shape_icon(ui, k, pos2(resp.rect.min.x + 12.0, resp.rect.center().y), 14.0, t.menu_text);
-                        if resp.clicked() {
-                            ed.prefs.last_shape = k;
-                            ed.set_tool(Tool::Shape);
-                        }
+                let mut last: Option<u8> = None;
+                for id in &items {
+                    let g = group(id);
+                    if last.is_some_and(|l| l != g) {
+                        sep(ui, &t);
                     }
-                });
-                tool_button(ui, ed, Tool::Arrow, "arrow-up-right", "Connettore e freccia: parti da una forma per collegarla", Some("X"));
-                tool_button(ui, ed, Tool::Line, "minus", "Linea", Some("L"));
-                tool_button(ui, ed, Tool::Text, "type", "Testo", Some("T"));
-                tool_button(ui, ed, Tool::Section, "square-dashed-top-solid", "Sezione", Some("Maiusc+S"));
-                tool_button(ui, ed, Tool::Table, "table", "Tabella", None);
-                sep(ui, &t);
-                tool_button(ui, ed, Tool::Stamp, "smile", "Reazioni", None);
-                tool_button(ui, ed, Tool::Comment, "message-circle", "Commento", Some("C"));
-                more_tools(ui, ed, &t, top);
-                sep(ui, &t);
-                laser_button(ui, ed);
+                    last = Some(g);
+                    toolbar_item(ui, ed, st, &t, id, top);
+                }
             });
         });
         ui.painter().set(under, contact.as_shape(card.response.rect, egui::CornerRadius::same(16)));
     });
     let bar = resp.response.rect;
     ctx.data_mut(|d| d.insert_temp(Id::new("toolbar-rect"), bar));
-    if !ed.read_only {
-        tray(ctx, bar, top, ed, &t);
-    }
+    let tray_rect = if !ed.read_only && ed.prefs.tray { tray(ctx, bar, top, ed, &t) } else { None };
+    // What the zoom controls and the minimap keep clear of.
+    let bars = tray_rect.map_or(bar, |r| r.union(bar));
+    ctx.data_mut(|d| d.insert_temp(Id::new("bottom-bars"), bars));
     if ed.lost {
-        back_to_content(ctx, bar, top, ed, &t);
+        back_to_content(ctx, bars, top, ed, &t);
     }
-    let _ = st;
 }
 
 fn laser_button(ui: &mut Ui, ed: &mut Editor) {
-    let r = tool_button(ui, ed, Tool::Laser, "", "Puntatore laser", Some("K"));
+    let r = icon_button(ui, "", "Puntatore laser", Some("K"), vec2(BTN, BTN), ICON, false, ed.tool == Tool::Laser);
+    if r.clicked() {
+        pick(ed, Tool::Laser);
+    }
     let c = r.rect.center();
-    let red = Color32::from_rgb(0xFF, 0x3B, 0x30);
-    ui.painter().circle_filled(c, 7.5, Color32::from_rgba_unmultiplied(0xFF, 0x3B, 0x30, 46));
+    let red = crate::model::parse_color(&ed.prefs.laser_color).unwrap_or(Color32::from_rgb(0xFF, 0x3B, 0x30));
+    ui.painter().circle_filled(c, 7.5, red.gamma_multiply(0.18));
     ui.painter().circle_filled(c, 4.0, red);
     ui.painter().circle_filled(c, 1.6, Color32::WHITE);
 }
@@ -347,10 +398,10 @@ const PX: fn(f64) -> String = |v| format!("{} px", (v * 10.0).round() / 10.0);
 const PCT: fn(f64) -> String = |v| format!("{}%", (v * 100.0).round());
 
 /// The contextual tray above the toolbar: what the current tool can be set to.
-fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) {
+fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) -> Option<Rect> {
     let tool = ed.tool;
-    if !matches!(tool, Tool::Pen | Tool::Highlighter | Tool::Tape | Tool::Eraser | Tool::Shape | Tool::Line | Tool::Arrow | Tool::Text | Tool::Sticky | Tool::Stamp | Tool::Comment | Tool::Section | Tool::Table) {
-        return;
+    if !matches!(tool, Tool::Pen | Tool::Highlighter | Tool::Tape | Tool::Eraser | Tool::Shape | Tool::Line | Tool::Arrow | Tool::Text | Tool::Sticky | Tool::Stamp | Tool::Comment | Tool::Section | Tool::Table | Tool::Laser) {
+        return None;
     }
     let pivot = if top { egui::Align2::CENTER_TOP } else { egui::Align2::CENTER_BOTTOM };
     // Each tool's options rise out of the toolbar on a spring when the tool is picked.
@@ -362,13 +413,14 @@ fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) {
     let k = ui::motion::appear(ctx, Id::new("tray"), true);
     let rise = ui::motion::travel(ctx, k) * 10.0;
     let at = if top { pos2(bar.center().x, bar.max.y + 8.0 - rise) } else { pos2(bar.center().x, bar.min.y - 8.0 + rise) };
+    let mut close = false;
     // The tallest thing in the tray sets its height; everything else is centred on it.
     let h = match tool {
         Tool::Shape => 88.0,
         Tool::Stamp => 62.0,
         _ => TRAY_H,
     };
-    egui::Area::new(Id::new(("tray", format!("{tool:?}")))).pivot(pivot).fixed_pos(at).order(egui::Order::Foreground).show(ctx, |ui| {
+    let shown = egui::Area::new(Id::new(("tray", format!("{tool:?}")))).pivot(pivot).fixed_pos(at).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
         ui::float_frame(t).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
             ui::row(ui, h, |ui| {
@@ -491,12 +543,30 @@ fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) {
                     }
                     Tool::Comment => ui::hint(ui, "Clicca dove vuoi lasciare un commento. Gli altri lo vedono e possono rispondere."),
                     Tool::Section => ui::hint(ui, "Trascina per disegnare una sezione: quello che ci metti dentro si sposta insieme a lei."),
+                    Tool::Laser => {
+                        ui.label(RichText::new("Colore del laser").color(t.text2));
+                        if let Some(c) = ui::swatches(ui, &LASER_COLORS, &p.laser_color, false) {
+                            p.laser_color = c;
+                        }
+                    }
                     _ => {}
+                }
+                // Closes the options; the tool stays. Picking the tool again brings them back.
+                sep_h(ui, t, h);
+                if icon_button(ui, if top { "chevron-up" } else { "chevron-down" }, "Nascondi le opzioni (clicca di nuovo lo strumento per riaprirle)", None, vec2(24.0, 24.0), 14.0, false, false).clicked() {
+                    close = true;
                 }
             });
         });
     });
+    if close {
+        ed.prefs.tray = false;
+    }
+    Some(shown.response.rect)
 }
+
+/// Colours of the laser pointer.
+pub const LASER_COLORS: [&str; 6] = ["#FF3B30", "#FF9500", "#34C759", "#0D99FF", "#AF52DE", "#FF2D92"];
 
 /// A pen in the tray, drawn as a real stroke in its colour, thickness and opacity. The active
 /// one opens its colour and stroke settings.
@@ -636,8 +706,9 @@ pub fn stamp_picker(ui: &mut Ui, value: Option<&str>) -> Option<String> {
 /// Bottom right, Whiteboard style: minimap on/off, zoom in, zoom level (menu), zoom out.
 pub fn view_controls(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     let t = ui::theme(ctx);
-    // In the corner, unless the toolbar reaches it: then just above the toolbar, gliding there.
-    let bar = ctx.data(|d| d.get_temp::<Rect>(Id::new("toolbar-rect")));
+    // In the corner, unless the toolbar (or the options above it) reaches it: then just above
+    // them, gliding there.
+    let bar = ctx.data(|d| d.get_temp::<Rect>(Id::new("bottom-bars")));
     let size = ctx.data(|d| d.get_temp::<egui::Vec2>(Id::new("view-controls-size"))).unwrap_or(vec2(40.0, 130.0));
     let corner = stage.max - vec2(16.0, 16.0);
     let clash = bar.is_some_and(|b| b.intersects(Rect::from_min_max(corner - size - vec2(8.0, 8.0), corner)));
@@ -813,7 +884,17 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
         }
         _ => (ui::motion::spring(ctx, Id::new("minimap-x"), target.x, 0.32, 0.86), ui::motion::spring(ctx, Id::new("minimap-y"), target.y, 0.32, 0.86)),
     };
-    let pos = pos2(px, py - ui::motion::travel(ctx, k) * 8.0);
+    // Never under the toolbar or its options: up above them when it would be.
+    let bars = ctx.data(|d| d.get_temp::<Rect>(Id::new("bottom-bars")));
+    let card = Rect::from_min_size(pos2(px, py), vec2(MW, MH));
+    let push = match bars {
+        Some(b) if m.moving.is_none() && card.expand(6.0).intersects(b) => {
+            if b.center().y > free.center().y { (card.max.y - b.min.y + 10.0).max(0.0) } else { -(b.max.y - card.min.y + 10.0).max(0.0) }
+        }
+        _ => 0.0,
+    };
+    let push = ui::motion::spring(ctx, Id::new("minimap-push"), push, 0.3, 0.9);
+    let pos = pos2(px, py - push - ui::motion::travel(ctx, k) * 8.0);
     let resp = egui::Area::new(Id::new("minimap")).fixed_pos(pos).order(egui::Order::Middle).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
         let (card, resp) = ui.allocate_exact_size(vec2(MW, MH), Sense::click_and_drag());

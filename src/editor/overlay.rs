@@ -112,7 +112,8 @@ impl Editor {
             }
             if let Some(l) = s["laser"].as_array() {
                 let flat: Vec<f64> = l.iter().take(200).filter_map(|v| v.as_f64()).collect();
-                self.laser_shape(&mut out, &flat[..flat.len() / 2 * 2], color);
+                let c = s["laserColor"].as_str().filter(|c| c.len() == 7).and_then(parse_color).unwrap_or(color);
+                self.laser_shape(&mut out, &flat[..flat.len() / 2 * 2], c);
             }
         }
 
@@ -272,7 +273,7 @@ impl Editor {
             let t = now();
             self.laser.retain(|p| t - p.2 < 900.0);
             let flat: Vec<f64> = self.laser.iter().flat_map(|p| [p.0, p.1]).collect();
-            self.laser_shape(&mut out, &flat, LASER);
+            self.laser_shape(&mut out, &flat, parse_color(&self.prefs.laser_color).unwrap_or(LASER));
         }
 
         if let Some(e) = self.eraser_at

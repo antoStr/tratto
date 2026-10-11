@@ -32,6 +32,8 @@ pub struct BoardUi {
     pub rename_buf: String,
     pub menu: Option<Pos2>,
     pub export: Option<bool>,
+    /// What the export dialog was opened for, kept while it fades away.
+    pub export_sel: bool,
     pub share: bool,
     pub shortcuts: bool,
     pub title_edit: Option<String>,
@@ -54,6 +56,7 @@ impl Default for BoardUi {
             rename_buf: String::new(),
             menu: None,
             export: None,
+            export_sel: false,
             share: false,
             shortcuts: false,
             title_edit: None,
@@ -140,10 +143,12 @@ impl BoardScreen {
         let name: String = ed.prefs.name.trim().chars().take(40).collect();
         let fallback = if self.host { "Proprietario" } else { "Ospite" };
         #[cfg(not(target_arch = "wasm32"))]
-        let color = "#0D99FF";
+        let auto = "#0D99FF";
         #[cfg(target_arch = "wasm32")]
-        let color = crate::guest::color_for(&self.guest.token);
+        let auto = crate::guest::color_for(&self.guest.token);
+        let color = ed.prefs.own_color().unwrap_or(auto).to_string();
         ed.presence.set("user", serde_json::json!({ "name": if name.is_empty() { fallback } else { &name }, "color": color }));
+        ed.presence.set("laserColor", serde_json::json!(ed.prefs.laser_color));
         ed.name = (!name.is_empty()).then_some(name);
     }
 }
@@ -407,25 +412,43 @@ impl BoardScreen {
         let t = ui::theme(&ctx);
         let mut action = None;
         self.editor.board.refresh();
+        // Name and colours as chosen (in the profile, the share dialog or the settings).
+        self.update_identity();
 
-        // Desktop tab bar, dark in both themes like Figma's (not in a guest's browser).
+        // Desktop tab bar, dark in both themes like Figma's (not in a guest's browser): the way
+        // home, the settings, and the board's name. Zen mode hides it with everything else.
         #[cfg(not(target_arch = "wasm32"))]
-        egui::Panel::top(Id::new("tabs")).exact_size(40.0).frame(egui::Frame::new().fill(t.chrome)).show(ui, |ui| {
-            ui.horizontal_centered(|ui| {
-                ui.add_space(8.0);
-                let home = ui.allocate_response(vec2(40.0, 40.0), Sense::click());
-                ui::hover_fill(ui, home.id, home.rect, home.hovered(), 0.0, t.chrome2);
-                ui::icon(ui, "home", home.rect.center(), 16.0, t.chrome_text);
-                if ui::tip(home, "Lavagne", None).clicked() {
-                    action = Some(Action::Home);
-                }
-                let (tab, _) = ui.allocate_exact_size(vec2(200.0, 40.0), Sense::hover());
-                ui.painter().rect_filled(tab, 0.0, t.chrome2);
-                ui.painter().with_clip_rect(tab).text(tab.left_center() + vec2(32.0, 0.0), egui::Align2::LEFT_CENTER, &self.title, FontId::proportional(11.0), t.chrome_text);
-                let logo = Rect::from_center_size(tab.left_center() + vec2(16.0, 0.0), vec2(14.0, 14.0));
-                ui::icons::logo(ui, logo);
+        if !self.editor.prefs.zen {
+            egui::Panel::top(Id::new("tabs")).exact_size(40.0).frame(egui::Frame::new().fill(t.chrome)).show(ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.add_space(8.0);
+                    let chrome_button = |ui: &mut egui::Ui, name: &str, label: &str, kbd: Option<&str>| {
+                        let r = ui.allocate_response(vec2(40.0, 40.0), Sense::click());
+                        ui::hover_fill(ui, r.id, r.rect, r.hovered(), 0.0, t.chrome2);
+                        ui::icon(ui, name, r.rect.center(), 16.0, t.chrome_text);
+                        ui::tip(r, label, kbd)
+                    };
+                    if chrome_button(ui, "home", "Lavagne", None).clicked() {
+                        action = Some(Action::Home);
+                    }
+                    if chrome_button(ui, "settings", "Impostazioni", Some("Ctrl+,")).clicked() {
+                        dialogs.settings = true;
+                    }
+                    ui.add_space(4.0);
+                    let g = ui.painter().layout_no_wrap(self.title.clone(), FontId::proportional(11.0), t.chrome_text);
+                    let (tab, _) = ui.allocate_exact_size(vec2((g.size().x + 32.0).clamp(120.0, 280.0), 40.0), Sense::hover());
+                    ui.painter().rect_filled(tab, 0.0, t.chrome2);
+                    ui.painter().with_clip_rect(tab.shrink2(vec2(16.0, 0.0))).galley(pos2(tab.min.x + 16.0, tab.center().y - g.size().y / 2.0), g, t.chrome_text);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(8.0);
+                        if chrome_button(ui, "scan", "Modalità zen: solo la lavagna", Some("Ctrl+Maiusc+\\")).clicked() {
+                            self.editor.prefs.zen = true;
+                        }
+                    });
+                });
             });
-        });
+        }
 
         egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
             if let Some(a) = self.stage(ui, &t, toasts, dialogs) {
@@ -445,7 +468,8 @@ impl BoardScreen {
         let mut action_from_panel = None;
         // Figma UI3: the panels are cards floating over the board, which runs underneath them.
         let prefs = &self.editor.prefs;
-        let (show_left, show_right) = (!prefs.focus && prefs.left_panel, !prefs.focus && prefs.right_panel);
+        let zen = prefs.zen;
+        let (show_left, show_right) = (!zen && !prefs.focus && prefs.left_panel, !zen && !prefs.focus && prefs.right_panel);
         let kl = ui::motion::presence(&ctx, Id::new("left-panel"), show_left);
         let kr = ui::motion::presence(&ctx, Id::new("right-panel"), show_right);
         const GAP: f32 = 8.0;
@@ -509,22 +533,31 @@ impl BoardScreen {
         super::live::comment_thread(&ctx, &mut self.editor, &mut self.ui);
         super::live::cursor_chat(&ctx, &mut self.editor, &mut self.ui);
         let mut action = action_from_panel;
-        super::context_bar::context_bar(&ctx, rect, &mut self.editor);
-        super::toolbar::toolbar(&ctx, rect, &mut self.editor, &mut self.ui);
+        // Zen mode: nothing over the board but what is being done on it, and a way out.
+        let zen = self.editor.prefs.zen;
+        if !zen {
+            super::context_bar::context_bar(&ctx, rect, &mut self.editor);
+            super::toolbar::toolbar(&ctx, rect, &mut self.editor, &mut self.ui);
+            if !self.editor.prefs.focus {
+                super::toolbar::view_controls(&ctx, rect, &mut self.editor);
+                if self.editor.prefs.minimap {
+                    super::toolbar::minimap(&ctx, rect, &mut self.editor, &mut self.ui.minimap);
+                }
+            }
+            if self.editor.prefs.focus || !self.editor.prefs.left_panel {
+                if let Some(a) = super::panels::focus_pill(&ctx, rect, self, dialogs) {
+                    action = Some(a);
+                }
+            }
+            if !self.editor.prefs.focus && !self.editor.prefs.right_panel {
+                super::panels::right_pill(&ctx, rect, self);
+            }
+        } else {
+            ctx.data_mut(|d| d.remove::<Rect>(Id::new("bottom-bars")));
+        }
         super::live::top_bars(&ctx, rect, &mut self.editor);
-        if !self.editor.prefs.focus {
-            super::toolbar::view_controls(&ctx, rect, &mut self.editor);
-            if self.editor.prefs.minimap {
-                super::toolbar::minimap(&ctx, rect, &mut self.editor, &mut self.ui.minimap);
-            }
-        }
-        if self.editor.prefs.focus || !self.editor.prefs.left_panel {
-            if let Some(a) = super::panels::focus_pill(&ctx, rect, self, dialogs) {
-                action = Some(a);
-            }
-        }
-        if !self.editor.prefs.focus && !self.editor.prefs.right_panel {
-            super::panels::right_pill(&ctx, rect, self);
+        if zen {
+            super::panels::zen_pill(&ctx, rect, &mut self.editor);
         }
 
         for req in std::mem::take(&mut self.editor.requests) {
@@ -551,16 +584,21 @@ impl BoardScreen {
         }
         self.context_menu(&ctx);
         super::dialogs::shortcuts(&ctx, &mut self.ui.shortcuts);
-        if let Some(sel) = self.ui.export {
-            let mut open = true;
+        // Dialogs are called while closed too, so they fade away instead of vanishing.
+        {
+            let mut open = self.ui.export.is_some();
+            if let Some(sel) = self.ui.export {
+                self.ui.export_sel = sel;
+            }
+            let sel = self.ui.export_sel;
             super::dialogs::export(&ctx, &mut open, sel, self, toasts);
             if !open {
                 self.ui.export = None;
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if self.ui.share {
-            let mut open = true;
+        {
+            let mut open = self.ui.share;
             super::dialogs::share(&ctx, &mut open, self, toasts);
             self.ui.share = open;
         }
