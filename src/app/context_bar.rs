@@ -317,7 +317,7 @@ fn controls(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], t: &Theme) {
             step(ui, "minus", "Testo più piccolo", 1.0 / 1.2);
             let txt = size.map_or("–".to_string(), |v| v.to_string());
             let (r, _) = ui.allocate_exact_size(vec2(28.0, B), Sense::hover());
-            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, txt, egui::FontId::proportional(11.0), t.text);
+            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, txt, egui::FontId::proportional(ui::px(11.0)), t.text);
             step(ui, "plus", "Testo più grande", 1.2);
             let bold = els.iter().all(|e| crate::style::look(e).and_then(|l| l.bold) == Some(true));
             let italic = els.iter().all(|e| crate::style::look(e).and_then(|l| l.italic) == Some(true));

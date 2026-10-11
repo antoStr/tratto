@@ -43,7 +43,7 @@ pub fn dialog(ctx: &egui::Context, id: &str, title: &str, width: f32, open: &mut
                 ui.set_width(width);
                 egui::Frame::new().inner_margin(egui::Margin { left: 16, right: 10, top: 10, bottom: 10 }).show(ui, |ui| {
                     ui::row(ui, 24.0, |ui| {
-                        ui.label(RichText::new(title).font(ui::medium(13.0)).color(t.text));
+                        ui.label(RichText::new(title).font(ui::medium(ui::px(13.0))).color(t.text));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui::small_icon_button(ui, "x", "Chiudi", false).clicked() {
                                 *open = false;
@@ -73,9 +73,9 @@ fn row(ui: &mut egui::Ui, label: &str, hint: Option<&str>, control: impl FnOnce(
         ui.vertical(|ui| {
             ui.set_width(176.0);
             ui.spacing_mut().item_spacing.y = 2.0;
-            ui.label(RichText::new(label).font(ui::medium(11.0)).color(t.text));
+            ui.label(RichText::new(label).font(ui::medium(ui::px(11.0))).color(t.text));
             if let Some(h) = hint {
-                ui.label(RichText::new(h).size(10.0).color(t.text2));
+                ui.label(RichText::new(h).size(ui::px(10.0)).color(t.text2));
             }
         });
         ui.add_space(8.0);
@@ -135,7 +135,7 @@ pub fn settings(ctx: &egui::Context, open: &mut bool, p: &mut Prefs, host: bool)
                 ui.set_width(SIDEBAR_W);
                 ui.set_height(SETTINGS_H);
                 ui.spacing_mut().item_spacing.y = 2.0;
-                let rects: Vec<egui::Rect> = tabs.iter().map(|_| ui.allocate_exact_size(vec2(SIDEBAR_W - 12.0, 32.0), Sense::hover()).0).collect();
+                let rects: Vec<egui::Rect> = tabs.iter().map(|_| ui.allocate_exact_size(vec2(SIDEBAR_W - 12.0, ui::ctl(32.0)), Sense::hover()).0).collect();
                 let at = tabs.iter().position(|x| x.0 == tab).unwrap_or(0);
                 let y = ui::motion::spring(ui.ctx(), Id::new("settings-tab-y"), rects[at].min.y - rects[0].min.y, 0.3, 0.88);
                 ui.painter().rect_filled(rects[0].translate(vec2(0.0, y)), ui::RADIUS, t.selected);
@@ -145,7 +145,7 @@ pub fn settings(ctx: &egui::Context, open: &mut bool, p: &mut Prefs, host: bool)
                     ui::hover_fill(ui, resp.id, r, resp.hovered() && i != at, ui::RADIUS as f32, t.hover);
                     let on = i == at;
                     ui::icon(ui, icon, pos2(r.min.x + 16.0, r.center().y), 16.0, if on { t.text } else { t.icon2 });
-                    ui.painter().text(pos2(r.min.x + 34.0, r.center().y), egui::Align2::LEFT_CENTER, *label, if on { ui::medium(11.0) } else { egui::FontId::proportional(11.0) }, t.text);
+                    ui.painter().text(pos2(r.min.x + 34.0, r.center().y), egui::Align2::LEFT_CENTER, *label, if on { ui::medium(ui::px(11.0)) } else { egui::FontId::proportional(ui::px(11.0)) }, t.text);
                     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, *label));
                     ui::focus_ring(ui, &resp, r);
                     if resp.clicked() {
@@ -410,7 +410,7 @@ fn toolbar_settings(ui: &mut egui::Ui, p: &mut Prefs) {
     let n = items.len();
     for (i, id) in items.clone().iter().enumerate() {
         let name = crate::prefs::TOOLBAR_ITEMS.iter().find(|x| x.0 == id).map_or("", |x| x.1);
-        let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click_and_drag());
+        let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ui::ctl(34.0)), Sense::click_and_drag());
         let hidden = p.toolbar_hidden.contains(id);
         let h = ui::motion::hover(ui.ctx(), resp.id.with("h"), resp.hovered() && !dragging);
         let being_dragged = resp.dragged();
@@ -424,7 +424,7 @@ fn toolbar_settings(ui: &mut egui::Ui, p: &mut Prefs) {
         ui.painter().rect_filled(r, ui::RADIUS, if being_dragged { t.selected } else { t.hover.gamma_multiply(h) });
         ui::icon(ui, "grip-vertical", pos2(r.min.x + 12.0, r.center().y), 14.0, t.icon2);
         ui::icon(ui, toolbar_icon(id), pos2(r.min.x + 36.0, r.center().y), 16.0, if hidden { t.text3 } else { t.icon });
-        ui.painter().text(pos2(r.min.x + 56.0, r.center().y), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(ui::sizes(ui.ctx()).fs), if hidden { t.text3 } else { t.text });
+        ui.painter().text(pos2(r.min.x + 56.0, r.center().y), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(ui::px(11.0)), if hidden { t.text3 } else { t.text });
         // Where a dragged button would go: a line above or below this row.
         if let Some(from) = resp.dnd_hover_payload::<usize>() {
             let below = ui.ctx().input(|i| i.pointer.hover_pos()).is_some_and(|q| q.y > r.center().y);

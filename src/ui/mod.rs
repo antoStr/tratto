@@ -184,6 +184,24 @@ pub struct Sizes {
     pub xl: f32,
 }
 
+static TEXT_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3F80_0000);
+
+/// Settings ▸ Dimensione del testo: how much bigger the interface's text is (1 = normal).
+pub fn text_scale() -> f32 {
+    f32::from_bits(TEXT_SCALE.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// An interface text size, as large as the settings ask.
+pub fn px(size: f32) -> f32 {
+    (size * text_scale() * 2.0).round() / 2.0
+}
+
+/// The height of a control holding a line of text: it grows with the text, a little less, so
+/// bigger text never overflows its box.
+pub fn ctl(h: f32) -> f32 {
+    (h * (1.0 + (text_scale() - 1.0) * 0.9)).round()
+}
+
 pub fn sizes(ctx: &egui::Context) -> Sizes {
     let k = ctx.data(|d| d.get_temp::<f32>(Id::new("text-scale"))).unwrap_or(1.0);
     Sizes { fs: 11.0 * k, md: 12.0 * k, lg: 13.0 * k, xl: 15.0 * k }
@@ -204,6 +222,7 @@ pub fn install_fonts(ctx: &egui::Context) {
 
 /// Applies the theme to egui's own widgets. Popups (menus, tooltips) are dark in both themes.
 pub fn setup(ctx: &egui::Context, t: Theme, text_scale: f32) {
+    TEXT_SCALE.store(text_scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
     ctx.data_mut(|d| {
         d.insert_temp(Id::NULL, t);
         d.insert_temp(Id::new("text-scale"), text_scale);
@@ -321,7 +340,7 @@ pub fn button(ui: &mut Ui, text: &str, kind: Kind, icon_name: Option<&str>, big:
     let font = medium(if big { s.md } else { s.fs });
     let galley = ui.painter().layout_no_wrap(text.to_string(), font, Color32::PLACEHOLDER);
     let icon_w = if icon_name.is_some() { 14.0 + 6.0 } else { 0.0 };
-    let h = if big { 32.0 } else { 24.0 };
+    let h = ctl(if big { 32.0 } else { 24.0 });
     let pad = if big { 12.0 } else { 8.0 };
     let size = vec2((galley.size().x + icon_w + pad * 2.0).round(), h);
     let (rect, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
@@ -405,7 +424,8 @@ pub fn segmented<T: PartialEq + Clone>(ui: &mut Ui, value: &mut T, options: &[(T
     let t = theme(ui.ctx());
     let s = sizes(ui.ctx());
     let ctx = ui.ctx().clone();
-    let (rect, _) = ui.allocate_exact_size(vec2(width, 24.0), Sense::hover());
+    let h = ctl(24.0);
+    let (rect, _) = ui.allocate_exact_size(vec2(width, h), Sense::hover());
     let key: Vec<&str> = options.iter().map(|o| o.1).collect();
     let base = ui.id().with(("seg", key));
     ui.painter().rect_filled(rect, RADIUS, t.bg2);
@@ -419,14 +439,14 @@ pub fn segmented<T: PartialEq + Clone>(ui: &mut Ui, value: &mut T, options: &[(T
         && shown > 0.0
     {
         let x = motion::spring(&ctx, base.with("thumb"), i as f32 * w, 0.32, 0.88);
-        let thumb = Rect::from_min_size(pos2(rect.min.x + 1.0 + x, rect.min.y + 1.0), vec2(w, 22.0));
+        let thumb = Rect::from_min_size(pos2(rect.min.x + 1.0 + x, rect.min.y + 1.0), vec2(w, h - 2.0));
         let shadow = egui::Shadow { offset: [0, 1], blur: 2, spread: 0, color: black(if t.dark { 0.3 } else { 0.08 } * shown) };
         ui.painter().add(shadow.as_shape(thumb, RADIUS - 1));
         ui.painter().rect(thumb, RADIUS - 1, t.bg.gamma_multiply(shown), Stroke::new(1.0, t.border.gamma_multiply(shown)), egui::StrokeKind::Inside);
     }
     let mut changed = false;
     for (i, (v, label)) in options.iter().enumerate() {
-        let r = egui::Rect::from_min_size(pos2(rect.min.x + 1.0 + i as f32 * w, rect.min.y + 1.0), vec2(w, 22.0));
+        let r = egui::Rect::from_min_size(pos2(rect.min.x + 1.0 + i as f32 * w, rect.min.y + 1.0), vec2(w, h - 2.0));
         let resp = ui.interact(r, base.with(i), Sense::click());
         let on = at == Some(i);
         let h = motion::hover(&ctx, resp.id.with("h"), resp.hovered() && !on);
@@ -750,10 +770,10 @@ pub fn slider(ui: &mut Ui, label: &str, value: &mut f64, min: f64, max: f64, ste
     let t = theme(ui.ctx());
     let s = sizes(ui.ctx());
     let mut changed = false;
-    ui.allocate_ui(vec2(width, 34.0), |ui| {
+    ui.allocate_ui(vec2(width, ctl(34.0)), |ui| {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
-            let (head, _) = ui.allocate_exact_size(vec2(width, 16.0), Sense::hover());
+            let (head, _) = ui.allocate_exact_size(vec2(width, ctl(16.0)), Sense::hover());
             ui.painter().text(head.left_center(), egui::Align2::LEFT_CENTER, label, FontId::proportional(s.fs), t.text2);
             ui.painter().text(head.right_center(), egui::Align2::RIGHT_CENTER, format(*value), FontId::proportional(s.fs), t.text);
             changed = track(ui, label, value, min, max, step, log, width);
@@ -769,7 +789,7 @@ pub fn slider_inline(ui: &mut Ui, label: &str, value: &mut f64, min: f64, max: f
     let s = sizes(ui.ctx());
     let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(s.fs), t.text2);
     let value_w = 40.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(width, 28.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(width, ctl(28.0)), Sense::hover());
     ui.painter().galley(pos2(rect.min.x, rect.center().y - g.size().y / 2.0), g.clone(), t.text2);
     ui.painter().text(pos2(rect.max.x, rect.center().y), egui::Align2::RIGHT_CENTER, format(*value), FontId::proportional(s.fs), t.text);
     let left = rect.min.x + g.size().x + 10.0;
@@ -878,7 +898,7 @@ impl<'a> Num<'a> {
         let shown = value.map(|v| format!("{}{suffix}", fmt_num(v, decimals))).unwrap_or_else(|| "Misto".into());
         let mut out = None;
         let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| shown.clone());
-        let (rect, _) = ui.allocate_exact_size(vec2(width, 24.0), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(vec2(width, ctl(24.0)), Sense::hover());
         ui.painter().rect_filled(rect, RADIUS, t.bg2);
         // The label: what you drag to change the value.
         let lab_w = if label.starts_with("icon:") { 24.0 } else { (ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(s.fs), t.text2).size().x + 14.0).max(22.0) };
@@ -977,7 +997,7 @@ pub fn menu_item(ui: &mut Ui, icon_name: Option<&str>, label: &str, kbd: Option<
     let want = menu_item_width(ui, label, kbd).max(140.0);
     // While the menu measures itself it asks only for its own width.
     let w = if ui.is_sizing_pass() { want } else { want.max(ui.available_width()) };
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, 24.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, ctl(24.0)), Sense::click());
     let hovered = resp.hovered() || resp.has_focus();
     if hovered {
         ui.painter().rect_filled(rect, RADIUS, if danger { hex(0xC8331A) } else { t.brand_fill });
@@ -998,7 +1018,7 @@ pub fn menu_item(ui: &mut Ui, icon_name: Option<&str>, label: &str, kbd: Option<
 pub fn menu_label(ui: &mut Ui, text: &str) {
     let t = theme(ui.ctx());
     let (rect, _) = ui.allocate_exact_size(vec2(if ui.is_sizing_pass() { 60.0 } else { ui.available_width() }, 22.0), Sense::hover());
-    ui.painter().text(pos2(rect.min.x + 10.0, rect.center().y), egui::Align2::LEFT_CENTER, text, FontId::proportional(10.0), t.menu_text2);
+    ui.painter().text(pos2(rect.min.x + 10.0, rect.center().y), egui::Align2::LEFT_CENTER, text, FontId::proportional(px(10.0)), t.menu_text2);
 }
 
 pub fn menu_sep(ui: &mut Ui) {

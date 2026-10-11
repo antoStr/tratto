@@ -120,7 +120,7 @@ pub fn left(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, dialogs: &mut
     let t = ui::theme(ui.ctx());
     let action = None;
     // Header: name and status.
-    let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::hover());
+    let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), ui::ctl(48.0)), Sense::hover());
     ui.painter().hline(head.x_range(), head.max.y - 0.5, Stroke::new(1.0, t.border));
     ui.scope_builder(egui::UiBuilder::new().max_rect(head.shrink2(vec2(8.0, 6.0))), |ui| {
         ui.horizontal_centered(|ui| {
@@ -138,7 +138,7 @@ pub fn left(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, dialogs: &mut
                         (false, true) => "In diretta",
                         (false, false) => "Mi collego…",
                     };
-                    ui.label(RichText::new(status).size(10.0).color(t.text2));
+                    ui.label(RichText::new(status).size(ui::px(10.0)).color(t.text2));
                 });
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -153,7 +153,7 @@ pub fn left(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, dialogs: &mut
         });
     });
     // Tabs.
-    let (tabs, _) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::hover());
+    let (tabs, _) = ui.allocate_exact_size(vec2(ui.available_width(), ui::ctl(40.0)), Sense::hover());
     ui.painter().hline(tabs.x_range(), tabs.max.y - 0.5, Stroke::new(1.0, t.border));
     ui.scope_builder(egui::UiBuilder::new().max_rect(tabs.shrink2(vec2(8.0, 8.0))), |ui| {
         ui.horizontal_centered(|ui| {
@@ -175,8 +175,8 @@ fn tab_strip<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, &st
     let rects: Vec<Rect> = options
         .iter()
         .map(|(_, label)| {
-            let w = ui.painter().layout_no_wrap(label.to_string(), ui::medium(11.0), t.text).size().x;
-            ui.allocate_exact_size(vec2(w + 18.0, 24.0), Sense::hover()).0
+            let w = ui.painter().layout_no_wrap(label.to_string(), ui::medium(ui::px(11.0)), t.text).size().x;
+            ui.allocate_exact_size(vec2(w + 18.0, ui::ctl(24.0)), Sense::hover()).0
         })
         .collect();
     let Some(first) = rects.first().copied() else { return };
@@ -184,12 +184,12 @@ fn tab_strip<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, &st
     let id = ui.id().with("tabs-pill");
     let x = ui::motion::spring(ui.ctx(), id.with("x"), rects[at].min.x - first.min.x, 0.3, 0.88);
     let w = ui::motion::spring(ui.ctx(), id.with("w"), rects[at].width(), 0.3, 0.88);
-    ui.painter().rect_filled(Rect::from_min_size(pos2(first.min.x + x, first.min.y), vec2(w, 24.0)), ui::RADIUS, t.bg2);
+    ui.painter().rect_filled(Rect::from_min_size(pos2(first.min.x + x, first.min.y), vec2(w, first.height())), ui::RADIUS, t.bg2);
     for (i, ((v, label), r)) in options.iter().zip(&rects).enumerate() {
         let resp = ui.interact(*r, ui.id().with(("tab", i)), Sense::click());
         let on = i == at;
         let k = ui::motion::hover(ui.ctx(), resp.id.with("h"), on || resp.hovered());
-        let font = if on { ui::medium(11.0) } else { egui::FontId::proportional(11.0) };
+        let font = if on { ui::medium(ui::px(11.0)) } else { egui::FontId::proportional(ui::px(11.0)) };
         ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, *label, font, ui::blend(t.text2, t.text, k));
         resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, *label));
         ui::focus_ring(ui, &resp, *r);
@@ -203,7 +203,7 @@ fn tab_strip<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, &st
 fn title(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, width: f32) {
     let t = ui::theme(ui.ctx());
     if let Some(buf) = &mut b.ui.title_edit {
-        let resp = ui.add(egui::TextEdit::singleline(buf).desired_width(width).font(ui::medium(11.0)));
+        let resp = ui.add(egui::TextEdit::singleline(buf).desired_width(width).font(ui::medium(ui::px(11.0))));
         if !resp.has_focus() && !resp.lost_focus() {
             resp.request_focus();
         }
@@ -216,8 +216,8 @@ fn title(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, width: f32) {
         }
         return;
     }
-    let g = ui.painter().layout_no_wrap(b.title.clone(), ui::medium(11.0), t.text);
-    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x.min(width), 18.0), Sense::click());
+    let g = ui.painter().layout_no_wrap(b.title.clone(), ui::medium(ui::px(11.0)), t.text);
+    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x.min(width), ui::ctl(18.0)), Sense::click());
     ui.painter().with_clip_rect(r).galley(pos2(r.min.x, r.center().y - g.size().y / 2.0), g, t.text);
     if ui::tip(resp, "Rinomina", None).clicked() {
         b.ui.title_edit = Some(b.title.clone());
@@ -445,7 +445,8 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
     }
     let selected: std::collections::HashSet<String> = ed.selection.iter().cloned().collect();
     let ro = ed.read_only;
-    ScrollArea::vertical().auto_shrink(false).show_rows(ui, 32.0, rows.len(), |ui, range| {
+    let row_h = ui::ctl(32.0);
+    ScrollArea::vertical().auto_shrink(false).show_rows(ui, row_h, rows.len(), |ui, range| {
         ui.spacing_mut().item_spacing.y = 0.0;
         for row in &rows[range] {
             let key = row_key(row);
@@ -471,7 +472,7 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
                 Row::Folder { name, members, .. } => (format!("{name}  {}", members.len()), 0, true),
                 Row::Piece { label, depth, .. } => (label.clone(), *depth, false),
             };
-            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
+            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
             let r = rect.shrink2(vec2(8.0, 2.0));
             let sel_k = ui::motion::hover(ui.ctx(), Id::new(("layer-sel", &key)), is_sel);
             if sel_k > 0.0 {
@@ -508,7 +509,7 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
             x += 22.0;
             let renaming = st.renaming.as_deref() == Some(key.as_str());
             if renaming {
-                let edit = ui.put(Rect::from_min_max(pos2(x, r.min.y + 2.0), pos2(r.max.x - 8.0, r.max.y - 2.0)), egui::TextEdit::singleline(&mut st.rename_buf).font(egui::FontId::proportional(11.0)));
+                let edit = ui.put(Rect::from_min_max(pos2(x, r.min.y + 2.0), pos2(r.max.x - 8.0, r.max.y - 2.0)), egui::TextEdit::singleline(&mut st.rename_buf).font(egui::FontId::proportional(ui::px(11.0))));
                 if !edit.has_focus() && !edit.lost_focus() {
                     edit.request_focus();
                 }
@@ -528,7 +529,7 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
                 }
             } else {
                 let color = if hidden { t.text3 } else if piece.is_some() { t.text2 } else { t.text };
-                let font = if folder { ui::medium(11.0) } else { egui::FontId::proportional(11.0) };
+                let font = if folder { ui::medium(ui::px(11.0)) } else { egui::FontId::proportional(ui::px(11.0)) };
                 ui.painter().with_clip_rect(Rect::from_min_max(pos2(x, r.min.y), pos2(r.max.x - 52.0, r.max.y))).text(pos2(x, r.center().y), egui::Align2::LEFT_CENTER, &label, font, color);
             }
             // Lock and hide, shown on hover or when on.
@@ -625,8 +626,8 @@ fn templates(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
             let art = Rect::from_min_size(r.min + vec2(6.0, 6.0), vec2(80.0, 52.0));
             template_art(ui, Some(tpl), art);
             let tx = art.max.x + 10.0;
-            ui.painter().text(pos2(tx, r.min.y + 18.0), egui::Align2::LEFT_CENTER, tpl.name, ui::medium(11.0), t.text);
-            let g = ui.painter().layout(tpl.description.to_string(), egui::FontId::proportional(10.0), t.text2, r.max.x - tx - 6.0);
+            ui.painter().text(pos2(tx, r.min.y + 18.0), egui::Align2::LEFT_CENTER, tpl.name, ui::medium(ui::px(11.0)), t.text);
+            let g = ui.painter().layout(tpl.description.to_string(), egui::FontId::proportional(ui::px(10.0)), t.text2, r.max.x - tx - 6.0);
             ui.painter().galley(pos2(tx, r.min.y + 28.0), g, t.text2);
             if resp.drag_started() {
                 super::toolbar::start_drag(ui.ctx(), super::toolbar::Payload::Template(tpl.id), tpl.name, "layout-template");
@@ -644,7 +645,7 @@ fn templates(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
 
 pub fn right(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
     let t = ui::theme(ui.ctx());
-    let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::hover());
+    let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), ui::ctl(48.0)), Sense::hover());
     ui.painter().hline(head.x_range(), head.max.y - 0.5, Stroke::new(1.0, t.border));
     ui.scope_builder(egui::UiBuilder::new().max_rect(head.shrink2(vec2(10.0, 8.0))), |ui| {
         ui.horizontal_centered(|ui| {
@@ -652,13 +653,13 @@ pub fn right(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| share_button(ui, b));
         });
     });
-    let (sub, _) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::hover());
+    let (sub, _) = ui.allocate_exact_size(vec2(ui.available_width(), ui::ctl(40.0)), Sense::hover());
     ui.painter().hline(sub.x_range(), sub.max.y - 0.5, Stroke::new(1.0, t.border));
     ui.scope_builder(egui::UiBuilder::new().max_rect(sub.shrink2(vec2(8.0, 8.0))), |ui| {
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.add_space(4.0);
-            ui.label(RichText::new("Design").font(ui::medium(11.0)).color(t.text));
+            ui.label(RichText::new("Design").font(ui::medium(ui::px(11.0))).color(t.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if small_icon_button(ui, "panel-right-close", "Nascondi il pannello", false).clicked() {
                     b.editor.prefs.right_panel = false;
@@ -685,7 +686,7 @@ pub fn right(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
 
 fn zoom_menu(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
     let label = format!("{}%", (ed.cam.z * 100.0).round());
-    let g = ui.painter().layout_no_wrap(label.clone(), egui::FontId::proportional(11.0), t.text);
+    let g = ui.painter().layout_no_wrap(label.clone(), egui::FontId::proportional(ui::px(11.0)), t.text);
     let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 26.0, 24.0), Sense::click());
     ui::hover_fill(ui, resp.id, r, resp.hovered(), ui::RADIUS as f32, t.hover);
     ui.painter().galley(pos2(r.min.x + 6.0, r.center().y - g.size().y / 2.0), g, t.text);
@@ -723,7 +724,7 @@ pub fn participants(ui: &mut Ui, ed: &mut Editor) {
         }
     }
     if list.len() > 4 {
-        ui.label(RichText::new(format!("+{}", list.len() - 4)).size(10.0));
+        ui.label(RichText::new(format!("+{}", list.len() - 4)).size(ui::px(10.0)));
     }
 }
 
@@ -757,7 +758,7 @@ fn share_button(ui: &mut Ui, b: &mut BoardScreen) {
     if !b.host {
         let t = ui::theme(ui.ctx());
         let text = if b.editor.read_only { "Solo visione" } else { "Puoi modificare" };
-        ui.label(RichText::new(text).size(10.0).color(t.text2));
+        ui.label(RichText::new(text).size(ui::px(10.0)).color(t.text2));
         return;
     }
     let sharing = b.sharing();
@@ -772,7 +773,7 @@ fn section(ui: &mut Ui, title: Option<&str>, body: impl FnOnce(&mut Ui)) {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing.y = 8.0;
         if let Some(title) = title {
-            ui.label(RichText::new(title).font(ui::medium(11.0)).color(t.text));
+            ui.label(RichText::new(title).font(ui::medium(ui::px(11.0))).color(t.text));
         }
         body(ui);
     });
@@ -840,7 +841,7 @@ pub fn background_fields(ui: &mut Ui, meta: &mut BoardMeta) {
             ui.painter().rect_stroke(art, ui::RADIUS, Stroke::new(3.0, t.bg), egui::StrokeKind::Outside);
             let on = meta.pattern == *p;
             ui.painter().rect_stroke(art, ui::RADIUS, Stroke::new(if on { 2.0 } else { 1.0 }, if on { t.brand } else { t.border }), egui::StrokeKind::Inside);
-            ui.painter().text(pos2(r.center().x, r.max.y - 7.0), egui::Align2::CENTER_CENTER, pattern_label(*p), egui::FontId::proportional(10.0), t.text2);
+            ui.painter().text(pos2(r.center().x, r.max.y - 7.0), egui::Align2::CENTER_CENTER, pattern_label(*p), egui::FontId::proportional(ui::px(10.0)), t.text2);
             resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, pattern_label(*p)));
             if resp.clicked() {
                 meta.pattern = *p;
@@ -883,13 +884,13 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
         ui.horizontal(|ui| match &single {
             Some(e) => {
                 let label = element_label(e);
-                ui.label(RichText::new(&label).font(ui::medium(11.0)).color(t.text));
+                ui.label(RichText::new(&label).font(ui::medium(ui::px(11.0))).color(t.text));
                 if label != type_label(e) {
                     ui.label(RichText::new(type_label(e)).color(t.text2));
                 }
             }
             None => {
-                ui.label(RichText::new(format!("{} elementi", els.len())).font(ui::medium(11.0)).color(t.text));
+                ui.label(RichText::new(format!("{} elementi", els.len())).font(ui::medium(ui::px(11.0))).color(t.text));
             }
         });
     });
@@ -1459,7 +1460,7 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
         ui::float_frame(&t).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
             ui::row(ui, 24.0, |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
-                ui.label(RichText::new(&b.title).font(ui::medium(ui::sizes(ui.ctx()).fs)).color(t.text));
+                ui.label(RichText::new(&b.title).font(ui::medium(ui::px(11.0))).color(t.text));
                 ui.spacing_mut().item_spacing.x = 2.0;
                 if !b.host {
                     guest_buttons(ui, b, dialogs);
@@ -1546,7 +1547,7 @@ fn table_tools(ctx: &egui::Context, stage: Rect, ed: &mut Editor, el: &El, tb: &
             ui::row(ui, 28.0, |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 ui.add_space(4.0);
-                ui.label(RichText::new(format!("{}{}", col_name(c), r + 1)).font(ui::medium(11.0)).color(t.text2));
+                ui.label(RichText::new(format!("{}{}", col_name(c), r + 1)).font(ui::medium(ui::px(11.0))).color(t.text2));
                 ui.add_space(4.0);
                 // The cell's colour.
                 let cur = tb.cells[r][c].fill.clone().unwrap_or_else(|| "transparent".into());
@@ -1671,7 +1672,7 @@ fn code_tools(ctx: &egui::Context, stage: Rect, ed: &mut Editor, el: &El, code: 
 /// The language of a code block, as a dropdown.
 pub fn language_picker(ui: &mut Ui, current: &str, t: &Theme) -> Option<String> {
     let name = crate::code::language_name(current);
-    let g = ui.painter().layout_no_wrap(name.to_string(), ui::medium(11.0), t.text);
+    let g = ui.painter().layout_no_wrap(name.to_string(), ui::medium(ui::px(11.0)), t.text);
     let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 32.0, 24.0), Sense::click());
     let k = ui::motion::hover(ui.ctx(), resp.id, resp.hovered());
     ui.painter().rect_filled(rect, ui::RADIUS, t.hover.gamma_multiply(k.max(0.5)));

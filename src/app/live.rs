@@ -158,7 +158,7 @@ pub fn top_bars(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
         painter.rect_stroke(stage.shrink(1.5), 0.0, Stroke::new(3.0, color), egui::StrokeKind::Inside);
         let label = format!("Stai seguendo {}", peer_name(s));
         let on = if is_dark(&hex(color)) { Color32::WHITE } else { crate::model::DARK };
-        let g = painter.layout_no_wrap(label, ui::medium(11.0), on);
+        let g = painter.layout_no_wrap(label, ui::medium(ui::px(11.0)), on);
         let r = Rect::from_center_size(pos2(stage.center().x, stage.min.y + 12.0), g.size() + vec2(16.0, 6.0));
         painter.rect_filled(r, egui::CornerRadius { nw: 0, ne: 0, sw: 6, se: 6 }, color);
         painter.galley(r.center() - g.size() / 2.0, g, on);
@@ -184,7 +184,7 @@ pub fn top_bars(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
                 pill(ui, &t, |ui| {
                     icon(ui, "timer", ui.cursor().min + vec2(7.0, 12.0), 14.0, t.icon);
                     ui.add_space(18.0);
-                    ui.label(RichText::new(if done { "Tempo scaduto".to_string() } else { clock(left) }).font(ui::medium(13.0)).color(if done { t.danger_text } else { t.text }));
+                    ui.label(RichText::new(if done { "Tempo scaduto".to_string() } else { clock(left) }).font(ui::medium(ui::px(13.0))).color(if done { t.danger_text } else { t.text }));
                     let (r, _) = ui.allocate_exact_size(vec2(80.0, 4.0), Sense::hover());
                     ui.painter().rect_filled(r, 2.0, t.bg3);
                     ui.painter().rect_filled(Rect::from_min_size(r.min, vec2(r.width() * (left / tm.total).clamp(0.0, 1.0) as f32, 4.0)), 2.0, t.brand_fill);
@@ -331,7 +331,7 @@ pub fn comment_thread(ctx: &egui::Context, ed: &mut Editor, st: &mut BoardUi) {
         ui::float_frame(&t).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
             ui.set_width(268.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Commento").font(ui::medium(12.0)).color(t.text));
+                ui.label(RichText::new("Commento").font(ui::medium(ui::px(12.0))).color(t.text));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui::small_icon_button(ui, "x", "Chiudi", false).clicked() {
                         close = true;
@@ -348,8 +348,8 @@ pub fn comment_thread(ctx: &egui::Context, ed: &mut Editor, st: &mut BoardUi) {
                         ui::avatar(ui, &m.author, crate::model::parse_color(&m.color).unwrap_or(Color32::from_rgb(0x97, 0x47, 0xFF)), 24.0);
                         ui.vertical(|ui| {
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new(&m.author).font(ui::medium(11.0)).color(t.text));
-                                ui.label(RichText::new(when(m.t)).size(10.0).color(t.text2));
+                                ui.label(RichText::new(&m.author).font(ui::medium(ui::px(11.0))).color(t.text));
+                                ui.label(RichText::new(when(m.t)).size(ui::px(10.0)).color(t.text2));
                                 if !ed.read_only && i > 0 && ui::small_icon_button(ui, "trash-2", "Elimina la risposta", false).clicked() {
                                     let mut next = thread.clone();
                                     next.remove(i);

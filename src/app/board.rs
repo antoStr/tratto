@@ -437,7 +437,7 @@ impl BoardScreen {
                         dialogs.settings = true;
                     }
                     ui.add_space(4.0);
-                    let g = ui.painter().layout_no_wrap(self.title.clone(), FontId::proportional(11.0), t.chrome_text);
+                    let g = ui.painter().layout_no_wrap(self.title.clone(), FontId::proportional(ui::px(11.0)), t.chrome_text);
                     let (tab, _) = ui.allocate_exact_size(vec2((g.size().x + 32.0).clamp(120.0, 280.0), 40.0), Sense::hover());
                     ui.painter().rect_filled(tab, 0.0, t.chrome2);
                     ui.painter().with_clip_rect(tab.shrink2(vec2(16.0, 0.0))).galley(pos2(tab.min.x + 16.0, tab.center().y - g.size().y / 2.0), g, t.chrome_text);
@@ -474,10 +474,11 @@ impl BoardScreen {
         let kl = ui::motion::presence(&ctx, Id::new("left-panel"), show_left);
         let kr = ui::motion::presence(&ctx, Id::new("right-panel"), show_right);
         const GAP: f32 = 8.0;
-        const PANEL: f32 = 240.0;
-        self.editor.safe = [if show_left { (PANEL + GAP * 2.0) as f64 } else { 0.0 }, 0.0, if show_right { (PANEL + GAP * 2.0) as f64 } else { 0.0 }, 0.0];
-        let left_rect = Rect::from_min_size(rect.min + vec2(GAP, GAP), vec2(PANEL, rect.height() - GAP * 2.0));
-        let right_rect = Rect::from_min_size(pos2(rect.max.x - GAP - PANEL, rect.min.y + GAP), vec2(PANEL, rect.height() - GAP * 2.0));
+        // Wider with bigger text, so names and fields keep their room.
+        let panel: f32 = (240.0 * (1.0 + (ui::text_scale() - 1.0) * 0.6)).round();
+        self.editor.safe = [if show_left { (panel + GAP * 2.0) as f64 } else { 0.0 }, 0.0, if show_right { (panel + GAP * 2.0) as f64 } else { 0.0 }, 0.0];
+        let left_rect = Rect::from_min_size(rect.min + vec2(GAP, GAP), vec2(panel, rect.height() - GAP * 2.0));
+        let right_rect = Rect::from_min_size(pos2(rect.max.x - GAP - panel, rect.min.y + GAP), vec2(panel, rect.height() - GAP * 2.0));
         panel_card(&ctx, "left-panel", left_rect, kl, -1.0, t, |ui| {
             if let Some(a) = super::panels::left(ui, self, toasts, dialogs) {
                 action_from_panel = Some(a);
@@ -486,7 +487,7 @@ impl BoardScreen {
         panel_card(&ctx, "right-panel", right_rect, kr, 1.0, t, |ui| super::panels::right(ui, self, toasts));
         // What floats over the board centres on the part the panels leave free.
         let stage = rect;
-        let rect = Rect::from_min_max(rect.min + vec2((PANEL + GAP) * kl.clamp(0.0, 1.0), 0.0), rect.max - vec2((PANEL + GAP) * kr.clamp(0.0, 1.0), 0.0));
+        let rect = Rect::from_min_max(rect.min + vec2((panel + GAP) * kl.clamp(0.0, 1.0), 0.0), rect.max - vec2((panel + GAP) * kr.clamp(0.0, 1.0), 0.0));
 
         let resp = ui.interact(stage, Id::new("board"), Sense::click_and_drag());
         let ed = &mut self.editor;

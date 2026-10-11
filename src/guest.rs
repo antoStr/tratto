@@ -612,7 +612,7 @@ fn card(ui: &mut egui::Ui, t: &Theme, body: impl FnOnce(&mut egui::Ui)) {
             ui.spacing_mut().item_spacing.y = 12.0;
             ui.horizontal(|ui| {
                 ui::logo(ui, 24.0);
-                ui.label(RichText::new("Tratto").font(ui::medium(14.0)).color(t.text));
+                ui.label(RichText::new("Tratto").font(ui::medium(ui::px(14.0))).color(t.text));
             });
             body(ui);
         });
@@ -659,7 +659,7 @@ impl eframe::App for GuestApp {
                 let (title, view, busy) = (self.title.clone(), self.access == "view", self.pending.is_some());
                 let (name, error) = (&mut self.name, &self.error);
                 card(ui, &t, |ui| {
-                    ui.label(RichText::new(format!("Ti hanno invitato su «{title}»")).font(ui::medium(16.0)).color(t.text));
+                    ui.label(RichText::new(format!("Ti hanno invitato su «{title}»")).font(ui::medium(ui::px(16.0))).color(t.text));
                     ui::hint(ui, if view { "Potrai guardare la lavagna dal vivo. Chi ti ha invitato deve farti entrare." } else { "Potrai disegnare e scrivere insieme agli altri. Chi ti ha invitato deve farti entrare." });
                     ui::field_label(ui, "Il tuo nome");
                     let edit = ui::text_field(ui, name, "Come ti vedranno gli altri", 40);
@@ -679,7 +679,7 @@ impl eframe::App for GuestApp {
             Stage::Waiting => card(ui, &t, |ui| {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(RichText::new("Aspetto che ti facciano entrare…").font(ui::medium(14.0)).color(t.text));
+                    ui.label(RichText::new("Aspetto che ti facciano entrare…").font(ui::medium(ui::px(14.0))).color(t.text));
                 });
                 ui::hint(ui, "Chi ti ha invitato vede la tua richiesta su Tratto. Tieni aperta questa pagina.");
             }),

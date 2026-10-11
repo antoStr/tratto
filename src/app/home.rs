@@ -110,7 +110,7 @@ impl Home {
             ui::row(ui, 28.0, |ui| {
                 ui.add_space(4.0);
                 ui::logo(ui, 22.0);
-                ui.label(RichText::new("Tratto").font(ui::medium(14.0)).color(t.text));
+                ui.label(RichText::new("Tratto").font(ui::medium(ui::px(14.0))).color(t.text));
             });
             ui.add_space(14.0);
             ui.spacing_mut().item_spacing.y = 2.0;
@@ -141,7 +141,7 @@ impl Home {
         });
         egui::CentralPanel::default().frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin { left: 32, right: 32, top: 18, bottom: 0 })).show(ui, |ui| {
             ui::row(ui, 32.0, |ui| {
-                ui.label(RichText::new("Recenti").font(ui::medium(15.0)).color(t.text));
+                ui.label(RichText::new("Recenti").font(ui::medium(ui::px(15.0))).color(t.text));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     if ui::button(ui, "Nuova lavagna", Btn::Primary, Some("plus"), false, true).clicked() {
@@ -156,7 +156,7 @@ impl Home {
             let out = ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                 let view = ui.clip_rect();
                 // Your boards.
-                let mine = ui.label(RichText::new("Le tue lavagne").font(ui::medium(13.0)).color(t.text));
+                let mine = ui.label(RichText::new("Le tue lavagne").font(ui::medium(ui::px(13.0))).color(t.text));
                 if jump == Some(0) {
                     mine.scroll_to_me(Some(egui::Align::TOP));
                 }
@@ -184,7 +184,7 @@ impl Home {
                 }
                 ui.add_space(36.0);
                 // Templates.
-                let head = ui.label(RichText::new("Modelli").font(ui::medium(13.0)).color(t.text));
+                let head = ui.label(RichText::new("Modelli").font(ui::medium(ui::px(13.0))).color(t.text));
                 if jump == Some(1) {
                     head.scroll_to_me(Some(egui::Align::TOP));
                 }
@@ -326,9 +326,9 @@ impl Home {
                 }
             }
         } else {
-            ui.painter().with_clip_rect(Rect::from_min_size(meta.min, vec2(CARD_W - 34.0, 40.0))).text(meta.min + vec2(2.0, 9.0), egui::Align2::LEFT_CENTER, &b.title, ui::medium(11.0), t.text);
+            ui.painter().with_clip_rect(Rect::from_min_size(meta.min, vec2(CARD_W - 34.0, 40.0))).text(meta.min + vec2(2.0, 9.0), egui::Align2::LEFT_CENTER, &b.title, ui::medium(ui::px(11.0)), t.text);
         }
-        ui.painter().text(meta.min + vec2(2.0, 27.0), egui::Align2::LEFT_CENTER, format!("Modificata {}", time_ago(b.updated_at)), egui::FontId::proportional(10.0), t.text2);
+        ui.painter().text(meta.min + vec2(2.0, 27.0), egui::Align2::LEFT_CENTER, format!("Modificata {}", time_ago(b.updated_at)), egui::FontId::proportional(ui::px(10.0)), t.text2);
         // "More" shows while the pointer is on the card (or its menu is open).
         let more_rect = Rect::from_min_size(pos2(meta.max.x - 26.0, meta.min.y - 3.0), vec2(26.0, 24.0));
         let more = ui.interact(more_rect, Id::new(("more", &b.id)), Sense::click());
@@ -399,7 +399,7 @@ fn empty_state(ui: &mut Ui, t: &ui::Theme, action: &mut Option<Action>) {
     child.add_space(8.0);
     icon(&child, "pen-line", child.cursor().min + vec2(child.available_width() / 2.0, 12.0), 22.0, t.text3);
     child.add_space(30.0);
-    child.label(RichText::new("Nessuna lavagna, per ora").font(ui::medium(13.0)).color(t.text));
+    child.label(RichText::new("Nessuna lavagna, per ora").font(ui::medium(ui::px(13.0))).color(t.text));
     ui::hint(&mut child, "Crea una lavagna vuota o parti da uno dei modelli qui sotto. Tutto viene salvato su questo PC mentre lavori.");
     child.add_space(4.0);
     if ui::button(&mut child, "Nuova lavagna", Btn::Primary, Some("plus"), true, true).clicked() {
@@ -413,7 +413,7 @@ fn side_item(ui: &mut Ui, r: Rect, name: &str, label: &str, current: bool) -> eg
     let resp = ui.interact(r, Id::new(("home-side", label)), Sense::click());
     ui::hover_fill(ui, resp.id, r, resp.hovered() && !current, ui::RADIUS as f32, t.hover);
     icon(ui, name, pos2(r.min.x + 16.0, r.center().y), 16.0, t.icon);
-    ui.painter().text(pos2(r.min.x + 34.0, r.center().y), egui::Align2::LEFT_CENTER, label, if current { ui::medium(11.0) } else { egui::FontId::proportional(11.0) }, t.text);
+    ui.painter().text(pos2(r.min.x + 34.0, r.center().y), egui::Align2::LEFT_CENTER, label, if current { ui::medium(ui::px(11.0)) } else { egui::FontId::proportional(ui::px(11.0)) }, t.text);
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, current, label));
     ui::focus_ring(ui, &resp, r);
     resp
@@ -425,7 +425,7 @@ fn side_button(ui: &mut Ui, name: &str, label: &str) -> egui::Response {
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
     ui::hover_fill(ui, resp.id, r, resp.hovered(), ui::RADIUS as f32, t.hover);
     icon(ui, name, pos2(r.min.x + 16.0, r.center().y), 16.0, t.icon);
-    ui.painter().text(pos2(r.min.x + 34.0, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(11.0), t.text);
+    ui.painter().text(pos2(r.min.x + 34.0, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(ui::px(11.0)), t.text);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     ui::focus_ring(ui, &resp, r);
     resp
@@ -443,8 +443,8 @@ fn template_card(ui: &mut Ui, tpl: Option<&Template>, name: &str, desc: &str) ->
         ui.painter().rect_filled(art, 8.0, if t.dark { Color32::from_white_alpha((veil * 255.0) as u8) } else { Color32::from_black_alpha((veil * 255.0) as u8) });
     }
     ui.painter().rect_stroke(art, 8.0, Stroke::new(1.0, ui::blend(t.border, t.border_strong, k)), egui::StrokeKind::Inside);
-    ui.painter().text(rect.min + vec2(2.0, TPL_ART_H + 15.0), egui::Align2::LEFT_CENTER, name, ui::medium(11.0), t.text);
-    let g = ui.painter().layout(desc.to_string(), egui::FontId::proportional(10.0), t.text2, TPL_W - 4.0);
+    ui.painter().text(rect.min + vec2(2.0, TPL_ART_H + 15.0), egui::Align2::LEFT_CENTER, name, ui::medium(ui::px(11.0)), t.text);
+    let g = ui.painter().layout(desc.to_string(), egui::FontId::proportional(ui::px(10.0)), t.text2, TPL_W - 4.0);
     ui.painter().galley(rect.min + vec2(2.0, TPL_ART_H + 26.0), g, t.text2);
     ui::focus_ring(ui, &resp, art);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));

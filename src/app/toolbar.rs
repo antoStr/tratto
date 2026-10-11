@@ -263,7 +263,7 @@ pub fn insert_drag(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
             ui::row(ui, 24.0, |ui| {
                 let (r, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
                 icon(ui, icon_name, r.center(), 16.0, t.icon);
-                ui.label(RichText::new(&label).font(ui::medium(ui::sizes(ui.ctx()).fs)).color(t.text));
+                ui.label(RichText::new(&label).font(ui::medium(ui::px(11.0))).color(t.text));
             });
         });
     });
@@ -276,7 +276,7 @@ pub fn insert_drag(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
 fn more_tools(ui: &mut Ui, ed: &mut Editor, t: &Theme, top: bool) {
     let r = icon_button(ui, "plus", "Altri strumenti", None, vec2(BTN, BTN), ICON, false, false);
     egui::Popup::menu(&r).frame(ui::float_frame(t).inner_margin(egui::Margin::same(8))).align(if top { egui::RectAlign::BOTTOM } else { egui::RectAlign::TOP }).gap(10.0).show(|ui| {
-        ui.label(egui::RichText::new("Aggiungi: clicca, o trascina sulla lavagna").font(ui::medium(11.0)).color(t.text2));
+        ui.label(egui::RichText::new("Aggiungi: clicca, o trascina sulla lavagna").font(ui::medium(ui::px(11.0))).color(t.text2));
         ui.add_space(4.0);
         let items: [(&str, &str, &str, Option<Payload>); 6] = [
             ("code", "Blocco di codice", "Codice con i colori della sintassi", Some(Payload::Code)),
@@ -322,8 +322,8 @@ fn tile(ui: &mut Ui, name: &str, label: &str, hint: &str, t: &Theme, draggable: 
     let sq = Rect::from_min_size(r2.min + vec2(6.0, 6.0), vec2(36.0, 36.0));
     ui.painter().rect_filled(sq, 9.0, t.selected);
     icon(ui, name, sq.center(), 18.0, if t.dark { Color32::WHITE } else { ui::mix(t.brand, 0.75, Color32::BLACK) });
-    ui.painter().text(pos2(sq.max.x + 10.0, r2.center().y - 7.0), egui::Align2::LEFT_CENTER, label, ui::medium(12.0), t.text);
-    ui.painter().text(pos2(sq.max.x + 10.0, r2.center().y + 8.0), egui::Align2::LEFT_CENTER, hint, egui::FontId::proportional(11.0), t.text2);
+    ui.painter().text(pos2(sq.max.x + 10.0, r2.center().y - 7.0), egui::Align2::LEFT_CENTER, label, ui::medium(ui::px(12.0)), t.text);
+    ui.painter().text(pos2(sq.max.x + 10.0, r2.center().y + 8.0), egui::Align2::LEFT_CENTER, hint, egui::FontId::proportional(ui::px(11.0)), t.text2);
     if draggable && resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
     }
@@ -585,7 +585,7 @@ fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) -
     let h = match tool {
         Tool::Shape => 88.0,
         Tool::Stamp => 96.0,
-        _ => TRAY_H,
+        _ => ui::ctl(TRAY_H),
     };
     let shown = egui::Area::new(Id::new(("tray", format!("{tool:?}")))).pivot(pivot).fixed_pos(at).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
@@ -812,14 +812,14 @@ pub fn color_pop(ui: &mut Ui, label: &str, value: &mut String, transparent: bool
 /// Font menu: each name written in its own font.
 pub fn font_picker(ui: &mut Ui, value: &mut FontKind, width: f32, t: &Theme) -> bool {
     let name = FONTS.iter().find(|f| f.0 == *value).map_or("Inter", |f| f.1);
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, 24.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, ui::ctl(24.0)), Sense::click());
     ui.painter().rect_filled(rect, ui::RADIUS, t.bg2);
     let k = ui::motion::hover(ui.ctx(), resp.id.with("h"), resp.hovered());
     if k > 0.0 {
         ui.painter().rect_stroke(rect, ui::RADIUS, Stroke::new(1.0, t.border_strong.gamma_multiply(k)), egui::StrokeKind::Inside);
     }
     let family = egui::FontFamily::Name(crate::text::prefix(*value).into());
-    ui.painter().text(rect.left_center() + vec2(8.0, 0.0), egui::Align2::LEFT_CENTER, name, egui::FontId::new(12.0, family), t.text);
+    ui.painter().text(rect.left_center() + vec2(8.0, 0.0), egui::Align2::LEFT_CENTER, name, egui::FontId::new(ui::px(12.0), family), t.text);
     icon(ui, "chevron-down", rect.right_center() - vec2(12.0, 0.0), 12.0, t.icon2);
     let resp = ui::tip(resp, "Carattere", None);
     let mut changed = false;
@@ -830,7 +830,7 @@ pub fn font_picker(ui: &mut Ui, value: &mut FontKind, width: f32, t: &Theme) -> 
             if g != group {
                 group = g;
                 ui.add_space(4.0);
-                ui.label(RichText::new(g).size(10.0).color(t.menu_text2));
+                ui.label(RichText::new(g).size(ui::px(10.0)).color(t.menu_text2));
             }
             let (r, item) = ui.allocate_exact_size(vec2(200.0, 26.0), Sense::click());
             if item.hovered() {
@@ -910,7 +910,7 @@ pub fn view_controls(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
                 let label = format!("{}%", (ed.cam.z * 100.0).round());
                 let (r, resp) = ui.allocate_exact_size(vec2(32.0, 24.0), Sense::click());
                 ui::hover_fill(ui, resp.id, r, resp.hovered(), ui::RADIUS as f32, t.hover);
-                ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, &label, egui::FontId::proportional(10.0), t.text);
+                ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, &label, egui::FontId::proportional(ui::px(10.0)), t.text);
                 egui::Popup::menu(&resp).frame(ui::menu_frame(&t)).align(egui::RectAlign::LEFT_END).show(|ui| zoom_items(ui, ed));
                 if icon_button(ui, "minus", "Riduci", Some("Ctrl+−"), vec2(32.0, 28.0), 16.0, false, false).clicked() {
                     ed.zoom_by(0.8);

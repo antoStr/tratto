@@ -307,6 +307,11 @@ mod picture {
         println!("BOARD {id}");
     }
 
+    /// Interface text size of the pictures (TRATTO_TEXT=1.36 for "Molto grande").
+    fn text_scale() -> f32 {
+        std::env::var("TRATTO_TEXT").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0)
+    }
+
     /// Device pixels per point of the pictures (TRATTO_PPP=1.3 to see 130%).
     fn ppp() -> f32 {
         std::env::var("TRATTO_PPP").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0)
@@ -329,7 +334,7 @@ mod picture {
             let ctx = ui.ctx().clone();
             if home.is_none() {
                 ui::install_fonts(&ctx);
-                ui::setup(&ctx, Theme::new(dark, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
+                ui::setup(&ctx, Theme::new(dark, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), text_scale());
                 home = Some(home::Home::new(&store));
                 if let Some(tab) = settings {
                     dialogs.settings = true;
@@ -357,7 +362,7 @@ mod picture {
             let ctx = ui.ctx().clone();
             if screen.is_none() {
                 ui::install_fonts(&ctx);
-                ui::setup(&ctx, Theme::new(dark, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
+                ui::setup(&ctx, Theme::new(dark, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), text_scale());
                 let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), Some("flow".into())).unwrap();
                 b.editor.selection = vec![b.editor.board.all().iter().find(|e| e.shape().is_some()).unwrap().id.clone()];
                 b.editor.tool = if std::env::var_os("TRATTO_SELECT").is_some() { crate::editor::Tool::Select } else { crate::editor::Tool::Pen };
@@ -625,7 +630,7 @@ mod picture {
             frame += 1;
             if screen.is_none() {
                 ui::install_fonts(&ctx);
-                ui::setup(&ctx, Theme::new(dark, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
+                ui::setup(&ctx, Theme::new(dark, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), text_scale());
                 let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), template.clone()).unwrap();
                 b.editor.tool = crate::editor::Tool::Select;
                 let ed = &mut b.editor;
