@@ -1014,8 +1014,8 @@ pub mod picture {
         let pts: Vec<f32> = (0..=40).flat_map(|i| { let t = i as f32 / 40.0; [t * 180.0, (t * 9.0).sin() * 30.0 + 40.0, 0.3 + 0.6 * (t * 3.1).sin().abs()] }).collect();
         add(40.0, 180.0, 180.0, 80.0, Kind::Ink(Ink { points: pts.clone(), color: "#1971C2".into(), size: 6.0 }));
         add(240.0, 180.0, 180.0, 80.0, Kind::Highlighter(Ink { points: pts.iter().enumerate().map(|(i, v)| if i % 3 == 2 { -1.0 } else { *v }).collect(), color: "#FFE066".into(), size: 22.0 }));
-        add(440.0, 200.0, 140.0, 40.0, Kind::Line(Line { points: vec![0.0, 40.0, 140.0, 0.0], stroke: "#E03131".into(), stroke_width: 3.0, dash: false, arrow_start: false, arrow_end: true, from: None, to: None, tape: false, route: crate::model::Route::Straight, label: None }));
-        add(600.0, 200.0, 140.0, 40.0, Kind::Line(Line { points: vec![0.0, 20.0, 140.0, 20.0], stroke: "#FFB3C7".into(), stroke_width: 28.0, dash: false, arrow_start: false, arrow_end: false, from: None, to: None, tape: true, route: crate::model::Route::Straight, label: None }));
+        add(440.0, 200.0, 140.0, 40.0, Kind::Line(Line { points: vec![0.0, 40.0, 140.0, 0.0], stroke: "#E03131".into(), stroke_width: 3.0, dash: false, arrow_start: false, arrow_end: true, from: None, to: None, tape: false, route: crate::model::Route::Straight, label: None, ..Default::default() }));
+        add(600.0, 200.0, 140.0, 40.0, Kind::Line(Line { points: vec![0.0, 20.0, 140.0, 20.0], stroke: "#FFB3C7".into(), stroke_width: 28.0, dash: false, arrow_start: false, arrow_end: false, from: None, to: None, tape: true, route: crate::model::Route::Straight, label: None, ..Default::default() }));
         add(40.0, 300.0, 220.0, 220.0, Kind::Sticky(Sticky { text: "Una nota adesiva con un po' di testo".into(), color: "#FFF3A3".into(), font: FontKind::Hand, author: Some("Anto".into()), ..Default::default() }));
         add(300.0, 300.0, 0.0, 0.0, Kind::Text(Text { text: "Titolo in grassetto\nseconda riga".into(), color: "#1E1E1E".into(), font_size: 24.0, font: FontKind::Sans, align: Align::Left, bold: true, italic: false, fixed_width: false, strike: false }));
         add(300.0, 400.0, 64.0, 64.0, Kind::Stamp { emoji: "🎉".into() });
@@ -1061,7 +1061,7 @@ pub mod picture {
         }
         for (i, route) in [Route::Straight, Route::Elbow, Route::Curved].into_iter().enumerate() {
             let y = 470.0 + i as f64 * 45.0;
-            let line = Line { points: vec![0.0, 0.0, 300.0, 40.0], stroke: "#1E1E1E".into(), stroke_width: 2.0, dash: i == 2, arrow_start: i == 1, arrow_end: true, from: None, to: None, tape: false, route, label: Some(["Sì", "Poi", "Forse"][i].into()) };
+            let line = Line { points: vec![0.0, 0.0, 300.0, 40.0], stroke: "#1E1E1E".into(), stroke_width: 2.0, dash: i == 2, arrow_start: i == 1, arrow_end: true, from: None, to: None, tape: false, route, label: Some(["Sì", "Poi", "Forse"][i].into()), ..Default::default() };
             let mut el = El::new(Kind::Line(line));
             (el.x, el.y, el.w, el.h) = (860.0, y, 300.0, 40.0);
             els.push(Arc::new(el));

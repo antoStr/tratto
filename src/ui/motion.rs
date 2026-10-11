@@ -160,7 +160,7 @@ mod tests {
     fn what_appears_again_after_a_pause_rises_in_again() {
         let ctx = Context::default();
         let id = Id::new("a");
-        let mut frame = |show: bool| {
+        let frame = |show: bool| {
             ctx.begin_pass(egui::RawInput { predicted_dt: 1.0 / 60.0, ..Default::default() });
             let k = if show { Some(appear(&ctx, id, true)) } else { None };
             ctx.end_pass().textures_delta.clear();

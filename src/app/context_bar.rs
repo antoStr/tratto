@@ -277,20 +277,19 @@ fn controls(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], t: &Theme) {
         }
         if only("line") {
             let all = |f: fn(&crate::model::Line) -> bool| els.iter().all(|e| e.line().is_some_and(f));
-            let (start, end, dash) = (all(|l| l.arrow_start), all(|l| l.arrow_end), all(|l| l.dash));
-            if ui::icon_button(ui, "arrow-left", "Freccia all'inizio", None, vec2(B, B), 16.0, start, false).clicked() {
-                ed.board.update(&ids, |el| {
-                    if let Kind::Line(l) = &mut el.kind {
-                        l.arrow_start = !start;
-                    }
-                });
-            }
-            if ui::icon_button(ui, "move-right", "Freccia alla fine", None, vec2(B, B), 16.0, end, false).clicked() {
-                ed.board.update(&ids, |el| {
-                    if let Kind::Line(l) = &mut el.kind {
-                        l.arrow_end = !end;
-                    }
-                });
+            let dash = all(|l| l.dash);
+            if !els.iter().any(|e| e.line().is_some_and(|l| l.tape)) {
+                let start = same(els, |e| e.line().map(|l| l.arrow_start.then_some(l.head_start)));
+                let end = same(els, |e| e.line().map(|l| l.arrow_end.then_some(l.head_end)));
+                if let Some(h) = super::toolbar::end_picker(ui, start, true, B, t) {
+                    super::toolbar::set_end(ed, &ids, true, h);
+                }
+                if ui::icon_button(ui, "arrow-right-left", "Inverti la direzione", None, vec2(B, B), 16.0, false, false).clicked() {
+                    super::toolbar::swap_ends(ed, &ids);
+                }
+                if let Some(h) = super::toolbar::end_picker(ui, end, false, B, t) {
+                    super::toolbar::set_end(ed, &ids, false, h);
+                }
             }
             if ui::icon_button(ui, "more-horizontal", if dash { "Linea continua" } else { "Linea tratteggiata" }, None, vec2(B, B), 16.0, dash, false).clicked() {
                 ed.board.update(&ids, |el| {

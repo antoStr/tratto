@@ -786,7 +786,7 @@ impl Editor {
 
     fn line_element(&mut self, a: Pt, b: Pt, style: impl FnOnce(&mut El, &mut Line)) -> El {
         let (x0, y0) = (a.x.min(b.x), a.y.min(b.y));
-        let mut line = Line { points: vec![(a.x - x0) as f32, (a.y - y0) as f32, (b.x - x0) as f32, (b.y - y0) as f32], stroke: "#1E1E1E".into(), stroke_width: 3.0, dash: false, arrow_start: false, arrow_end: false, from: None, to: None, tape: false, route: crate::model::Route::Straight, label: None };
+        let mut line = Line { points: vec![(a.x - x0) as f32, (a.y - y0) as f32, (b.x - x0) as f32, (b.y - y0) as f32], stroke: "#1E1E1E".into(), stroke_width: 3.0, dash: false, arrow_start: false, arrow_end: false, from: None, to: None, tape: false, route: crate::model::Route::Straight, label: None, ..Default::default() };
         let mut el = self.base(El::new(Kind::Line(line.clone())));
         (el.x, el.y, el.w, el.h) = (x0, y0, (b.x - a.x).abs(), (b.y - a.y).abs());
         style(&mut el, &mut line);
@@ -796,11 +796,12 @@ impl Editor {
 
     fn connector(&mut self, at: Pt, from: Option<String>, arrow: bool) -> El {
         let (stroke, width) = (self.prefs.shape_style.stroke.clone(), self.world_size(self.prefs.shape_style.stroke_width.max(2.0)));
-        let route = self.prefs.route;
+        let (route, head) = (self.prefs.route, self.prefs.arrow_head);
         self.line_element(at, at, |_, l| {
             l.stroke = stroke;
             l.stroke_width = width;
             l.arrow_end = arrow;
+            l.head_end = head;
             l.from = from;
             l.route = route;
         })
@@ -1184,11 +1185,12 @@ impl Editor {
             _ => {
                 // A connector starting on a shape, sticky, text… is attached to it.
                 let from = self.hit_element(p, 6.0).filter(|e| connectable(Some(e))).map(|e| e.id.clone());
-                let route = self.prefs.route;
+                let (route, head) = (self.prefs.route, self.prefs.arrow_head);
                 self.line_element(p, p, |_, l| {
                     l.stroke = style_stroke;
                     l.stroke_width = style_width;
                     l.arrow_end = tool == Tool::Arrow;
+                    l.head_end = head;
                     l.from = from;
                     l.route = route;
                 })

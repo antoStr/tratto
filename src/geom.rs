@@ -458,9 +458,9 @@ pub fn route_points(l: &Line) -> Vec<f64> {
     let [x1, y1, x2, y2] = [0, 1, 2, 3].map(|i| l.points[i] as f64);
     match l.route {
         Route::Straight => vec![x1, y1, x2, y2],
-        Route::Elbow => elbow(x1, y1, x2, y2).into_iter().flat_map(|(x, y)| [x, y]).collect(),
+        Route::Elbow => elbow_of(l).into_iter().flat_map(|(x, y)| [x, y]).collect(),
         Route::Curved => {
-            let c = curve(x1, y1, x2, y2);
+            let c = curve_of(l);
             (0..=24).flat_map(|i| {
                 let (x, y) = bezier(&c, i as f64 / 24.0);
                 [x, y]
@@ -497,17 +497,143 @@ pub fn bezier(c: &[(f64, f64); 4], t: f64) -> (f64, f64) {
     (a * c[0].0 + b * c[1].0 + d * c[2].0 + e * c[3].0, a * c[0].1 + b * c[1].1 + d * c[2].1 + e * c[3].1)
 }
 
-/// Middle of a line's path, where its label sits.
+/// Middle of a line's path, where its label sits: half-way along it.
 pub fn route_mid(l: &Line) -> (f64, f64) {
     let [x1, y1, x2, y2] = [0, 1, 2, 3].map(|i| l.points[i] as f64);
     match l.route {
         Route::Straight => ((x1 + x2) / 2.0, (y1 + y2) / 2.0),
         Route::Elbow => {
-            let p = elbow(x1, y1, x2, y2);
-            ((p[1].0 + p[2].0) / 2.0, (p[1].1 + p[2].1) / 2.0)
+            let p = elbow_of(l);
+            let total: f64 = p.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum();
+            let mut left = total / 2.0;
+            for w in p.windows(2) {
+                let d = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+                if d >= left && d > 0.0 {
+                    let k = left / d;
+                    return (w[0].0 + (w[1].0 - w[0].0) * k, w[0].1 + (w[1].1 - w[0].1) * k);
+                }
+                left -= d;
+            }
+            (p[0].0, p[0].1)
         }
-        Route::Curved => bezier(&curve(x1, y1, x2, y2), 0.5),
+        Route::Curved => bezier(&curve_of(l), 0.5),
     }
+}
+
+/// Unit vector of a side (0 up, 1 right, 2 down, 3 left).
+pub fn side_dir(side: u8) -> Option<(f64, f64)> {
+    match side {
+        0 => Some((0.0, -1.0)),
+        1 => Some((1.0, 0.0)),
+        2 => Some((0.0, 1.0)),
+        3 => Some((-1.0, 0.0)),
+        _ => None,
+    }
+}
+
+/// Which way each end of a line leaves: the side it is joined to, or, for a free end, the way
+/// that faces the other end.
+fn end_dirs(l: &Line) -> ((f64, f64), (f64, f64)) {
+    let [x1, y1, x2, y2] = [0, 1, 2, 3].map(|i| l.points[i] as f64);
+    let [s1, s2] = l.sides.unwrap_or([255, 255]);
+    let toward = |dx: f64, dy: f64| if dx.abs() >= dy.abs() { (dx.signum(), 0.0) } else { (0.0, dy.signum()) };
+    let d1 = side_dir(s1);
+    let d2 = side_dir(s2);
+    let free1 = || match d2 {
+        // The far end comes out sideways: meet it at a right angle.
+        Some((ax, _)) if ax != 0.0 => (0.0, (y2 - y1).signum()),
+        Some(_) => ((x2 - x1).signum(), 0.0),
+        None => toward(x2 - x1, y2 - y1),
+    };
+    let free2 = || match d1 {
+        Some((ax, _)) if ax != 0.0 => (0.0, (y1 - y2).signum()),
+        Some(_) => ((x1 - x2).signum(), 0.0),
+        None => toward(x1 - x2, y1 - y2),
+    };
+    let fix = |d: (f64, f64)| if d.0 == 0.0 && d.1 == 0.0 { (1.0, 0.0) } else { d };
+    (fix(d1.unwrap_or_else(free1)), fix(d2.unwrap_or_else(free2)))
+}
+
+/// The corners of an elbow connector, in its own coordinates: out of each end along its side,
+/// at right angles, as FigJam draws them.
+pub fn elbow_of(l: &Line) -> Vec<(f64, f64)> {
+    let [x1, y1, x2, y2] = [0, 1, 2, 3].map(|i| l.points[i] as f64);
+    if l.sides.is_none() {
+        return elbow(x1, y1, x2, y2);
+    }
+    let (n1, n2) = end_dirs(l);
+    let (p1, p2) = ((x1, y1), (x2, y2));
+    let m = (l.stroke_width * 8.0).max(24.0);
+    let dot = |a: (f64, f64), b: (f64, f64)| a.0 * b.0 + a.1 * b.1;
+    let ahead1 = dot((x2 - x1, y2 - y1), n1) > 0.0;
+    let ahead2 = dot((x1 - x2, y1 - y2), n2) > 0.0;
+    let h1 = n1.0 != 0.0;
+    let h2 = n2.0 != 0.0;
+    let mut pts = if h1 != h2 {
+        if ahead1 && ahead2 {
+            // One corner.
+            vec![p1, if h1 { (x2, y1) } else { (x1, y2) }, p2]
+        } else {
+            let a = (x1 + n1.0 * m, y1 + n1.1 * m);
+            let b = (x2 + n2.0 * m, y2 + n2.1 * m);
+            vec![p1, a, if h1 { (a.0, b.1) } else { (b.0, a.1) }, b, p2]
+        }
+    } else if dot(n1, n2) < 0.0 && ahead1 {
+        // Facing each other: across, along, across, meeting half-way.
+        if h1 {
+            let mx = (x1 + x2) / 2.0;
+            vec![p1, (mx, y1), (mx, y2), p2]
+        } else {
+            let my = (y1 + y2) / 2.0;
+            vec![p1, (x1, my), (x2, my), p2]
+        }
+    } else if dot(n1, n2) > 0.0 {
+        // Both the same way: out past the farther one, then back.
+        if h1 {
+            let x = if n1.0 > 0.0 { x1.max(x2) + m } else { x1.min(x2) - m };
+            vec![p1, (x, y1), (x, y2), p2]
+        } else {
+            let y = if n1.1 > 0.0 { y1.max(y2) + m } else { y1.min(y2) - m };
+            vec![p1, (x1, y), (x2, y), p2]
+        }
+    } else {
+        // Turned away from each other: out of both, then round through the middle.
+        let a = (x1 + n1.0 * m, y1 + n1.1 * m);
+        let b = (x2 + n2.0 * m, y2 + n2.1 * m);
+        if h1 {
+            let my = (y1 + y2) / 2.0;
+            vec![p1, a, (a.0, my), (b.0, my), b, p2]
+        } else {
+            let mx = (x1 + x2) / 2.0;
+            vec![p1, a, (mx, a.1), (mx, b.1), b, p2]
+        }
+    };
+    // No zero-length legs nor straight-through corners.
+    pts.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6);
+    let mut i = 1;
+    while i + 1 < pts.len() {
+        let (a, b, c) = (pts[i - 1], pts[i], pts[i + 1]);
+        if ((b.0 - a.0) * (c.1 - b.1) - (b.1 - a.1) * (c.0 - b.0)).abs() < 1e-6 {
+            pts.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+    if pts.len() < 2 {
+        return vec![p1, p2];
+    }
+    pts
+}
+
+/// The curve of a curved connector: it leaves and arrives along each end's side.
+pub fn curve_of(l: &Line) -> [(f64, f64); 4] {
+    let [x1, y1, x2, y2] = [0, 1, 2, 3].map(|i| l.points[i] as f64);
+    if l.sides.is_none() {
+        return curve(x1, y1, x2, y2);
+    }
+    let (n1, n2) = end_dirs(l);
+    let k = ((x2 - x1).hypot(y2 - y1) * 0.45).max(30.0);
+    [(x1, y1), (x1 + n1.0 * k, y1 + n1.1 * k), (x2 + n2.0 * k, y2 + n2.1 * k), (x2, y2)]
 }
 
 /// The two ends of a line in board coordinates.
@@ -600,7 +726,62 @@ pub fn connectable(el: Option<&El>) -> bool {
     el.is_some_and(|el| !matches!(el.kind, Kind::Line(_) | Kind::Ink(_) | Kind::Highlighter(_) | Kind::Comment { .. }) && !el.hidden)
 }
 
+/// The side of an element facing a point (0 up, 1 right, 2 down, 3 left, in the element's own
+/// frame), judged against its proportions so a wide box is left by its ends.
+pub fn facing_side(el: &El, toward: Pt) -> u8 {
+    let l = to_local(el, toward.x, toward.y);
+    let (hw, hh) = ((el.w / 2.0).max(1e-6), (el.h / 2.0).max(1e-6));
+    let (dx, dy) = ((l.x - hw) / hw, (l.y - hh) / hh);
+    if dx.abs() >= dy.abs() {
+        if dx >= 0.0 { 1 } else { 3 }
+    } else if dy >= 0.0 {
+        2
+    } else {
+        0
+    }
+}
+
+/// For two elements standing straight: the sides that face each other across the wider gap
+/// between them (beside each other: left and right; one above the other: bottom and top). None
+/// when either is turned or they overlap both ways.
+fn sides_between(a: &El, b: &El) -> Option<(u8, u8)> {
+    let straight = |e: &El| (e.rotation.rem_euclid(std::f64::consts::TAU)).abs() < 1e-6;
+    if !straight(a) || !straight(b) {
+        return None;
+    }
+    let gap_x = (b.x - (a.x + a.w)).max(a.x - (b.x + b.w));
+    let gap_y = (b.y - (a.y + a.h)).max(a.y - (b.y + b.h));
+    if gap_x <= 0.0 && gap_y <= 0.0 {
+        return None;
+    }
+    let (ca, cb) = (center(a), center(b));
+    Some(if gap_x >= gap_y {
+        if cb.x >= ca.x { (1, 3) } else { (3, 1) }
+    } else if cb.y >= ca.y {
+        (2, 0)
+    } else {
+        (0, 2)
+    })
+}
+
+/// The middle of one side of an element (where FigJam's connectors attach), on its outline
+/// (for a diamond or an ellipse too), pushed out by `gap`; and the way that side faces on the
+/// board, snapped to the nearest of up, right, down, left.
+pub fn side_anchor(el: &El, side: u8, gap: f64) -> (Pt, u8) {
+    let (hw, hh) = (el.w / 2.0, el.h / 2.0);
+    let (nx, ny) = side_dir(side).unwrap_or((1.0, 0.0));
+    let far = to_world_of(el, hw + nx * (el.w + el.h + 1.0) * 4.0, hh + ny * (el.w + el.h + 1.0) * 4.0);
+    let p = edge_point(el, far, gap);
+    // The side's direction on the board, after the element's rotation.
+    let a = (ny.atan2(nx) + el.rotation).rem_euclid(std::f64::consts::TAU);
+    let world = ((a / std::f64::consts::FRAC_PI_2).round() as i64).rem_euclid(4);
+    // atan2 angles: 0 right, π/2 down, π left, 3π/2 up.
+    let side = [1u8, 2, 3, 0][world as usize];
+    (p, side)
+}
+
 /// A connector with its ends re-attached to the elements they belong to, or None if it has none.
+/// Each end sits in the middle of the side facing the other end, never on a corner.
 pub fn route_connector<'a>(el: &El, get: impl Fn(&str) -> Option<&'a El>) -> Option<El> {
     let l = el.line()?;
     let a = l.from.as_deref().and_then(&get).filter(|e| connectable(Some(e)));
@@ -612,7 +793,20 @@ pub fn route_connector<'a>(el: &El, get: impl Fn(&str) -> Option<&'a El>) -> Opt
     let ca = a.map(center).unwrap_or(pa);
     let cb = b.map(center).unwrap_or(pb);
     let gap = l.stroke_width * 1.5;
-    Some(set_line_ends(el, a.map(|a| edge_point(a, cb, gap)).unwrap_or(pa), b.map(|b| edge_point(b, ca, gap)).unwrap_or(pb)))
+    let (sa, sb) = match (a, b) {
+        (Some(a), Some(b)) => match sides_between(a, b) {
+            Some((x, y)) => (Some(x), Some(y)),
+            None => (Some(facing_side(a, cb)), Some(facing_side(b, ca))),
+        },
+        _ => (a.map(|a| facing_side(a, cb)), b.map(|b| facing_side(b, ca))),
+    };
+    let ea = a.zip(sa).map(|(a, s)| side_anchor(a, s, gap));
+    let eb = b.zip(sb).map(|(b, s)| side_anchor(b, s, gap));
+    let mut next = set_line_ends(el, ea.map_or(pa, |e| e.0), eb.map_or(pb, |e| e.0));
+    if let Some(nl) = next.line_mut() {
+        nl.sides = Some([ea.map_or(255, |e| e.1), eb.map_or(255, |e| e.1)]);
+    }
+    Some(next)
 }
 
 /// Lets go of one end (or both) of a connector.
@@ -624,6 +818,17 @@ pub fn unbind(el: &El, from: bool, to: bool) -> El {
         }
         if to {
             l.to = None;
+        }
+        if let Some(s) = &mut l.sides {
+            if from {
+                s[0] = 255;
+            }
+            if to {
+                s[1] = 255;
+            }
+            if s[0] == 255 && s[1] == 255 {
+                l.sides = None;
+            }
         }
     }
     next
@@ -653,7 +858,7 @@ pub mod tests {
         El { w, h, ..base(Kind::Ink(Ink { points, color: "#000".into(), size })) }
     }
     pub fn line(points: Vec<f32>, width: f64) -> El {
-        base(Kind::Line(Line { points, stroke: "#000000".into(), stroke_width: width, dash: false, arrow_start: false, arrow_end: false, from: None, to: None, tape: false, route: crate::model::Route::Straight, label: None }))
+        base(Kind::Line(Line { points, stroke: "#000000".into(), stroke_width: width, dash: false, arrow_start: false, arrow_end: false, from: None, to: None, tape: false, route: crate::model::Route::Straight, label: None, ..Default::default() }))
     }
 
     #[test]
@@ -720,6 +925,45 @@ pub mod tests {
         let e = edge_point(&d, pt(1000.0, 1000.0), 0.0);
         assert!((e.x - 75.0).abs() < 1e-6 && (e.y - 75.0).abs() < 1e-6, "{e:?}");
         assert!(route_connector(&line(vec![0.0; 4], 0.0), |_| None).is_none());
+    }
+
+    #[test]
+    fn diagonal_connectors_leave_from_the_middle_of_a_side_never_a_corner() {
+        let a = rect("a", 0.0, 100.0, 100.0, ShapeKind::Rect);
+        let mut b = rect("b", 400.0, 100.0, 100.0, ShapeKind::Rect);
+        b.y = 260.0;
+        let mut l = line(vec![0.0; 4], 0.0);
+        if let Some(ln) = l.line_mut() {
+            ln.from = Some("a".into());
+            ln.to = Some("b".into());
+            ln.route = Route::Elbow;
+        }
+        let get = |id: &str| match id {
+            "a" => Some(&a),
+            "b" => Some(&b),
+            _ => None,
+        };
+        let r = route_connector(&l, get).unwrap();
+        let (p, q) = ends_of(&r);
+        assert!((p.x - 100.0).abs() < 1e-6 && (p.y - 50.0).abs() < 1e-6, "right side of a: {p:?}");
+        assert!((q.x - 400.0).abs() < 1e-6 && (q.y - 310.0).abs() < 1e-6, "left side of b: {q:?}");
+        // Out of a to the right, down, into b from the left: every leg straight.
+        let pts = elbow_of(r.line().unwrap());
+        assert_eq!(pts.len(), 4, "{pts:?}");
+        for w in pts.windows(2) {
+            assert!((w[0].0 - w[1].0).abs() < 1e-9 || (w[0].1 - w[1].1).abs() < 1e-9, "{pts:?}");
+        }
+        assert!(pts[1].0 > pts[0].0, "leaves to the right: {pts:?}");
+        // Straight below: from the bottom of a to the top of c.
+        let mut c = rect("c", 0.0, 100.0, 100.0, ShapeKind::Rect);
+        c.y = 400.0;
+        let get = |id: &str| match id {
+            "a" => Some(&a),
+            "b" => Some(&c),
+            _ => None,
+        };
+        let (p, q) = ends_of(&route_connector(&l, get).unwrap());
+        assert!((p.y - 100.0).abs() < 1e-6 && (q.y - 400.0).abs() < 1e-6 && (p.x - 50.0).abs() < 1e-6, "{p:?} {q:?}");
     }
 
     #[test]

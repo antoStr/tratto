@@ -153,6 +153,8 @@ pub struct Prefs {
     pub code_language: String,
     /// Path of new connectors and lines.
     pub route: crate::model::Route,
+    /// Head of new arrows.
+    pub arrow_head: crate::model::Head,
     /// Only fades: nothing slides, grows or bounces (Settings ▸ Accessibilità).
     pub reduce_motion: bool,
     /// Where the minimap sits: its top-left corner as a fraction of the room it can move in
@@ -265,6 +267,7 @@ impl Default for Prefs {
             new_board: BoardMeta::default(),
             code_language: "javascript".into(),
             route: crate::model::Route::Straight,
+            arrow_head: crate::model::Head::Triangle,
             reduce_motion: false,
             minimap_at: None,
             table_size: [3, 3],

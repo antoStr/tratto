@@ -257,6 +257,26 @@ impl Board {
         r
     }
 
+    /// Connectors drawn by an older Tratto, re-attached the way they are now (to the middle of
+    /// the sides). Not an edit to undo: the board just catches up.
+    pub fn reroute_all(&mut self) {
+        let all = self.all().to_vec();
+        let next: Vec<El> = all
+            .iter()
+            .filter(|e| e.line().is_some_and(|l| l.from.is_some() || l.to.is_some()))
+            .filter_map(|e| route_connector(e, |id| self.els.get(id).map(|x| &**x)).filter(|n| n != &**e))
+            .collect();
+        if next.is_empty() {
+            return;
+        }
+        self.transact_plain(|txn, b| {
+            for el in &next {
+                let v = serde_json::to_value(el).expect("element serializes");
+                b.elements.insert(txn, el.id.as_str(), json_any(&v));
+            }
+        });
+    }
+
     pub fn stop_capturing(&mut self) {
         self.undo.reset();
     }
@@ -668,7 +688,8 @@ mod tests {
         assert_eq!(ends(&b), [10.0, 5.0, 300.0, 5.0]);
         b.stop_capturing();
         b.update(&["b".into()], |el| el.y = 100.0);
-        assert_eq!(ends(&b).map(|v| v.round()), [10.0, 7.0, 300.0, 103.0]);
+        // From the middle of a's right side to the middle of b's left side.
+        assert_eq!(ends(&b).map(|v| v.round()), [10.0, 5.0, 300.0, 105.0]);
         b.undo();
         assert_eq!(ends(&b), [10.0, 5.0, 300.0, 5.0]);
     }

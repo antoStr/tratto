@@ -1168,22 +1168,19 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
     if only("line") && els.iter().all(|e| e.line().is_some_and(|l| !l.tape)) {
         section(ui, Some("Frecce"), |ui| {
             ui.horizontal(|ui| {
-                let start = els.iter().all(|e| e.line().is_some_and(|l| l.arrow_start));
-                let end = els.iter().all(|e| e.line().is_some_and(|l| l.arrow_end));
-                if small_icon_button(ui, "move-left", "Freccia all'inizio", start).clicked() {
-                    apply(ed, &mut |el| {
-                        if let Kind::Line(l) = &mut el.kind {
-                            l.arrow_start = !start;
-                        }
-                    });
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let start = same(&els, |e| e.line().map(|l| l.arrow_start.then_some(l.head_start)));
+                let end = same(&els, |e| e.line().map(|l| l.arrow_end.then_some(l.head_end)));
+                if let Some(h) = super::toolbar::end_picker(ui, start, true, 24.0, t) {
+                    super::toolbar::set_end(ed, &ids, true, h);
                 }
-                if small_icon_button(ui, "move-right", "Freccia alla fine", end).clicked() {
-                    apply(ed, &mut |el| {
-                        if let Kind::Line(l) = &mut el.kind {
-                            l.arrow_end = !end;
-                        }
-                    });
+                if small_icon_button(ui, "arrow-right-left", "Inverti la direzione", false).clicked() {
+                    super::toolbar::swap_ends(ed, &ids);
                 }
+                if let Some(h) = super::toolbar::end_picker(ui, end, false, 24.0, t) {
+                    super::toolbar::set_end(ed, &ids, false, h);
+                }
+                ui.add_space(8.0);
                 for (r, name, label) in super::toolbar::ROUTES {
                     let route = same(&els, |e| e.line().map(|l| l.route));
                     if small_icon_button(ui, name, label, route == Some(r)).clicked() {

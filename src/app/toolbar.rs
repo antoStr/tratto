@@ -43,6 +43,100 @@ pub const ROUTES: [(crate::model::Route, &str, &str); 3] = [
     (crate::model::Route::Curved, "route-curved", "Curva"),
 ];
 
+/// A short line with the end drawn at its right (or left, for the start): none or a head.
+pub fn end_icon(ui: &Ui, c: Pos2, head: Option<crate::model::Head>, start: bool, color: Color32) {
+    use crate::model::Head;
+    let p = ui.painter();
+    let dir = if start { -1.0 } else { 1.0 };
+    let tip = c + vec2(8.0 * dir, 0.0);
+    let tail = c - vec2(8.0 * dir, 0.0);
+    let st = Stroke::new(1.6, color);
+    let back = match head {
+        Some(Head::Triangle) => 4.0,
+        Some(Head::Circle) => 5.0,
+        Some(Head::Diamond) => 7.0,
+        _ => 0.0,
+    };
+    p.line_segment([tail, tip - vec2(back * dir, 0.0)], st);
+    let at = |b: f32, a: f32| tip + vec2(-b * dir, a);
+    match head {
+        None => {}
+        Some(Head::Triangle) => {
+            p.add(egui::Shape::convex_polygon(vec![tip, at(6.0, -4.0), at(6.0, 4.0)], color, Stroke::NONE));
+        }
+        Some(Head::Open) => {
+            p.line_segment([at(5.0, -4.0), tip], st);
+            p.line_segment([at(5.0, 4.0), tip], st);
+        }
+        Some(Head::Circle) => {
+            p.circle_filled(at(3.0, 0.0), 3.0, color);
+        }
+        Some(Head::Diamond) => {
+            p.add(egui::Shape::convex_polygon(vec![tip, at(3.5, -3.5), at(7.0, 0.0), at(3.5, 3.5)], color, Stroke::NONE));
+        }
+        Some(Head::Bar) => {
+            p.line_segment([at(0.0, -4.5), at(0.0, 4.5)], st);
+        }
+    }
+}
+
+/// The end of a line: a button showing it, opening the choices (none, or one of the heads).
+/// Returns the choice made.
+pub fn end_picker(ui: &mut Ui, current: Option<Option<crate::model::Head>>, start: bool, size: f32, t: &Theme) -> Option<Option<crate::model::Head>> {
+    let label = if start { "Inizio della linea" } else { "Fine della linea" };
+    let r = icon_button(ui, "", label, None, vec2(size + 8.0, size), 16.0, false, false);
+    end_icon(ui, r.rect.center() - vec2(3.0, 0.0), current.flatten(), start, t.icon);
+    icon(ui, "chevron-down", r.rect.right_center() - vec2(7.0, 0.0), 9.0, t.icon2);
+    let mut picked = None;
+    egui::Popup::menu(&r).frame(ui::menu_frame(t)).show(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let mut choices: Vec<(Option<crate::model::Head>, &str)> = vec![(None, "Nessuna")];
+        choices.extend(crate::model::HEADS.iter().map(|(h, n)| (Some(*h), *n)));
+        for (h, name) in choices {
+            let resp = ui::menu_item(ui, None, name, None, false);
+            end_icon(ui, pos2(resp.rect.min.x + 14.0, resp.rect.center().y), h, start, t.menu_text);
+            if current == Some(h) {
+                icon(ui, "check", pos2(resp.rect.max.x - 14.0, resp.rect.center().y), 12.0, t.menu_text);
+            }
+            if resp.clicked() {
+                picked = Some(h);
+            }
+        }
+    });
+    picked
+}
+
+/// Sets one end of the lines in `ids`: no head, or this head.
+pub fn set_end(ed: &mut Editor, ids: &[String], start: bool, h: Option<crate::model::Head>) {
+    ed.board.update(ids, |el| {
+        if let crate::model::Kind::Line(l) = &mut el.kind {
+            match (start, h) {
+                (true, None) => l.arrow_start = false,
+                (false, None) => l.arrow_end = false,
+                (true, Some(h)) => (l.arrow_start, l.head_start) = (true, h),
+                (false, Some(h)) => (l.arrow_end, l.head_end) = (true, h),
+            }
+        }
+    });
+}
+
+/// Turns lines round: the start becomes the end (joins and heads go with them).
+pub fn swap_ends(ed: &mut Editor, ids: &[String]) {
+    ed.board.update(ids, |el| {
+        if let crate::model::Kind::Line(l) = &mut el.kind {
+            if l.points.len() >= 4 {
+                l.points = vec![l.points[2], l.points[3], l.points[0], l.points[1]];
+            }
+            std::mem::swap(&mut l.from, &mut l.to);
+            std::mem::swap(&mut l.arrow_start, &mut l.arrow_end);
+            std::mem::swap(&mut l.head_start, &mut l.head_end);
+            if let Some(s) = &mut l.sides {
+                s.swap(0, 1);
+            }
+        }
+    });
+}
+
 /// The icon of a shape choice.
 pub fn shape_icon(ui: &Ui, tool: ShapeTool, c: Pos2, size: f32, color: Color32) {
     let s = size / 24.0;
@@ -499,6 +593,12 @@ fn tray(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) -
                             for (r, name, label) in ROUTES {
                                 if icon_button(ui, name, label, None, vec2(28.0, 28.0), 16.0, p.route == r, false).clicked() {
                                     p.route = r;
+                                }
+                            }
+                            if tool == Tool::Arrow {
+                                sep_h(ui, t, h);
+                                if let Some(h) = end_picker(ui, Some(Some(p.arrow_head)), false, 28.0, t) {
+                                    p.arrow_head = h.unwrap_or_default();
                                 }
                             }
                             ui.spacing_mut().item_spacing.x = 6.0;

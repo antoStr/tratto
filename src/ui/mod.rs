@@ -260,8 +260,6 @@ pub fn setup(ctx: &egui::Context, t: Theme, text_scale: f32) {
         v.widgets.active.bg_stroke = Stroke::new(1.0, t.brand);
         v.interact_cursor = Some(egui::CursorIcon::Default);
         v.button_frame = true;
-        // Lists end where their area ends: nothing scrolls under the headers above them.
-        v.clip_rect_margin = 0.0;
     });
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
 }

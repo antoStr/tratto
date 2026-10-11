@@ -152,7 +152,46 @@ pub struct Line {
     /// Text in the middle of the line, on a small card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// The look of the arrow heads at each end (when there is one).
+    #[serde(default, skip_serializing_if = "Head::is_triangle")]
+    pub head_start: Head,
+    #[serde(default, skip_serializing_if = "Head::is_triangle")]
+    pub head_end: Head,
+    /// Which way each end leaves the element it is joined to (0 up, 1 right, 2 down, 3 left;
+    /// other values: not joined), so elbows and curves come straight out of the side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sides: Option<[u8; 2]>,
 }
+
+impl Default for Line {
+    fn default() -> Self {
+        Line { points: vec![0.0; 4], stroke: "#1E1E1E".into(), stroke_width: 3.0, dash: false, arrow_start: false, arrow_end: false, from: None, to: None, tape: false, route: Route::Straight, label: None, head_start: Head::Triangle, head_end: Head::Triangle, sides: None }
+    }
+}
+
+/// An arrow head, as FigJam offers them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Head {
+    /// Filled triangle.
+    #[default]
+    Triangle,
+    /// Two strokes, like a hand-drawn arrow.
+    Open,
+    Circle,
+    Diamond,
+    /// A short line across the end.
+    Bar,
+}
+
+impl Head {
+    pub fn is_triangle(&self) -> bool {
+        *self == Head::Triangle
+    }
+}
+
+/// The heads offered, with their names.
+pub const HEADS: [(Head, &str); 5] = [(Head::Triangle, "Triangolo"), (Head::Open, "Freccia aperta"), (Head::Circle, "Cerchio"), (Head::Diamond, "Rombo"), (Head::Bar, "Barra")];
 
 /// The path a connector takes between its ends, like FigJam's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

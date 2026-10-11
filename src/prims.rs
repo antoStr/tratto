@@ -5,7 +5,7 @@ use egui::Color32;
 
 use crate::geom::{MIN_SIZE, shape_polygon};
 use crate::ink::stroke_outline;
-use crate::model::{Align, DARK, El, FontKind, Kind, Line, Route, Shape, ShapeKind, color_or, is_dark};
+use crate::model::{Align, DARK, El, FontKind, Head, Kind, Line, Route, Shape, ShapeKind, color_or, is_dark};
 use crate::text::{self, LINE_HEIGHT, Placed, STICKY_PAD, place_lines};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -261,15 +261,67 @@ fn rounded_polyline(pts: &[(f64, f64)], r: f64) -> Path {
     p
 }
 
+/// How far the line stops short of its end under a head, so it doesn't poke through it.
+pub fn head_back(head: Head, width: f64) -> f64 {
+    match head {
+        Head::Triangle => head_length(width) * 0.6,
+        Head::Circle => head_radius(width) * 1.6,
+        Head::Diamond => head_length(width) * 1.1,
+        Head::Open | Head::Bar => 0.0,
+    }
+}
+
+fn head_radius(width: f64) -> f64 {
+    width * 1.6 + 1.5
+}
+
 pub fn line_ends(l: &Line) -> [f64; 4] {
     let [x1, y1, x2, y2] = [0, 1, 2, 3].map(|i| l.points[i] as f64);
     let len = (x2 - x1).hypot(y2 - y1);
     let len = if len > 0.0 { len } else { 1.0 };
-    let back = head_length(l.stroke_width) * 0.6;
     let (ux, uy) = ((x2 - x1) / len, (y2 - y1) / len);
-    let (sx, sy) = if l.arrow_start { (x1 + ux * back, y1 + uy * back) } else { (x1, y1) };
-    let (ex, ey) = if l.arrow_end { (x2 - ux * back, y2 - uy * back) } else { (x2, y2) };
+    let (bs, be) = (head_back(l.head_start, l.stroke_width), head_back(l.head_end, l.stroke_width));
+    let (sx, sy) = if l.arrow_start { (x1 + ux * bs, y1 + uy * bs) } else { (x1, y1) };
+    let (ex, ey) = if l.arrow_end { (x2 - ux * be, y2 - uy * be) } else { (x2, y2) };
     [sx, sy, ex, ey]
+}
+
+/// A head at (x2, y2), the line arriving from (x1, y1).
+fn head_prims(head: Head, x1: f64, y1: f64, x2: f64, y2: f64, width: f64, color: Color32, out: &mut Vec<Prim>) {
+    let a = (y2 - y1).atan2(x2 - x1);
+    let (c, s) = (a.cos(), a.sin());
+    // Along the line (back from the tip) and across it.
+    let at = |back: f64, across: f64| [x2 - c * back - s * across, y2 - s * back + c * across];
+    let len = head_length(width);
+    match head {
+        Head::Triangle => {
+            let path = Path::polygon(&arrow_head(x1, y1, x2, y2, width));
+            out.push(Prim::Fill { path: path.clone(), color });
+            out.push(Prim::Stroke { path, width: head_stroke(width) as f32, color, round: true, dash: None });
+        }
+        Head::Open => {
+            let w = len * (std::f64::consts::PI / 6.0).tan();
+            let pts: Vec<f64> = [at(len, -w), at(0.0, 0.0), at(len, w)].concat();
+            out.push(Prim::Stroke { path: Path::polyline(&pts), width: width as f32, color, round: true, dash: None });
+        }
+        Head::Circle => {
+            let r = head_radius(width);
+            let [cx, cy] = at(r, 0.0);
+            out.push(Prim::Fill { path: Path::ellipse(cx as f32, cy as f32, r as f32, r as f32), color });
+        }
+        Head::Diamond => {
+            let (l, w) = (len * 1.1, len * 0.42);
+            let pts: Vec<f64> = [at(0.0, 0.0), at(l / 2.0, -w), at(l, 0.0), at(l / 2.0, w)].concat();
+            let path = Path::polygon(&pts);
+            out.push(Prim::Fill { path: path.clone(), color });
+            out.push(Prim::Stroke { path, width: head_stroke(width) as f32, color, round: true, dash: None });
+        }
+        Head::Bar => {
+            let w = len * 0.5;
+            let pts: Vec<f64> = [at(0.0, -w), at(0.0, w)].concat();
+            out.push(Prim::Stroke { path: Path::polyline(&pts), width: width as f32, color, round: true, dash: None });
+        }
+    }
 }
 
 pub fn with_alpha(c: Color32, k: f64) -> Color32 {
@@ -513,7 +565,7 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
             let sw = l.stroke_width as f32;
             let dash = l.dash.then_some([sw * 3.0, sw * 2.2]);
             let [x1, y1, x2, y2] = [0, 1, 2, 3].map(|i| l.points[i] as f64);
-            let back = head_length(l.stroke_width) * 0.6;
+            let (back_start, back_end) = (head_back(l.head_start, l.stroke_width), head_back(l.head_end, l.stroke_width));
             // Each end's direction, for its arrow head: where the path comes from.
             let (from_end, from_start) = match l.route {
                 Route::Straight => {
@@ -522,28 +574,28 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
                     ((x1, y1), (x2, y2))
                 }
                 Route::Elbow => {
-                    let mut pts = crate::geom::elbow(x1, y1, x2, y2);
+                    let mut pts = crate::geom::elbow_of(l);
                     let (first, last) = (pts[1], pts[pts.len() - 2]);
                     let n = pts.len();
                     if l.arrow_end {
-                        pts[n - 1] = toward(pts[n - 1], last, back);
+                        pts[n - 1] = toward(pts[n - 1], last, back_end);
                     }
                     if l.arrow_start {
-                        pts[0] = toward(pts[0], first, back);
+                        pts[0] = toward(pts[0], first, back_start);
                     }
                     out.push(Prim::Stroke { path: rounded_polyline(&pts, (l.stroke_width * 4.0).max(10.0)), width: sw, color, round: true, dash });
                     (last, first)
                 }
                 Route::Curved => {
-                    let mut c = crate::geom::curve(x1, y1, x2, y2);
+                    let mut c = crate::geom::curve_of(l);
                     let (c1, c2) = (c[1], c[2]);
                     if l.arrow_end {
                         let (dx, dy) = unit(c[3], c2);
-                        (c[3], c[2]) = ((c[3].0 + dx * back, c[3].1 + dy * back), (c[2].0 + dx * back, c[2].1 + dy * back));
+                        (c[3], c[2]) = ((c[3].0 + dx * back_end, c[3].1 + dy * back_end), (c[2].0 + dx * back_end, c[2].1 + dy * back_end));
                     }
                     if l.arrow_start {
                         let (dx, dy) = unit(c[0], c1);
-                        (c[0], c[1]) = ((c[0].0 + dx * back, c[0].1 + dy * back), (c[1].0 + dx * back, c[1].1 + dy * back));
+                        (c[0], c[1]) = ((c[0].0 + dx * back_start, c[0].1 + dy * back_start), (c[1].0 + dx * back_start, c[1].1 + dy * back_start));
                     }
                     let mut p = Path::default();
                     p.move_to(c[0].0 as f32, c[0].1 as f32);
@@ -552,12 +604,11 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
                     (c2, c1)
                 }
             };
-            for (on, head) in [(l.arrow_end, arrow_head(from_end.0, from_end.1, x2, y2, l.stroke_width)), (l.arrow_start, arrow_head(from_start.0, from_start.1, x1, y1, l.stroke_width))] {
-                if on {
-                    let path = Path::polygon(&head);
-                    out.push(Prim::Fill { path: path.clone(), color });
-                    out.push(Prim::Stroke { path, width: head_stroke(l.stroke_width) as f32, color, round: true, dash: None });
-                }
+            if l.arrow_end {
+                head_prims(l.head_end, from_end.0, from_end.1, x2, y2, l.stroke_width, color, &mut out);
+            }
+            if l.arrow_start {
+                head_prims(l.head_start, from_start.0, from_start.1, x1, y1, l.stroke_width, color, &mut out);
             }
             // FigJam's label: the text on a small white card in the middle of the line.
             if let Some(label) = l.label.as_ref().filter(|s| !s.trim().is_empty() && !editing) {

@@ -24,14 +24,6 @@ fn text(x: f64, y: f64, s: &str, size: f64, bold: bool, color: &str, align: Alig
     el(Kind::Text(Text { text: s.into(), color: color.into(), font_size: size, font: FontKind::Sans, align, bold, italic: false, fixed_width: w.is_some(), strike: false }), x, y, w.unwrap_or(lay.width).ceil() + 1.0, lay.height)
 }
 
-/// Text whose box is centred on (cx, cy).
-fn label(cx: f64, cy: f64, s: &str, size: f64, bold: bool, color: &str) -> El {
-    let mut t = text(0.0, 0.0, s, size, bold, color, Align::Center, None);
-    t.x = cx - t.w / 2.0;
-    t.y = cy - t.h / 2.0;
-    t
-}
-
 #[allow(clippy::too_many_arguments)]
 fn shape(k: ShapeKind, x: f64, y: f64, w: f64, h: f64, fill: &str, stroke: &str, width: f64, radius: f64) -> El {
     el(Kind::Shape(Shape { shape: k, fill: fill.into(), stroke: stroke.into(), stroke_width: width, radius, ..Default::default() }), x, y, w, h)
@@ -57,7 +49,7 @@ fn sticky(x: f64, y: f64, color: &str, s: &str) -> El {
 
 fn line(x1: f64, y1: f64, x2: f64, y2: f64, arrow: bool) -> El {
     let (x0, y0) = (x1.min(x2), y1.min(y2));
-    let l = Line { points: vec![(x1 - x0) as f32, (y1 - y0) as f32, (x2 - x0) as f32, (y2 - y0) as f32], stroke: "#757575".into(), stroke_width: 2.0, dash: false, arrow_start: false, arrow_end: arrow, from: None, to: None, tape: false, route: crate::model::Route::Straight, label: None };
+    let l = Line { points: vec![(x1 - x0) as f32, (y1 - y0) as f32, (x2 - x0) as f32, (y2 - y0) as f32], stroke: "#757575".into(), stroke_width: 2.0, dash: false, arrow_start: false, arrow_end: arrow, from: None, to: None, tape: false, route: crate::model::Route::Straight, label: None, ..Default::default() };
     el(Kind::Line(l), x0, y0, (x2 - x1).abs(), (y2 - y1).abs())
 }
 
@@ -164,20 +156,21 @@ fn flow() -> Vec<El> {
     let decision = shape(ShapeKind::Diamond, -60.0, -80.0, 240.0, 160.0, YELLOW, "#F5B700", sw, 0.0);
     let yes = shape(ShapeKind::Rect, 300.0, -210.0, 200.0, 80.0, GREEN, "#2F9E44", sw, 12.0);
     let no = shape(ShapeKind::Rect, 300.0, 130.0, 200.0, 80.0, PINK, "#C2255C", sw, 12.0);
-    let cy = |s: &El| s.y + s.h / 2.0;
-    finish(vec![
-        link(line(start.x + start.w, 0.0, step.x, 0.0, true), &start, &step),
-        link(line(step.x + step.w, 0.0, decision.x, 0.0, true), &step, &decision),
-        link(line(decision.x + decision.w, 0.0, yes.x, cy(&yes), true), &decision, &yes),
-        link(line(decision.x + decision.w, 0.0, no.x, cy(&no), true), &decision, &no),
-        with_text(start, "Inizio"),
-        with_text(step, "Passo"),
-        with_text(decision, "Decisione?"),
-        with_text(yes, "Esito A"),
-        with_text(no, "Esito B"),
-        label(250.0, -110.0, "Sì", 16.0, true, "#2F9E44"),
-        label(250.0, 110.0, "No", 16.0, true, "#C2255C"),
-    ])
+    // The outcomes branch off at right angles, each arrow with its answer on it.
+    let branch = |to: &El, answer: &str| {
+        let mut l = link(line(0.0, 0.0, 1.0, 1.0, true), &decision, to);
+        if let Kind::Line(x) = &mut l.kind {
+            x.route = crate::model::Route::Elbow;
+            x.label = Some(answer.into());
+        }
+        l
+    };
+    let lines = vec![link(line(0.0, 0.0, 1.0, 1.0, true), &start, &step), link(line(0.0, 0.0, 1.0, 1.0, true), &step, &decision), branch(&yes, "Sì"), branch(&no, "No")];
+    let shapes = [&start, &step, &decision, &yes, &no];
+    let get = |id: &str| shapes.iter().find(|s| s.id == id).map(|s| &**s);
+    let mut out: Vec<El> = lines.iter().map(|l| crate::geom::route_connector(l, get).unwrap_or_else(|| l.clone())).collect();
+    out.extend([with_text(start, "Inizio"), with_text(step, "Passo"), with_text(decision, "Decisione?"), with_text(yes, "Esito A"), with_text(no, "Esito B")]);
+    finish(out)
 }
 
 /// A meeting: the agenda to tick, a quick poll, the actions in a table and room for notes.

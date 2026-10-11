@@ -175,6 +175,7 @@ impl BoardScreen {
             }
         };
         let mut editor = Editor::new(board, id.to_string(), painter, prefs, voter);
+        editor.board.reroute_all();
         let mut had_camera = false;
         if let Some(cam) = store.setting(&format!("cam:{id}")).and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             && let (Some(x), Some(y), Some(z)) = (cam["x"].as_f64(), cam["y"].as_f64(), cam["z"].as_f64())
