@@ -2,7 +2,7 @@
 //! strike, alignment and colour of its text, and the radius of its corners. The panels show and
 //! change whatever is selected through this, all at once.
 
-use crate::model::{Align, El, FontKind, Kind, ShapeKind};
+use crate::model::{Align, El, FontKind, Kind, Shade, ShapeKind};
 
 /// What an element's text looks like. A setting the element doesn't have is None.
 #[derive(Clone, Debug, PartialEq)]
@@ -104,6 +104,33 @@ pub fn radius(el: &El) -> Option<f64> {
         Kind::Code(c) => Some(c.radius.unwrap_or(c.font_size * 0.7)),
         _ => None,
     }
+}
+
+/// The shadow an element has without choosing one.
+pub fn default_shade(el: &El) -> Option<Shade> {
+    match &el.kind {
+        Kind::Sticky(_) => Some(Shade { opacity: 0.14, blur: 10.0, y: 3.0 }),
+        Kind::Code(_) => Some(Shade { opacity: 0.12, blur: 8.0, y: 2.0 }),
+        Kind::Widget(_) => Some(Shade { opacity: 0.10, blur: 8.0, y: 2.0 }),
+        _ => None,
+    }
+}
+
+/// Whether an element can have a shadow: things with a body (a shape needs a fill).
+pub fn can_shade(el: &El) -> bool {
+    match &el.kind {
+        Kind::Shape(s) => s.fill != "transparent",
+        Kind::Sticky(_) | Kind::Table(_) | Kind::Code(_) | Kind::Widget(_) | Kind::Image { .. } => true,
+        _ => false,
+    }
+}
+
+/// The shadow drawn under an element, if any.
+pub fn shade(el: &El) -> Option<Shade> {
+    if !can_shade(el) {
+        return None;
+    }
+    el.shadow.or_else(|| default_shade(el)).filter(|s| s.opacity > 0.001)
 }
 
 /// The largest radius that still changes something: half the shorter side.

@@ -844,7 +844,7 @@ pub mod tests {
     use crate::model::*;
 
     pub fn base(kind: Kind) -> El {
-        El { id: "a".into(), x: 0.0, y: 0.0, w: 0.0, h: 0.0, rotation: 0.0, z: 0.0, opacity: 1.0, locked: false, hidden: false, name: None, group_id: None, erase: vec![], kind }
+        El { id: "a".into(), x: 0.0, y: 0.0, w: 0.0, h: 0.0, rotation: 0.0, z: 0.0, opacity: 1.0, locked: false, hidden: false, name: None, group_id: None, erase: vec![], shadow: None, kind }
     }
     pub fn rect(id: &str, x: f64, w: f64, h: f64, shape: ShapeKind) -> El {
         let mut el = base(Kind::Shape(Shape { shape, fill: "transparent".into(), stroke: "#000000".into(), stroke_width: 2.0, ..Default::default() }));

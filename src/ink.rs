@@ -312,10 +312,17 @@ pub fn thin_points(pts: &[f32], min_dist: f64) -> Vec<f32> {
 #[derive(Debug, PartialEq)]
 pub enum Recognized {
     Line { x1: f64, y1: f64, x2: f64, y2: f64 },
+    /// A straight line with a head drawn at its end (in the same stroke).
+    Arrow { x1: f64, y1: f64, x2: f64, y2: f64 },
     Rect { x: f64, y: f64, w: f64, h: f64 },
+    /// A rectangle drawn askew: centre, size and angle (radians).
+    Turned { cx: f64, cy: f64, w: f64, h: f64, angle: f64 },
     Ellipse { x: f64, y: f64, w: f64, h: f64 },
     Diamond { x: f64, y: f64, w: f64, h: f64 },
     Triangle([Pt; 3]),
+    Star { x: f64, y: f64, w: f64, h: f64 },
+    /// Any other closed shape with straight sides (pentagon, hexagon, trapezoid…): its corners.
+    Polygon(Vec<Pt>),
 }
 
 fn hull(points: &[Pt]) -> Vec<Pt> {
@@ -350,70 +357,233 @@ fn area(poly: &[Pt]) -> f64 {
     (0..n).map(|i| poly[i].x * poly[(i + 1) % n].y - poly[(i + 1) % n].x * poly[i].y).sum::<f64>().abs() / 2.0
 }
 
-/// Guesses which simple shape a freehand stroke was meant to be; None keeps the ink as drawn.
-/// `px` is one screen pixel in board units: thresholds are on screen, so it works the same at
-/// any zoom, and strokes smaller than 48 px are handwriting, never shapes.
+fn dist(a: Pt, b: Pt) -> f64 {
+    (a.x - b.x).hypot(a.y - b.y)
+}
+
+/// The stroke as points `step` apart along it, so fast and slow parts weigh the same.
+fn resample(pts: &[Pt], step: f64) -> Vec<Pt> {
+    let mut out = vec![pts[0]];
+    let mut carry = 0.0;
+    for w in pts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let d = dist(a, b);
+        if d <= 0.0 {
+            continue;
+        }
+        let mut t = step - carry;
+        while t <= d {
+            out.push(pt(a.x + (b.x - a.x) * t / d, a.y + (b.y - a.y) * t / d));
+            t += step;
+        }
+        carry = d - (t - step);
+    }
+    if dist(*out.last().unwrap(), *pts.last().unwrap()) > step * 0.3 {
+        out.push(*pts.last().unwrap());
+    }
+    out
+}
+
+/// Ramer–Douglas–Peucker: the corners of a polyline, within `eps`.
+fn simplify(pts: &[Pt], eps: f64) -> Vec<Pt> {
+    if pts.len() < 3 {
+        return pts.to_vec();
+    }
+    let (a, b) = (pts[0], pts[pts.len() - 1]);
+    let (mut best, mut at) = (0.0, 0);
+    for (i, p) in pts.iter().enumerate().take(pts.len() - 1).skip(1) {
+        let d = dist_to_segment(p.x, p.y, a.x, a.y, b.x, b.y);
+        if d > best {
+            (best, at) = (d, i);
+        }
+    }
+    if best <= eps {
+        return vec![a, b];
+    }
+    let mut left = simplify(&pts[..=at], eps);
+    left.pop();
+    left.extend(simplify(&pts[at..], eps));
+    left
+}
+
+/// Turn at `b` going from `a` to `c`, 0 (straight on) to π (back).
+fn turn(a: Pt, b: Pt, c: Pt) -> f64 {
+    let (u, v) = ((b.x - a.x, b.y - a.y), (c.x - b.x, c.y - b.y));
+    let (lu, lv) = (u.0.hypot(u.1), v.0.hypot(v.1));
+    if lu <= 0.0 || lv <= 0.0 {
+        return 0.0;
+    }
+    ((u.0 * v.0 + u.1 * v.1) / (lu * lv)).clamp(-1.0, 1.0).acos()
+}
+
+/// The corners of a closed stroke: its outline simplified, nearly straight corners and corners
+/// crowded together dropped.
+fn corners(ring: &[Pt], size: f64) -> Vec<Pt> {
+    // Split where the outline is farthest from its start, so no corner is cut in two.
+    let start = ring[0];
+    let far = (0..ring.len()).max_by(|&i, &j| dist(ring[i], start).total_cmp(&dist(ring[j], start))).unwrap_or(0);
+    let mut c = simplify(&ring[..=far], size * 0.045);
+    c.pop();
+    let mut back = ring[far..].to_vec();
+    back.push(start);
+    c.extend(simplify(&back, size * 0.045));
+    c.pop();
+    loop {
+        let n = c.len();
+        if n < 3 {
+            return c;
+        }
+        let perimeter: f64 = (0..n).map(|i| dist(c[i], c[(i + 1) % n])).sum();
+        // The weakest corner: the straightest, or one on a very short side.
+        let score = |i: usize| {
+            let (a, b, d) = (c[(i + n - 1) % n], c[i], c[(i + 1) % n]);
+            let short = dist(a, b).min(dist(b, d)) / perimeter;
+            (turn(a, b, d), short)
+        };
+        let weakest = (0..n).min_by(|&i, &j| score(i).0.total_cmp(&score(j).0)).unwrap();
+        let (angle, _) = score(weakest);
+        let tiny = (0..n).find(|&i| dist(c[i], c[(i + 1) % n]) < perimeter * 0.06);
+        if angle < 0.42 {
+            c.remove(weakest);
+        } else if let Some(i) = tiny {
+            // Two corners almost on top of each other: one, half-way.
+            let j = (i + 1) % n;
+            let m = pt((c[i].x + c[j].x) / 2.0, (c[i].y + c[j].y) / 2.0);
+            c[i] = m;
+            c.remove(j);
+        } else {
+            return c;
+        }
+    }
+}
+
+/// Smallest rectangle around the points, turned to any angle: centre, width, height, angle.
+fn min_rect(h: &[Pt]) -> (Pt, f64, f64, f64) {
+    let mut best = (pt(0.0, 0.0), 0.0, 0.0, 0.0, f64::INFINITY);
+    for i in 0..h.len() {
+        let (a, b) = (h[i], h[(i + 1) % h.len()]);
+        let ang = (b.y - a.y).atan2(b.x - a.x);
+        let (s, c) = ang.sin_cos();
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for p in h {
+            let (u, v) = (p.x * c + p.y * s, -p.x * s + p.y * c);
+            (x0, y0, x1, y1) = (x0.min(u), y0.min(v), x1.max(u), y1.max(v));
+        }
+        let a = (x1 - x0) * (y1 - y0);
+        if a < best.4 {
+            let (u, v) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+            best = (pt(u * c - v * s, u * s + v * c), x1 - x0, y1 - y0, ang, a);
+        }
+    }
+    (best.0, best.1, best.2, best.3)
+}
+
+/// Guesses which shape a freehand stroke was meant to be; None keeps the ink as drawn. `px` is
+/// one screen pixel in board units: thresholds are on screen, so it works the same at any zoom,
+/// and strokes smaller than 48 px are handwriting, never shapes.
 pub fn recognize(flat: &[f32], px: f64) -> Option<Recognized> {
-    let pts: Vec<Pt> = flat.chunks_exact(3).map(|p| pt(p[0] as f64, p[1] as f64)).collect();
-    if pts.len() < 4 {
+    let raw: Vec<Pt> = flat.chunks_exact(3).map(|p| pt(p[0] as f64, p[1] as f64)).collect();
+    if raw.len() < 4 {
         return None;
     }
-    let length: f64 = pts.windows(2).map(|w| (w[1].x - w[0].x).hypot(w[1].y - w[0].y)).sum();
+    let length: f64 = raw.windows(2).map(|w| dist(w[0], w[1])).sum();
     if length < 96.0 * px {
         return None;
     }
+    let pts = resample(&raw, (length / 160.0).max(px * 0.5));
     let (first, last) = (pts[0], pts[pts.len() - 1]);
-    let gap = (last.x - first.x).hypot(last.y - first.y);
-    // Straight line: endpoints far apart and no point strays from the chord.
-    if gap > length * 0.8 {
-        let dev = pts.iter().map(|p| dist_to_segment(p.x, p.y, first.x, first.y, last.x, last.y)).fold(0.0, f64::max);
-        if dev < (6.0 * px).max(length * 0.06) {
-            return Some(Recognized::Line { x1: first.x, y1: first.y, x2: last.x, y2: last.y });
-        }
-        return None;
-    }
-    if gap > length * 0.25 {
-        return None; // open curve, not a closed shape
-    }
-    let h = hull(&pts);
-    let hull_area = area(&h);
+    let gap = dist(first, last);
     let b = crate::geom::bounds_of(pts.iter().copied());
-    if b.w.max(b.h) < 48.0 * px || b.w.min(b.h) < 12.0 * px || hull_area == 0.0 {
-        return None;
-    }
-    let fill = hull_area / (b.w * b.h);
-    // Largest triangle inside the hull: close to the whole hull means it is a triangle.
-    let mut best = [h[0]; 3];
-    let mut best_area = 0.0;
-    for i in 0..h.len() {
-        for j in i + 1..h.len() {
-            for k in j + 1..h.len() {
-                let a = area(&[h[i], h[j], h[k]]);
-                if a > best_area {
-                    best_area = a;
-                    best = [h[i], h[j], h[k]];
-                }
+    let size = b.w.hypot(b.h);
+    // Open strokes: a line, or an arrow (a line and its head, drawn in one go).
+    if gap > length * 0.2 && gap > size * 0.3 {
+        if gap > length * 0.85 {
+            let dev = pts.iter().map(|p| dist_to_segment(p.x, p.y, first.x, first.y, last.x, last.y)).fold(0.0, f64::max);
+            if dev < (6.0 * px).max(length * 0.06) {
+                return Some(Recognized::Line { x1: first.x, y1: first.y, x2: last.x, y2: last.y });
             }
         }
+        let s = simplify(&pts, size * 0.05);
+        // The shaft is the first and longest leg; what follows stays near its end and is short.
+        if s.len() >= 3 && s.len() <= 6 {
+            let shaft = dist(s[0], s[1]);
+            let rest: f64 = s.windows(2).skip(1).map(|w| dist(w[0], w[1])).sum();
+            let near = s[2..].iter().all(|p| dist(*p, s[1]) < shaft * 0.45);
+            if shaft > rest * 1.1 && near && rest > shaft * 0.12 && turn(s[0], s[1], s[2]) > 2.0 {
+                return Some(Recognized::Arrow { x1: s[0].x, y1: s[0].y, x2: s[1].x, y2: s[1].y });
+            }
+        }
+        return None;
     }
-    if best_area / hull_area > 0.86 {
-        return Some(Recognized::Triangle(best));
+    if b.w.max(b.h) < 48.0 * px || b.w.min(b.h) < 12.0 * px {
+        return None;
     }
-    // Ellipse: points sit close to the ellipse inscribed in the box.
-    let (rx, ry) = (b.w / 2.0, b.h / 2.0);
-    let (cx, cy) = (b.x + rx, b.y + ry);
-    let err = pts.iter().map(|p| (((p.x - cx) / rx).hypot((p.y - cy) / ry) - 1.0).abs()).sum::<f64>() / pts.len() as f64;
-    let (x, y, w, h) = (b.x, b.y, b.w, b.h);
-    if err < 0.11 && fill < 0.9 {
-        return Some(Recognized::Ellipse { x, y, w, h });
+    // Closed: the outline once round (the overlap where it was closed cut off).
+    let mut ring = pts.clone();
+    if let Some(i) = (pts.len() * 3 / 4..pts.len()).min_by(|&i, &j| dist(pts[i], first).total_cmp(&dist(pts[j], first))) {
+        if dist(pts[i], first) < size * 0.15 {
+            ring.truncate(i + 1);
+        }
     }
-    if fill > 0.84 {
-        return Some(Recognized::Rect { x, y, w, h });
+    let h = hull(&ring);
+    let hull_area = area(&h);
+    if hull_area <= 0.0 {
+        return None;
     }
-    if fill > 0.4 && fill < 0.62 {
-        return Some(Recognized::Diamond { x, y, w, h });
+    let (x, y, w, hh) = (b.x, b.y, b.w, b.h);
+    // An ellipse: every point near the ellipse in its box.
+    let (rx, ry) = (w / 2.0, hh / 2.0);
+    let (cx, cy) = (x + rx, y + ry);
+    let err = ring.iter().map(|p| (((p.x - cx) / rx).hypot((p.y - cy) / ry) - 1.0).abs()).sum::<f64>() / ring.len() as f64;
+    let c = corners(&ring, size);
+    // Whichever fits the stroke better: the ellipse, or the polygon through its corners.
+    let ellipse_off = err * (rx + ry) / 2.0;
+    let polygon_off = if c.len() >= 3 {
+        ring.iter().map(|p| (0..c.len()).map(|i| {
+            let (a, d) = (c[i], c[(i + 1) % c.len()]);
+            dist_to_segment(p.x, p.y, a.x, a.y, d.x, d.y)
+        }).fold(f64::INFINITY, f64::min)).sum::<f64>() / ring.len() as f64
+    } else {
+        f64::INFINITY
+    };
+    if err < 0.16 && (c.len() < 3 || c.len() > 10 || ellipse_off < polygon_off * 0.9) {
+        return Some(Recognized::Ellipse { x, y, w, h: hh });
     }
-    None
+    match c.len() {
+        3 => Some(Recognized::Triangle([c[0], c[1], c[2]])),
+        4 => {
+            let (center, rw, rh, angle) = min_rect(&h);
+            let fill = hull_area / (rw * rh);
+            // Corners in the middle of the box's sides: a diamond.
+            let mid = [pt(cx, y), pt(x + w, cy), pt(cx, y + hh), pt(x, cy)];
+            let diamond = c.iter().all(|p| mid.iter().any(|m| dist(*p, *m) < size * 0.14));
+            if diamond && hull_area / (w * hh) < 0.68 {
+                return Some(Recognized::Diamond { x, y, w, h: hh });
+            }
+            if fill > 0.86 {
+                // Square to the page, or turned.
+                let a = angle.rem_euclid(std::f64::consts::FRAC_PI_2);
+                let off = a.min(std::f64::consts::FRAC_PI_2 - a);
+                if off < 0.12 {
+                    return Some(Recognized::Rect { x, y, w, h: hh });
+                }
+                return Some(Recognized::Turned { cx: center.x, cy: center.y, w: rw, h: rh, angle });
+            }
+            Some(Recognized::Polygon(c))
+        }
+        10 => {
+            // A star: points far out and corners deep in, one after the other.
+            let ctr = pt(c.iter().map(|p| p.x).sum::<f64>() / 10.0, c.iter().map(|p| p.y).sum::<f64>() / 10.0);
+            let r: Vec<f64> = c.iter().map(|p| dist(*p, ctr)).collect();
+            let (odd, even): (f64, f64) = (r.iter().skip(1).step_by(2).sum::<f64>() / 5.0, r.iter().step_by(2).sum::<f64>() / 5.0);
+            if odd.min(even) < odd.max(even) * 0.75 {
+                return Some(Recognized::Star { x, y, w, h: hh });
+            }
+            None
+        }
+        5..=8 => Some(Recognized::Polygon(c)),
+        _ => None,
+    }
 }
 
 /* ---------------- ruler ---------------- */
@@ -508,15 +678,63 @@ mod tests {
         out.push(*corners.last().unwrap());
         out
     }
-    fn kind(r: Option<Recognized>) -> &'static str {
+    fn kind(r: Option<Recognized>) -> String {
         match r {
-            Some(Recognized::Line { .. }) => "line",
-            Some(Recognized::Rect { .. }) => "rect",
-            Some(Recognized::Ellipse { .. }) => "ellipse",
-            Some(Recognized::Diamond { .. }) => "diamond",
-            Some(Recognized::Triangle(_)) => "triangle",
-            None => "none",
+            Some(Recognized::Line { .. }) => "line".into(),
+            Some(Recognized::Arrow { .. }) => "arrow".into(),
+            Some(Recognized::Rect { .. }) => "rect".into(),
+            Some(Recognized::Turned { .. }) => "turned".into(),
+            Some(Recognized::Ellipse { .. }) => "ellipse".into(),
+            Some(Recognized::Diamond { .. }) => "diamond".into(),
+            Some(Recognized::Triangle(_)) => "triangle".into(),
+            Some(Recognized::Star { .. }) => "star".into(),
+            Some(Recognized::Polygon(p)) => format!("polygon{}", p.len()),
+            None => "none".into(),
         }
+    }
+
+    /// A hand's wobble: a little sideways noise, the same every run.
+    fn shaky(pts: Vec<(f64, f64)>, amount: f64) -> Vec<(f64, f64)> {
+        pts.into_iter().enumerate().map(|(i, (x, y))| (x + (i as f64 * 1.7).sin() * amount, y + (i as f64 * 2.3).cos() * amount)).collect()
+    }
+
+    fn regular(n: usize, r: f64, inner: Option<f64>) -> Vec<(f64, f64)> {
+        let k = if inner.is_some() { n * 2 } else { n };
+        let mut corners: Vec<(f64, f64)> = (0..k)
+            .map(|i| {
+                let a = -std::f64::consts::FRAC_PI_2 + i as f64 * std::f64::consts::TAU / k as f64;
+                let rr = if i % 2 == 1 { inner.unwrap_or(r) } else { r };
+                (200.0 + a.cos() * rr, 200.0 + a.sin() * rr)
+            })
+            .collect();
+        corners.push(corners[0]);
+        polyline(&corners)
+    }
+
+    #[test]
+    fn more_shapes_drawn_by_hand_are_recognised() {
+        let k = |p: Vec<(f64, f64)>| kind(recognize(&flat(&p), 1.0));
+        assert_eq!(k(shaky(circle(150.0, 150.0, 90.0), 2.0)), "ellipse");
+        assert_eq!(k(shaky(polyline(&[(0.0, 0.0), (240.0, 0.0), (240.0, 150.0), (0.0, 150.0), (0.0, 4.0)]), 2.0)), "rect");
+        // A rectangle drawn at an angle.
+        let turned: Vec<(f64, f64)> = [(0.0, 0.0), (220.0, 0.0), (220.0, 120.0), (0.0, 120.0), (0.0, 3.0)].iter().map(|&(x, y): &(f64, f64)| {
+            let (s, c) = 0.5f64.sin_cos();
+            (x * c - y * s + 300.0, x * s + y * c + 100.0)
+        }).collect();
+        assert_eq!(k(shaky(polyline(&turned), 1.5)), "turned");
+        assert_eq!(k(shaky(polyline(&[(100.0, 0.0), (200.0, 100.0), (100.0, 200.0), (0.0, 100.0), (98.0, 2.0)]), 1.5)), "diamond");
+        assert_eq!(k(shaky(regular(5, 110.0, None), 1.5)), "polygon5");
+        assert_eq!(k(shaky(regular(6, 110.0, None), 1.5)), "polygon6");
+        assert_eq!(k(shaky(regular(5, 120.0, Some(50.0)), 1.0)), "star");
+        // An arrow: the shaft, then the two barbs in the same stroke.
+        assert_eq!(k(polyline(&[(0.0, 100.0), (260.0, 100.0), (225.0, 75.0), (260.0, 100.0), (225.0, 125.0)])), "arrow");
+        assert_eq!(k(shaky(polyline(&[(0.0, 0.0), (300.0, 60.0)]), 1.0)), "line");
+        // Handwriting stays handwriting.
+        let word: Vec<(f64, f64)> = (0..300).map(|i| {
+            let t = i as f64 / 300.0 * std::f64::consts::TAU * 6.0;
+            (i as f64 * 1.2 - 25.0 * t.sin(), 25.0 * (1.0 - t.cos()))
+        }).collect();
+        assert_eq!(k(word), "none");
     }
 
     #[test]

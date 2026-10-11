@@ -461,8 +461,21 @@ pub struct El {
     /// Pixel eraser marks: they move, turn and scale with the element.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub erase: Vec<EraseMark>,
+    /// Its shadow, when chosen; None leaves the usual one (notes, code and widgets have one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<Shade>,
     #[serde(flatten)]
     pub kind: Kind,
+}
+
+/// A soft shadow under an element: how dark (0 none, 1 black), how blurred and how far below
+/// it, in the element's units.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Shade {
+    pub opacity: f64,
+    pub blur: f64,
+    pub y: f64,
 }
 
 fn one() -> f64 {
@@ -471,7 +484,7 @@ fn one() -> f64 {
 
 impl El {
     pub fn new(kind: Kind) -> Self {
-        El { id: uid(), x: 0.0, y: 0.0, w: 0.0, h: 0.0, rotation: 0.0, z: 0.0, opacity: 1.0, locked: false, hidden: false, name: None, group_id: None, erase: Vec::new(), kind }
+        El { id: uid(), x: 0.0, y: 0.0, w: 0.0, h: 0.0, rotation: 0.0, z: 0.0, opacity: 1.0, locked: false, hidden: false, name: None, group_id: None, erase: Vec::new(), shadow: None, kind }
     }
 
     pub fn type_name(&self) -> &'static str {

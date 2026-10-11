@@ -28,6 +28,21 @@ impl Path {
     pub fn move_to(&mut self, x: f32, y: f32) {
         self.cmds.push(Cmd::Move(x, y));
     }
+    /// The same path moved by (dx, dy).
+    pub fn translated(&self, dx: f32, dy: f32) -> Path {
+        let cmds = self
+            .cmds
+            .iter()
+            .map(|c| match *c {
+                Cmd::Move(x, y) => Cmd::Move(x + dx, y + dy),
+                Cmd::Line(x, y) => Cmd::Line(x + dx, y + dy),
+                Cmd::Quad(a, b, x, y) => Cmd::Quad(a + dx, b + dy, x + dx, y + dy),
+                Cmd::Cubic(a, b, c2, d, x, y) => Cmd::Cubic(a + dx, b + dy, c2 + dx, d + dy, x + dx, y + dy),
+                Cmd::Close => Cmd::Close,
+            })
+            .collect();
+        Path { cmds }
+    }
     pub fn line_to(&mut self, x: f32, y: f32) {
         self.cmds.push(Cmd::Line(x, y));
     }
@@ -351,6 +366,38 @@ pub fn has_corners(k: ShapeKind) -> bool {
     !matches!(k, ShapeKind::Ellipse | ShapeKind::Pill)
 }
 
+/// The shadow under an element: a soft rounded rectangle for boxes; for other shapes their own
+/// outline, blurred by a few widening rings.
+fn shadow_prims(el: &El, sh: crate::model::Shade, alpha: f64, out: &mut Vec<Prim>) {
+    let (w, h) = (el.w as f32, el.h as f32);
+    let color = rgba(0, 0, 0, (sh.opacity * alpha).clamp(0.0, 1.0));
+    let (blur, dy) = (sh.blur.max(0.0) as f32, sh.y as f32);
+    let rect_like = match &el.kind {
+        Kind::Shape(s) => s.shape == ShapeKind::Rect,
+        _ => true,
+    };
+    if rect_like {
+        let r = match &el.kind {
+            Kind::Widget(_) => 16.0,
+            Kind::Image { .. } => 0.0,
+            _ => crate::style::radius(el).unwrap_or(0.0) as f32,
+        }
+        .min(w / 2.0)
+        .min(h / 2.0);
+        out.push(Prim::Shadow { x: 0.0, y: 0.0, w, h, radius: r, blur, dy, color });
+        return;
+    }
+    let Kind::Shape(s) = &el.kind else { return };
+    let path = shape_path(el, s).translated(0.0, dy);
+    let a = sh.opacity * alpha;
+    out.push(Prim::Fill { path: path.clone(), color: rgba(0, 0, 0, a * 0.5) });
+    for (k, share) in [(0.5, 0.3), (1.1, 0.18), (1.9, 0.1)] {
+        if blur > 0.0 {
+            out.push(Prim::Stroke { path: path.clone(), width: blur * k, color: rgba(0, 0, 0, a * share), round: true, dash: None });
+        }
+    }
+}
+
 /// A closed polygon (flat [x, y, …]) with every corner rounded into an arc of radius `r`; where
 /// the sides are too short for it, as round as they allow.
 pub fn rounded_polygon(pts: &[f64], r: f64) -> Path {
@@ -469,6 +516,11 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
     let alpha = el.opacity.clamp(0.0, 1.0);
     let editing = env.editing == Some(el.id.as_str());
     let (w, h) = (el.w as f32, el.h as f32);
+    if !env.hairline
+        && let Some(sh) = crate::style::shade(el)
+    {
+        shadow_prims(el, sh, alpha, &mut out);
+    }
     match &el.kind {
         Kind::Ink(i) | Kind::Highlighter(i) => {
             let hl = matches!(el.kind, Kind::Highlighter(_));
@@ -647,7 +699,6 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
         }
         Kind::Sticky(s) => {
             let r = (s.radius.unwrap_or(4.0) as f32).clamp(0.0, w.min(h) / 2.0);
-            out.push(Prim::Shadow { x: 0.0, y: 0.0, w, h, radius: r, blur: 10.0, dy: 3.0, color: rgba(0, 0, 0, 0.14 * alpha) });
             out.push(Prim::Fill { path: Path::round_rect(0.0, 0.0, w, h, [r; 4]), color: with_alpha(color_or(&s.color, Color32::from_rgb(0xFF, 0xF3, 0xA3)), alpha) });
             let dark = is_dark(&s.color);
             if text::show_author(s) {

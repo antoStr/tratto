@@ -1207,6 +1207,9 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
             }
         });
     }
+    if els.iter().all(|e| crate::style::can_shade(e)) && !locked_all(&els) {
+        shadow_props(ui, ed, &els, &ids);
+    }
     if els.iter().any(|e| !e.erase.is_empty()) {
         section(ui, None, |ui| {
             if ui::button(ui, "Ripristina le parti cancellate", Btn::Secondary, Some("eraser"), false, true).clicked() {
@@ -1324,6 +1327,45 @@ fn text_props(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], ids: &[String]) {
         if let (crate::style::Change::Font(f), true) = (&c, els.iter().all(|e| e.text().is_some())) {
             ed.prefs.text.font = *f;
         }
+    }
+}
+
+fn locked_all(els: &[Arc<El>]) -> bool {
+    els.iter().all(|e| e.locked)
+}
+
+/// The shadow of notes, shapes, tables, code, widgets and pictures: on or off, how dark, how
+/// soft and how far below.
+fn shadow_props(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], ids: &[String]) {
+    let shades: Vec<Option<Shade>> = els.iter().map(|e| crate::style::shade(e)).collect();
+    let mut on = shades.iter().all(Option::is_some);
+    let first = shades.iter().flatten().next().copied().unwrap_or(Shade { opacity: 0.16, blur: 12.0, y: 4.0 });
+    let mut change: Option<Shade> = None;
+    section(ui, Some("Ombra"), |ui| {
+        if ui::switch(ui, &mut on, "Ombra sotto l'elemento") {
+            change = Some(if on { Shade { opacity: first.opacity.max(0.05), ..first } } else { Shade { opacity: 0.0, ..first } });
+        }
+        if on {
+            let w = ui.available_width();
+            let mut s = first;
+            let mut density = s.opacity * 100.0;
+            if ui::slider(ui, "Densità", &mut density, 2.0, 100.0, 1.0, false, |v| format!("{}%", v.round()), w) {
+                s.opacity = density / 100.0;
+                change = Some(s);
+            }
+            if ui::slider(ui, "Sfumatura", &mut s.blur, 0.0, 80.0, 1.0, false, |v| format!("{}", v.round()), w) {
+                change = Some(s);
+            }
+            if ui::slider(ui, "Distanza", &mut s.y, -20.0, 60.0, 1.0, false, |v| format!("{}", v.round()), w) {
+                change = Some(s);
+            }
+            if els.iter().any(|e| e.shadow.is_some()) && ui::button(ui, "Ombra di base", Btn::Ghost, Some("rotate-ccw"), false, true).clicked() {
+                ed.board.update(ids, |el| el.shadow = None);
+            }
+        }
+    });
+    if let Some(s) = change {
+        ed.board.update(ids, |el| el.shadow = Some(s));
     }
 }
 

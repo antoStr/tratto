@@ -152,7 +152,6 @@ fn clip(s: &str, size: f64, bold: bool, width: f64) -> String {
 pub fn prims(el: &El, w: &Widget, alpha: f64, out: &mut Vec<Prim>) {
     let (ew, eh) = (el.w as f32, el.h as f32);
     let l = layout(el, w);
-    out.push(Prim::Shadow { x: 0.0, y: 0.0, w: ew, h: eh, radius: 16.0, blur: 8.0, dy: 2.0, color: with_alpha(Color32::from_black_alpha(26), alpha) });
     out.push(Prim::Fill { path: Path::round_rect(0.0, 0.0, ew, eh, [16.0; 4]), color: with_alpha(Color32::WHITE, alpha) });
     out.push(Prim::Stroke { path: Path::round_rect(0.5, 0.5, ew - 1.0, eh - 1.0, [16.0; 4]), width: 1.0, color: with_alpha(Color32::from_rgb(0xE6, 0xE6, 0xE6), alpha), round: true, dash: None });
     one_line(&kind_name(w).to_uppercase(), KICKER, true, Align::Left, 0.0, PAD, PAD, BRAND, alpha, out);

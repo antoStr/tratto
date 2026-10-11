@@ -611,6 +611,7 @@ mod picture {
                     "sticky" => {
                         let mut s = crate::model::El::new(crate::model::Kind::Sticky(crate::model::Sticky { text: "Idea da sviluppare".into(), bold: true, radius: Some(18.0), ..Default::default() }));
                         (s.x, s.y, s.w, s.h) = (-120.0, -420.0, 220.0, 220.0);
+                        s.shadow = Some(crate::model::Shade { opacity: 0.35, blur: 30.0, y: 14.0 });
                         let sid = s.id.clone();
                         ed.board.put([s]);
                         ed.selection = vec![sid];

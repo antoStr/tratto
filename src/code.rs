@@ -256,7 +256,6 @@ pub fn prims(el: &El, c: &Code, alpha: f64, editing: bool, out: &mut Vec<Prim>) 
         (Color32::from_rgb(0x0D, 0x11, 0x17), Color32::from_rgb(0x16, 0x1B, 0x22), Color32::from_rgb(0x30, 0x36, 0x3D), Color32::from_rgb(0x7D, 0x85, 0x90))
     };
     let r = (c.radius.unwrap_or(size * 0.7).max(0.0) as f32).min(w / 2.0).min(h / 2.0);
-    out.push(Prim::Shadow { x: 0.0, y: 0.0, w, h, radius: r, blur: 8.0, dy: 2.0, color: with_alpha(Color32::from_black_alpha(30), alpha) });
     out.push(Prim::Fill { path: Path::round_rect(0.0, 0.0, w, h, [r; 4]), color: with_alpha(bg, alpha) });
     out.push(Prim::Fill { path: Path::round_rect(0.0, 0.0, w, l.header as f32, [r, r, 0.0, 0.0]), color: with_alpha(head, alpha) });
     out.push(Prim::Stroke { path: Path::round_rect(0.5, 0.5, w - 1.0, h - 1.0, [r; 4]), width: 1.0, color: with_alpha(border, alpha), round: true, dash: None });

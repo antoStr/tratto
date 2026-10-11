@@ -886,20 +886,35 @@ impl Editor {
             if let Some(r) = ink::recognize(&flat, 1.0 / z) {
                 let (color, size, op) = (g.color.clone(), g.size, g.opacity);
                 let shape = |kind: ShapeKind, points: Option<Vec<f32>>| Kind::Shape(Shape { shape: kind, fill: "transparent".into(), stroke: color.clone(), stroke_width: size, points, ..Default::default() });
+                // A polygon through these corners, kept in its own box.
+                let polygon = |ed: &mut Editor, p: &[Pt]| {
+                    let b = bounds_of(p.iter().copied());
+                    let pts = p.iter().flat_map(|q| [((q.x - b.x) / b.w.max(1e-9)) as f32, ((q.y - b.y) / b.h.max(1e-9)) as f32]).collect();
+                    let mut s = ed.base(El::new(shape(ShapeKind::Polygon, Some(pts))));
+                    (s.x, s.y, s.w, s.h, s.opacity) = (b.x, b.y, b.w, b.h, op);
+                    s
+                };
                 el = match r {
-                    Recognized::Line { x1, y1, x2, y2 } => {
+                    Recognized::Line { x1, y1, x2, y2 } | Recognized::Arrow { x1, y1, x2, y2 } => {
                         let c = color.clone();
+                        let arrow = matches!(r, Recognized::Arrow { .. });
                         self.line_element(pt(x1, y1), pt(x2, y2), |el, l| {
                             l.stroke = c;
                             l.stroke_width = size;
+                            l.arrow_end = arrow;
                             el.opacity = op;
                         })
                     }
-                    Recognized::Triangle(p) => {
-                        let b = bounds_of(p);
-                        let pts = p.iter().flat_map(|q| [r2((q.x - b.x) / b.w) as f32, r2((q.y - b.y) / b.h) as f32]).collect();
-                        let mut s = self.base(El::new(shape(ShapeKind::Polygon, Some(pts))));
-                        (s.x, s.y, s.w, s.h, s.opacity) = (b.x, b.y, b.w, b.h, op);
+                    Recognized::Triangle(p) => polygon(self, &p),
+                    Recognized::Polygon(p) => polygon(self, &p),
+                    Recognized::Turned { cx, cy, w, h, angle } => {
+                        let mut s = self.base(El::new(shape(ShapeKind::Rect, None)));
+                        (s.x, s.y, s.w, s.h, s.rotation, s.opacity) = (cx - w / 2.0, cy - h / 2.0, w, h, angle, op);
+                        s
+                    }
+                    Recognized::Star { x, y, w, h } => {
+                        let mut s = self.base(El::new(shape(ShapeKind::Star, None)));
+                        (s.x, s.y, s.w, s.h, s.opacity) = (x, y, w, h, op);
                         s
                     }
                     Recognized::Rect { x, y, w, h } | Recognized::Ellipse { x, y, w, h } | Recognized::Diamond { x, y, w, h } => {
