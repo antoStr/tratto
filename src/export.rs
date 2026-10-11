@@ -53,7 +53,8 @@ fn raster_of(els: &[Arc<El>], meta: &BoardMeta, opts: &Options, images: raster::
     let k = scale.min(MAX_SIDE / b.w.max(b.h)).min((MAX_AREA / (b.w * b.h)).sqrt());
     let (w, h) = ((b.w * k).round().max(1.0) as u32, (b.h * k).round().max(1.0) as u32);
     let bg = (opts.background || opaque).then(|| color_or(&meta.background, egui::Color32::from_gray(0xF5)));
-    let pm = raster::render(&els, bg, w, h, b, &Env::default(), images).ok_or("Impossibile creare l'immagine.")?;
+    let env = Env { dark_board: bg.is_some() && crate::model::is_dark(&meta.background), ..Env::default() };
+    let pm = raster::render(&els, bg, w, h, b, &env, images).ok_or("Impossibile creare l'immagine.")?;
     Ok((pm, b))
 }
 
@@ -89,7 +90,8 @@ pub fn thumbnail(els: &[Arc<El>], meta: &BoardMeta, images: raster::Images) -> O
     let (els, c) = collect(els, None, Some(0.0)).ok()?;
     let k = ((w - 48.0) / c.w.max(1.0)).min((h - 48.0) / c.h.max(1.0)).min(crate::editor::MAX_ZOOM);
     let b = BBox { x: c.x + c.w / 2.0 - w / 2.0 / k, y: c.y + c.h / 2.0 - h / 2.0 / k, w: w / k, h: h / k };
-    let pm = raster::render(&els, Some(color_or(&meta.background, egui::Color32::from_gray(0xF5))), w as u32, h as u32, b, &Env::default(), images)?;
+    let env = Env { dark_board: crate::model::is_dark(&meta.background), ..Env::default() };
+    let pm = raster::render(&els, Some(color_or(&meta.background, egui::Color32::from_gray(0xF5))), w as u32, h as u32, b, &env, images)?;
     encode(&pm, false).ok()
 }
 
@@ -192,7 +194,7 @@ pub fn svg(els: &[Arc<El>], meta: &BoardMeta, opts: &Options, images: raster::Im
         let tr = Affine::of(el);
         let t = |x: f32, y: f32| tr.apply(x as f64, y as f64);
         let mut body = String::new();
-        for prim in prims_of(el, &Env::default()) {
+        for prim in prims_of(el, &Env { dark_board: opts.background && crate::model::is_dark(&meta.background), ..Env::default() }) {
             match prim {
                 Prim::Fill { path, color } => {
                     let (c, a) = rgba_attr(color);

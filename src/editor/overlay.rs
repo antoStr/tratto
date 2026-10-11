@@ -57,6 +57,8 @@ impl Editor {
                 pt(s.x as f64, s.y as f64)
             })
             .collect();
+        // As the stroke will be drawn: the default ink light on a dark board.
+        let color = if color == DARK && is_dark(&self.board.meta().background) { crate::prims::LIGHT_INK } else { color };
         let a = if hl { 0.45 } else { 1.0 } * opacity.clamp(0.05, 1.0) as f32;
         out.push(Shape::mesh(fill_mesh(&Path::smooth_outline(&outline), alpha(color, a * color.a() as f32 / 255.0))));
     }

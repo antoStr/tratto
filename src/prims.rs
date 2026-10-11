@@ -208,13 +208,19 @@ pub struct Env<'a> {
     pub editing_cell: Option<(usize, usize)>,
     /// A widget changing: how it was, and how far (0 to 1) the change has played.
     pub before: Option<(&'a crate::model::Widget, f32)>,
+    /// The board is dark: the default ink (near black) is drawn near white, as in Freeform,
+    /// so what was written with it stays readable.
+    pub dark_board: bool,
 }
 
 impl Default for Env<'_> {
     fn default() -> Self {
-        Env { zoom: 1.0, pixel: None, hairline: false, editing: None, comments: false, editing_cell: None, before: None }
+        Env { zoom: 1.0, pixel: None, hairline: false, editing: None, comments: false, editing_cell: None, before: None, dark_board: false }
     }
 }
+
+/// The default ink as drawn on a dark board.
+pub const LIGHT_INK: Color32 = Color32::from_rgb(0xF2, 0xF2, 0xF2);
 
 /// Size of a comment pin on screen, in px.
 pub const COMMENT_PIN: f64 = 26.0;
@@ -518,6 +524,8 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
     let alpha = el.opacity.clamp(0.0, 1.0);
     let editing = env.editing == Some(el.id.as_str());
     let (w, h) = (el.w as f32, el.h as f32);
+    // The default ink on a dark board turns light (only that one colour: chosen colours stay).
+    let ink = |c: Color32| if env.dark_board && c == DARK { LIGHT_INK } else { c };
     if !env.hairline
         && let Some(sh) = crate::style::shade(el)
     {
@@ -526,7 +534,7 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
     match &el.kind {
         Kind::Ink(i) | Kind::Highlighter(i) => {
             let hl = matches!(el.kind, Kind::Highlighter(_));
-            let color = with_alpha(color_or(&i.color, DARK), alpha * if hl { 0.45 } else { 1.0 });
+            let color = with_alpha(ink(color_or(&i.color, DARK)), alpha * if hl { 0.45 } else { 1.0 });
             // Zoomed out, points closer than a pixel or two only add vertices.
             let thinned = env.pixel.filter(|px| *px > 0.5).map(|px| crate::ink::thin_points(&i.points, 1.5 * px));
             let points = thinned.as_deref().unwrap_or(&i.points);
@@ -549,7 +557,7 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
             }
             if s.stroke_width > 0.0 && s.stroke != "transparent" {
                 let sw = s.stroke_width as f32;
-                let color = with_alpha(color_or(&s.stroke, DARK), alpha);
+                let color = with_alpha(ink(color_or(&s.stroke, DARK)), alpha);
                 let dash = s.dash.then_some([sw * 3.0, sw * 2.2]);
                 out.push(Prim::Stroke { path, width: sw, color, round: true, dash });
                 for d in crate::geom::shape_details(s.shape, el.w, el.h) {
@@ -615,7 +623,7 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
                 tape(l, alpha, &mut out);
                 return out;
             }
-            let color = with_alpha(color_or(&l.stroke, DARK), alpha);
+            let color = with_alpha(ink(color_or(&l.stroke, DARK)), alpha);
             let sw = l.stroke_width as f32;
             let dash = l.dash.then_some([sw * 3.0, sw * 2.2]);
             let [x1, y1, x2, y2] = [0, 1, 2, 3].map(|i| l.points[i] as f64);
@@ -678,7 +686,7 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
         Kind::Text(t) => {
             if !editing {
                 let layout = text::text_layout(el, t);
-                let color = with_alpha(color_or(&t.color, DARK), alpha);
+                let color = with_alpha(ink(color_or(&t.color, DARK)), alpha);
                 let f = text::text_font(t);
                 out.push(Prim::Text { placed: place_lines(&layout.lines, f, t.font_size, t.align, el.w, 0.0, 0.0), color });
                 if t.strike {

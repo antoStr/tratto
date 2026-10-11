@@ -620,7 +620,7 @@ mod picture {
         let scene = std::env::var("TRATTO_SCENE").unwrap_or_default();
         let dark = std::env::var("TRATTO_DARK").is_ok();
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
-        let template = if scene == "dot" || scene == "table" { None } else { Some("flow".to_string()) };
+        let template = if scene == "dot" || scene == "table" { None } else { Some(std::env::var("TRATTO_TEMPLATE").unwrap_or_else(|_| "flow".into())) };
         let id = store.create("Prova", None).unwrap();
         let mut screen: Option<board::BoardScreen> = None;
         let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
@@ -633,6 +633,10 @@ mod picture {
                 ui::setup(&ctx, Theme::new(dark, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), text_scale());
                 let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), template.clone()).unwrap();
                 b.editor.tool = crate::editor::Tool::Select;
+                if let Ok(bg) = std::env::var("TRATTO_BG") {
+                    let meta = crate::model::BoardMeta { background: bg, ..b.editor.board.meta() };
+                    b.editor.board.set_meta(&meta);
+                }
                 let ed = &mut b.editor;
                 match scene.as_str() {
                     "table" => {

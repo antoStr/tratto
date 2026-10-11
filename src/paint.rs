@@ -175,6 +175,7 @@ struct Key {
     /// Exact zoom, for elements that keep a size on screen (section titles, comment pins).
     zoom: u64,
     thin: bool,
+    dark: bool,
 }
 
 struct Entry {
@@ -196,6 +197,8 @@ pub struct Frame<'a> {
     pub editing_cell: Option<(usize, usize)>,
     /// Elements shown away from their place for a moment (moved by someone else, gliding).
     pub glides: Option<&'a HashMap<String, (f64, f64)>>,
+    /// The board's background is dark.
+    pub dark_board: bool,
 }
 
 type GlyphMesh = Rc<(Vec<[f32; 2]>, Vec<u32>)>;
@@ -361,7 +364,7 @@ impl Painter {
             }
             let zoom_bound = matches!(el.kind, Kind::Section { .. } | Kind::Comment { .. });
             let editing = f.editing == Some(el.id.as_str());
-            let key = Key { bucket, editing, cell: if editing { f.editing_cell } else { None }, zoom: if zoom_bound { z.to_bits() } else { 0 }, thin: el.ink().is_some_and(|i| i.size <= pixel) };
+            let key = Key { bucket, editing, cell: if editing { f.editing_cell } else { None }, zoom: if zoom_bound { z.to_bits() } else { 0 }, thin: el.ink().is_some_and(|i| i.size <= pixel), dark: f.dark_board };
             // A widget whose state changed (ticked, voted, counted) plays the change.
             if el.widget().is_some()
                 && let Some(e) = self.cache.get(&el.id)
@@ -385,7 +388,7 @@ impl Painter {
                 }
                 _ => {
                     let before = change.as_ref().and_then(|(old, t0)| old.widget().map(|w| (w, ((now - t0) / crate::widgets::ANIM_MS) as f32)));
-                    let env = Env { zoom: z, pixel: Some(pixel), hairline: false, editing: f.editing, comments: true, editing_cell: f.editing_cell, before };
+                    let env = Env { zoom: z, pixel: Some(pixel), hairline: false, editing: f.editing, comments: true, editing_cell: f.editing_cell, before, dark_board: f.dark_board };
                     let built = Rc::new(self.build(el, &env, tolerance(bucket, f.pixels_per_point)));
                     self.cache.insert(el.id.clone(), Entry { el: el.clone(), key, built: built.clone(), used: self.frame });
                     built
@@ -478,7 +481,7 @@ impl Painter {
         };
         let fresh = self.erased.get(&el.id).is_some_and(|e| Arc::ptr_eq(&e.el, el) && (e.zoom == z || !settled) && (e.zoom != z || covers(e)));
         if !fresh {
-            let env = Env { zoom: z, pixel: Some(1.0 / k), hairline: false, editing: f.editing, comments: true, editing_cell: f.editing_cell, before: None };
+            let env = Env { zoom: z, pixel: Some(1.0 / k), hairline: false, editing: f.editing, comments: true, editing_cell: f.editing_cell, before: None, dark_board: f.dark_board };
             let images = &self.images;
             let fetch = |key: &ImageKey| images.pixmap(key);
             let now = crate::platform::now_ms();
@@ -1093,7 +1096,7 @@ pub mod picture {
             let view = BBox { x: 0.0, y: 0.0, w: rect.width() as f64, h: rect.height() as f64 };
             let mut shapes = Vec::new();
             background(&mut shapes, rect, &cam, &meta, 1.0);
-            painter.paint(ui.ctx(), &mut shapes, &els, &Frame { cam, origin: rect.min, view, pixels_per_point: 1.0, editing: None, editing_cell: None, glides: None });
+            painter.paint(ui.ctx(), &mut shapes, &els, &Frame { cam, origin: rect.min, view, pixels_per_point: 1.0, editing: None, editing_cell: None, glides: None, dark_board: false });
             ui.painter().extend(shapes);
         });
         harness.run();
@@ -1114,7 +1117,7 @@ pub mod picture {
             let view = BBox { x: -cam.x / cam.z, y: -cam.y / cam.z, w: rect.width() as f64 / cam.z, h: rect.height() as f64 / cam.z };
             let mut shapes = Vec::new();
             background(&mut shapes, rect, &cam, &meta, 1.0);
-            painter.paint(ui.ctx(), &mut shapes, &els, &Frame { cam, origin: rect.min, view, pixels_per_point: 1.0, editing: None, editing_cell: None, glides: None });
+            painter.paint(ui.ctx(), &mut shapes, &els, &Frame { cam, origin: rect.min, view, pixels_per_point: 1.0, editing: None, editing_cell: None, glides: None, dark_board: false });
             ui.painter().extend(shapes);
         });
         harness.run();

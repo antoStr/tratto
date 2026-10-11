@@ -817,7 +817,8 @@ pub fn background_fields(ui: &mut Ui, meta: &mut BoardMeta) {
         for (name, value) in BACKGROUNDS {
             let (r, resp) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
             ui.painter().circle_filled(r.center(), 11.0, parse_color(value).unwrap());
-            ui.painter().circle_stroke(r.center(), 11.0, Stroke::new(1.0, Color32::from_black_alpha(40)));
+            // An edge that shows on either theme, so dark colours don't vanish into a dark panel.
+            ui.painter().circle_stroke(r.center(), 11.0, Stroke::new(1.0, if t.dark { Color32::from_white_alpha(46) } else { Color32::from_black_alpha(40) }));
             if meta.background.eq_ignore_ascii_case(value) {
                 ui.painter().circle_stroke(r.center(), 12.5, Stroke::new(2.0, t.brand));
             }

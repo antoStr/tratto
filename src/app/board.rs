@@ -521,7 +521,7 @@ impl BoardScreen {
             ctx.request_repaint();
         }
         let editing = ed.editing.clone();
-        let frame = Frame { cam: ed.cam, origin: stage.min, view, pixels_per_point: ppp, editing: editing.as_deref(), editing_cell: ed.editing_cell, glides: (!glides.is_empty()).then_some(&glides) };
+        let frame = Frame { cam: ed.cam, origin: stage.min, view, pixels_per_point: ppp, editing: editing.as_deref(), editing_cell: ed.editing_cell, glides: (!glides.is_empty()).then_some(&glides), dark_board: crate::model::is_dark(&ed.board.meta().background) };
         let on_screen = ed.painter.paint(&ctx, &mut shapes, &els, &frame);
         let any_visible = els.iter().any(|e| !e.hidden);
         ed.lost = any_visible && !on_screen;
