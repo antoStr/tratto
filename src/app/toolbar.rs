@@ -352,7 +352,7 @@ fn drawer_slot(ui: &mut Ui, ed: &mut Editor, t: &Theme, tool: Tool) -> egui::Res
     let lift = ui::motion::spring(ui.ctx(), resp.id.with("lift"), if on { 1.0 } else if resp.hovered() { 0.45 } else { 0.0 }, 0.3, 0.7);
     let top = slot.min.y + 18.0 - 14.0 * lift;
     let c = crate::model::parse_color(&color).unwrap_or(crate::model::DARK);
-    let p = ui.painter().with_clip_rect(clip);
+    let p = ui.painter().with_clip_rect((clip).intersect(ui.clip_rect()));
     match tool {
         Tool::Pen => marker(&p, slot.center().x, top, c, t, 11.0, false),
         Tool::Highlighter => marker(&p, slot.center().x, top, c, t, 15.0, true),
@@ -1097,7 +1097,7 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
         let v = Rect::from_min_max(pos2(x0, y0), pos2(x1, y1));
         // Everything in view: no rectangle, the map alone says it.
         if !vr.contains_rect(inner) {
-            ui.painter().with_clip_rect(map).rect(v, egui::CornerRadius::same(3), t.brand.gamma_multiply(0.1), Stroke::new(1.5, t.brand), egui::StrokeKind::Inside);
+            ui.painter().with_clip_rect((map).intersect(ui.clip_rect())).rect(v, egui::CornerRadius::same(3), t.brand.gamma_multiply(0.1), Stroke::new(1.5, t.brand), egui::StrokeKind::Inside);
         }
         let point = |p: Pos2| ((p.x.clamp(map.min.x, map.max.x) - map.min.x) as f64 - f.x) / f.k;
         let point_y = |p: Pos2| ((p.y.clamp(map.min.y, map.max.y) - map.min.y) as f64 - f.y) / f.k;

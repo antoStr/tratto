@@ -455,7 +455,7 @@ pub fn segmented<T: PartialEq + Clone>(ui: &mut Ui, value: &mut T, options: &[(T
             icon(ui, name, r.center(), 14.0, color);
         } else {
             let font = if on { medium(s.fs) } else { FontId::proportional(s.fs) };
-            ui.painter().with_clip_rect(r.shrink(2.0)).text(r.center(), egui::Align2::CENTER_CENTER, *label, font, color);
+            ui.painter().with_clip_rect((r.shrink(2.0)).intersect(ui.clip_rect())).text(r.center(), egui::Align2::CENTER_CENTER, *label, font, color);
         }
         resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, label.trim_start_matches("icon:")));
         focus_ring(ui, &resp, r);
@@ -667,7 +667,7 @@ pub fn color_picker(ui: &mut Ui, id: Id, c: &mut Color32, width: f32) -> bool {
             mesh.add_triangle(a, d + 1, d);
         }
     }
-    ui.painter().with_clip_rect(sq).add(mesh);
+    ui.painter().with_clip_rect((sq).intersect(ui.clip_rect())).add(mesh);
     ui.painter().rect_stroke(sq, 4, Stroke::new(1.0, black(0.1)), egui::StrokeKind::Inside);
     if let Some(p) = resp.interact_pointer_pos() {
         sat = ((p.x - sq.min.x) / sq.width()).clamp(0.0, 1.0);
@@ -694,7 +694,7 @@ pub fn color_picker(ui: &mut Ui, id: Id, c: &mut Color32, width: f32) -> bool {
             mesh.add_triangle(k - 2, k + 1, k);
         }
     }
-    ui.painter().with_clip_rect(bar).add(mesh);
+    ui.painter().with_clip_rect((bar).intersect(ui.clip_rect())).add(mesh);
     if let Some(p) = hresp.interact_pointer_pos() {
         h = ((p.x - bar.min.x) / bar.width()).clamp(0.0, 0.999);
         changed = true;

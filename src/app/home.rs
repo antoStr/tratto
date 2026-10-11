@@ -326,7 +326,7 @@ impl Home {
                 }
             }
         } else {
-            ui.painter().with_clip_rect(Rect::from_min_size(meta.min, vec2(CARD_W - 34.0, 40.0))).text(meta.min + vec2(2.0, 9.0), egui::Align2::LEFT_CENTER, &b.title, ui::medium(ui::px(11.0)), t.text);
+            ui.painter().with_clip_rect((Rect::from_min_size(meta.min, vec2(CARD_W - 34.0, 40.0))).intersect(ui.clip_rect())).text(meta.min + vec2(2.0, 9.0), egui::Align2::LEFT_CENTER, &b.title, ui::medium(ui::px(11.0)), t.text);
         }
         ui.painter().text(meta.min + vec2(2.0, 27.0), egui::Align2::LEFT_CENTER, format!("Modificata {}", time_ago(b.updated_at)), egui::FontId::proportional(ui::px(10.0)), t.text2);
         // "More" shows while the pointer is on the card (or its menu is open).

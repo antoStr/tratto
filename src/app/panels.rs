@@ -218,7 +218,7 @@ fn title(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, width: f32) {
     }
     let g = ui.painter().layout_no_wrap(b.title.clone(), ui::medium(ui::px(11.0)), t.text);
     let (r, resp) = ui.allocate_exact_size(vec2(g.size().x.min(width), ui::ctl(18.0)), Sense::click());
-    ui.painter().with_clip_rect(r).galley(pos2(r.min.x, r.center().y - g.size().y / 2.0), g, t.text);
+    ui.painter().with_clip_rect((r).intersect(ui.clip_rect())).galley(pos2(r.min.x, r.center().y - g.size().y / 2.0), g, t.text);
     if ui::tip(resp, "Rinomina", None).clicked() {
         b.ui.title_edit = Some(b.title.clone());
     }
@@ -530,7 +530,7 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
             } else {
                 let color = if hidden { t.text3 } else if piece.is_some() { t.text2 } else { t.text };
                 let font = if folder { ui::medium(ui::px(11.0)) } else { egui::FontId::proportional(ui::px(11.0)) };
-                ui.painter().with_clip_rect(Rect::from_min_max(pos2(x, r.min.y), pos2(r.max.x - 52.0, r.max.y))).text(pos2(x, r.center().y), egui::Align2::LEFT_CENTER, &label, font, color);
+                ui.painter().with_clip_rect((Rect::from_min_max(pos2(x, r.min.y), pos2(r.max.x - 52.0, r.max.y))).intersect(ui.clip_rect())).text(pos2(x, r.center().y), egui::Align2::LEFT_CENTER, &label, font, color);
             }
             // Lock and hide, shown on hover or when on.
             if !ro && piece.is_none() && (resp.hovered() || locked || hidden) && !renaming {
@@ -837,7 +837,7 @@ pub fn background_fields(ui: &mut Ui, meta: &mut BoardMeta) {
             let mut shapes = Vec::new();
             let m = BoardMeta { pattern: *p, grid_size: 14.0, ..meta.clone() };
             crate::paint::background(&mut shapes, art, &crate::geom::Camera { x: 7.0, y: 9.0, z: 1.0 }, &m, ui.ctx().pixels_per_point());
-            ui.painter().with_clip_rect(art).extend(shapes);
+            ui.painter().with_clip_rect((art).intersect(ui.clip_rect())).extend(shapes);
             // The pattern is drawn square: the panel's colour rounds its corners off.
             ui.painter().rect_stroke(art, ui::RADIUS, Stroke::new(3.0, t.bg), egui::StrokeKind::Outside);
             let on = meta.pattern == *p;

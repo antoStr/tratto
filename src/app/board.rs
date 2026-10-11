@@ -440,7 +440,7 @@ impl BoardScreen {
                     let g = ui.painter().layout_no_wrap(self.title.clone(), FontId::proportional(ui::px(11.0)), t.chrome_text);
                     let (tab, _) = ui.allocate_exact_size(vec2((g.size().x + 32.0).clamp(120.0, 280.0), 40.0), Sense::hover());
                     ui.painter().rect_filled(tab, 0.0, t.chrome2);
-                    ui.painter().with_clip_rect(tab.shrink2(vec2(16.0, 0.0))).galley(pos2(tab.min.x + 16.0, tab.center().y - g.size().y / 2.0), g, t.chrome_text);
+                    ui.painter().with_clip_rect((tab.shrink2(vec2(16.0, 0.0))).intersect(ui.clip_rect())).galley(pos2(tab.min.x + 16.0, tab.center().y - g.size().y / 2.0), g, t.chrome_text);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
                         if chrome_button(ui, "scan", "Modalità zen: solo la lavagna", Some("Ctrl+Maiusc+\\")).clicked() {
