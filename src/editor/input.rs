@@ -6,7 +6,7 @@ use egui::{CursorIcon, Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos
 use serde_json::{Value, json};
 
 use super::*;
-use crate::ink::{RULER_LENGTH, on_ruler, ruler_snapper};
+use crate::ink::{RULER_LENGTH, on_ruler, on_ruler_pill, ruler_snapper};
 
 #[derive(Default)]
 pub struct InputState {
@@ -338,7 +338,8 @@ impl Editor {
         let r = self.ruler;
         if r.visible {
             let ink_tool = matches!(tool, Tool::Pen | Tool::Highlighter) && !touch_pans;
-            if !(ink_tool && ruler_snapper(&r, s.x as f64, s.y as f64, 2.0).is_some()) {
+            let pill = on_ruler_pill(&r, s.x as f64, s.y as f64);
+            if !(ink_tool && !pill && ruler_snapper(&r, s.x as f64, s.y as f64, 2.0).is_some()) {
                 let (sin, cos) = r.angle.sin_cos();
                 let knob = (r.x + cos * (RULER_LENGTH / 2.0 - 26.0), r.y + sin * (RULER_LENGTH / 2.0 - 26.0));
                 if (s.x as f64 - knob.0).hypot(s.y as f64 - knob.1) < 18.0 {

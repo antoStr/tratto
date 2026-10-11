@@ -736,6 +736,15 @@ impl Editor {
         if self.flush_due.is_some_and(|t| now() >= t) {
             self.flush_preview();
         }
+        // The ruler, for the others: where it lies on the board and how long it is there.
+        let r = self.ruler;
+        let shown = if r.visible {
+            let c = self.cam.to_world(r.x, r.y);
+            json!({ "x": r2(c.x), "y": r2(c.y), "a": (r.angle * 1000.0).round() / 1000.0, "len": r2(crate::ink::RULER_LENGTH / self.cam.z) })
+        } else {
+            Value::Null
+        };
+        self.presence.set("ruler", shown);
         if self.laser_clear.is_some_and(|t| now() >= t) {
             self.laser_clear = None;
             if !matches!(self.gesture, Some(Gesture::Laser)) {

@@ -282,60 +282,88 @@ impl Editor {
             out.push(circle(e + o, (self.prefs.eraser.size / 2.0) as f32, Color32::from_white_alpha(89), Stroke::new(1.0, Color32::from_black_alpha(140))));
         }
 
+        // The others' rulers, faint and in their colour, under their own pens.
+        for (_, s) in &self.presence.peers {
+            let r = &s["ruler"];
+            if let (Some(x), Some(y), Some(a), Some(len)) = (r["x"].as_f64(), r["y"].as_f64(), r["a"].as_f64(), r["len"].as_f64())
+                && x.is_finite()
+                && y.is_finite()
+                && a.is_finite()
+                && len.is_finite()
+                && len > 0.0
+            {
+                let k = (len * self.cam.z / crate::ink::RULER_LENGTH) as f32;
+                if (0.05..20.0).contains(&k) {
+                    let at = self.sp(x, y);
+                    ruler_shapes(painter, &mut out, at, a as f32, k, dark_ui, 0.7, Some(peer_color(s)));
+                }
+            }
+        }
         if self.ruler.visible {
-            self.ruler_shapes(painter, &mut out, dark_ui);
+            let c = pos2(self.ruler.x as f32, self.ruler.y as f32) + self.origin.to_vec2();
+            ruler_shapes(painter, &mut out, c, self.ruler.angle as f32, 1.0, dark_ui, 1.0, None);
         }
         self.cursor_shapes(painter, &mut out);
         painter.extend(out);
     }
 
-    fn ruler_shapes(&self, painter: &Painter, out: &mut Vec<Shape>, dark: bool) {
-        let r = self.ruler;
-        let (l, h) = (RULER_LENGTH as f32, RULER_HEIGHT as f32);
-        let (sin, cos) = (r.angle as f32).sin_cos();
-        let c = pos2(r.x as f32, r.y as f32) + self.origin.to_vec2();
-        let at = |x: f32, y: f32| {
-            let (dx, dy) = (x - l / 2.0, y - h / 2.0);
-            c + vec2(dx * cos - dy * sin, dx * sin + dy * cos)
-        };
-        // Body: a rounded rectangle.
-        let mut body = Vec::new();
-        let rad = 6.0;
-        for (cx, cy, a0) in [(l - rad, rad, -90.0_f32), (l - rad, h - rad, 0.0), (rad, h - rad, 90.0), (rad, rad, 180.0)] {
-            for i in 0..=6 {
-                let a = (a0 + i as f32 * 15.0).to_radians();
-                body.push(at(cx + a.cos() * rad, cy + a.sin() * rad));
-            }
+}
+
+/// A ruler centred on `c`, turned by `angle`, `k` times its own size; `alpha` fades it and
+/// `owner` (someone else's ruler) edges it in their colour.
+#[allow(clippy::too_many_arguments)]
+fn ruler_shapes(painter: &Painter, out: &mut Vec<Shape>, c: Pos2, angle: f32, k: f32, dark: bool, alpha: f32, owner: Option<Color32>) {
+    let (l, h) = (RULER_LENGTH as f32, RULER_HEIGHT as f32);
+    let (sin, cos) = angle.sin_cos();
+    let at = |x: f32, y: f32| {
+        let (dx, dy) = ((x - l / 2.0) * k, (y - h / 2.0) * k);
+        c + vec2(dx * cos - dy * sin, dx * sin + dy * cos)
+    };
+    let fade = |c: Color32| c.gamma_multiply(alpha);
+    // Body: a rounded rectangle.
+    let mut body = Vec::new();
+    let rad = 6.0;
+    for (cx, cy, a0) in [(l - rad, rad, -90.0_f32), (l - rad, h - rad, 0.0), (rad, h - rad, 90.0), (rad, rad, 180.0)] {
+        for i in 0..=6 {
+            let a = (a0 + i as f32 * 15.0).to_radians();
+            body.push(at(cx + a.cos() * rad, cy + a.sin() * rad));
         }
-        let (fill, edge, tick, text) = if dark {
-            (Color32::from_rgba_unmultiplied(44, 44, 44, 219), Color32::from_white_alpha(41), Color32::from_white_alpha(153), Color32::from_white_alpha(179))
-        } else {
-            (Color32::from_rgba_unmultiplied(255, 255, 255, 209), Color32::from_black_alpha(41), Color32::from_black_alpha(140), Color32::from_black_alpha(153))
-        };
-        out.push(Shape::convex_polygon(body, fill, Stroke::new(1.0, edge)));
-        let mm_count = ((l - 80.0) / PX_PER_MM) as i32;
-                for mm in 0..=mm_count {
-            let x = 40.0 + mm as f32 * PX_PER_MM;
-            let len = if mm % 10 == 0 { 18.0 } else if mm % 5 == 0 { 12.0 } else { 7.0 };
-            out.push(Shape::line_segment([at(x, 0.0), at(x, len)], Stroke::new(1.0, tick)));
-            out.push(Shape::line_segment([at(x, h), at(x, h - len)], Stroke::new(1.0, tick)));
-            if mm % 10 == 0 {
-                rotated_text(out, painter, at(x, 30.0), &(mm / 10).to_string(), medium(9.0), text, r.angle as f32);
-            }
+    }
+    let (fill, edge, tick, text) = if dark {
+        (Color32::from_rgba_unmultiplied(44, 44, 44, 219), Color32::from_white_alpha(41), Color32::from_white_alpha(153), Color32::from_white_alpha(179))
+    } else {
+        (Color32::from_rgba_unmultiplied(255, 255, 255, 209), Color32::from_black_alpha(41), Color32::from_black_alpha(140), Color32::from_black_alpha(153))
+    };
+    let edge = owner.map_or(edge, |o| o.gamma_multiply(0.8));
+    out.push(Shape::convex_polygon(body, fade(fill), Stroke::new(if owner.is_some() { 2.0 } else { 1.0 }, fade(edge))));
+    let mm_count = ((l - 80.0) / PX_PER_MM) as i32;
+    // Far zoomed out, millimetres would only be a grey smear.
+    let step = if k < 0.5 { 5 } else { 1 };
+    for mm in (0..=mm_count).step_by(step) {
+        let x = 40.0 + mm as f32 * PX_PER_MM;
+        let len = if mm % 10 == 0 { 18.0 } else if mm % 5 == 0 { 12.0 } else { 7.0 };
+        out.push(Shape::line_segment([at(x, 0.0), at(x, len)], Stroke::new(1.0, fade(tick))));
+        out.push(Shape::line_segment([at(x, h), at(x, h - len)], Stroke::new(1.0, fade(tick))));
+        if mm % 10 == 0 && k > 0.6 {
+            rotated_text(out, painter, at(x, 30.0), &(mm / 10).to_string(), medium(9.0 * k), fade(text), angle);
         }
-        // Angle, in the middle.
-        let deg = (r.angle.to_degrees() % 360.0 + 360.0) % 360.0;
-        let shown = if deg > 180.0 { 360.0 - deg } else { deg }.round();
-        let mut pill = Vec::new();
-        for (cx, a0) in [(l / 2.0 + 15.0, -90.0_f32), (l / 2.0 - 15.0, 90.0)] {
-            for i in 0..=12 {
-                let a = (a0 + i as f32 * 15.0).to_radians();
-                pill.push(at(cx + a.cos() * 11.0, h / 2.0 + 7.0 + a.sin() * 11.0));
-            }
+    }
+    // Angle, in the middle.
+    let deg = (angle.to_degrees() % 360.0 + 360.0) % 360.0;
+    let shown = if deg > 180.0 { 360.0 - deg } else { deg }.round();
+    let mut pill = Vec::new();
+    for (cx, a0) in [(l / 2.0 + 15.0, -90.0_f32), (l / 2.0 - 15.0, 90.0)] {
+        for i in 0..=12 {
+            let a = (a0 + i as f32 * 15.0).to_radians();
+            pill.push(at(cx + a.cos() * 11.0, h / 2.0 + 7.0 + a.sin() * 11.0));
         }
-        out.push(Shape::convex_polygon(pill, DARK, Stroke::NONE));
-        rotated_text(out, painter, at(l / 2.0, h / 2.0 + 7.0), &format!("{shown}°"), medium(11.0), Color32::WHITE, r.angle as f32);
-        // Rotation knob.
+    }
+    out.push(Shape::convex_polygon(pill, fade(owner.unwrap_or(DARK)), Stroke::NONE));
+    if k > 0.6 {
+        rotated_text(out, painter, at(l / 2.0, h / 2.0 + 7.0), &format!("{shown}°"), medium(11.0 * k.min(1.0)), fade(Color32::WHITE), angle);
+    }
+    // Rotation knob: only on your own ruler.
+    if owner.is_none() {
         let knob = at(l - 26.0, h / 2.0);
         out.push(circle(knob, 13.0, Color32::WHITE, Stroke::new(1.0, Color32::from_black_alpha(46))));
         let arc: Vec<Pos2> = (0..=10).map(|i| (-60.0 + i as f32 * 27.0_f32).to_radians()).map(|a| knob + vec2(a.cos() * 5.0, a.sin() * 5.0)).collect();
@@ -343,6 +371,9 @@ impl Editor {
         out.push(Shape::line(arc, Stroke::new(1.6, DARK)));
         out.push(Shape::line(vec![end + vec2(-3.5, -1.5), end, end + vec2(1.0, -3.8)], Stroke::new(1.6, DARK)));
     }
+}
+
+impl Editor {
 
     /// Other people's cursors with their name, or what they are typing (cursor chat).
     fn cursor_shapes(&self, painter: &Painter, out: &mut Vec<Shape>) {

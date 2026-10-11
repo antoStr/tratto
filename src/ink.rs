@@ -629,15 +629,32 @@ pub fn ruler_snapper(r: &Ruler, sx: f64, sy: f64, radius: f64) -> Option<RulerSn
         return None;
     }
     let across = dx * nx + dy * ny;
+    // On the ruler itself: along the nearer edge, as with a real one.
+    if across.abs() <= RULER_HEIGHT / 2.0 {
+        let side = if across < 0.0 { -1.0 } else { 1.0 };
+        return Some(RulerSnap { r: *r, offset: side * (RULER_HEIGHT / 2.0 + radius) });
+    }
     for side in [-1.0, 1.0] {
         let edge = side * RULER_HEIGHT / 2.0;
         let d = (across - edge) * side;
-        // Start within 36 px outside the edge (or a little inside it).
+        // Start within 36 px outside the edge.
         if d > -10.0 && d < 36.0 {
             return Some(RulerSnap { r: *r, offset: edge + side * radius });
         }
     }
     None
+}
+
+/// Whether a screen point is on the ruler's middle pill (the angle), where a pen grabs it to
+/// move it instead of drawing along it.
+pub fn on_ruler_pill(r: &Ruler, sx: f64, sy: f64) -> bool {
+    if !r.visible {
+        return false;
+    }
+    let (dx, dy) = (sx - r.x, sy - r.y);
+    let (s, c) = r.angle.sin_cos();
+    let (along, across) = (dx * c + dy * s, -dx * s + dy * c);
+    along.abs() <= 34.0 && (across - 7.0).abs() <= 18.0
 }
 
 /// Whether a screen point is on the ruler body (used to drag it).
@@ -780,6 +797,9 @@ mod tests {
         assert_eq!(a.y, b.y);
         assert_eq!(a.y, 256.0);
         assert!(ruler_snapper(&ruler, 400.0, 120.0, 2.0).is_none());
+        // Pressed on the ruler: along the nearer edge.
+        let on = ruler_snapper(&ruler, 450.0, 320.0, 2.0).unwrap();
+        assert_eq!(on.apply(500.0, 330.0).y, 344.0);
         assert!(ruler_snapper(&Ruler { visible: false, ..ruler }, 400.0, 248.0, 2.0).is_none());
     }
 }
