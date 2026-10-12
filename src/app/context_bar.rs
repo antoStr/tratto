@@ -59,10 +59,13 @@ pub fn context_bar(ctx: &egui::Context, free: Rect, ed: &mut Editor) {
     let resp = egui::Area::new(Id::new("ctx-bar")).pivot(pivot).fixed_pos(at).constrain_to(free.shrink(8.0)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
         ctx.data_mut(|d| d.insert_temp(Id::NULL, dark));
+        let max_ctx_w = (ctx.content_rect().width() - 24.0).max(200.0);
         egui::Frame::new().fill(dark.menu).corner_radius(12).inner_margin(egui::Margin::same(4)).shadow(egui::Shadow { offset: [0, 6], blur: 18, spread: 0, color: Color32::from_black_alpha(60) }).show(ui, |ui| {
-            ui::row(ui, B, |ui| {
-                ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
-                controls(ui, ed, &els, &dark);
+            egui::ScrollArea::horizontal().max_width(max_ctx_w).auto_shrink([true, true]).show(ui, |ui| {
+                ui::row(ui, B, |ui| {
+                    ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
+                    controls(ui, ed, &els, &dark);
+                });
             });
         });
         ctx.data_mut(|d| d.insert_temp(Id::NULL, light));

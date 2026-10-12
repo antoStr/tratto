@@ -16,6 +16,10 @@ pub struct Dialogs {
 /// fades away when closed (as long as it is still called while `open` is false); `open` turns
 /// false when it is closed with its X, a click outside or Esc. Returns whether it is on screen.
 pub fn dialog(ctx: &egui::Context, id: &str, title: &str, width: f32, open: &mut bool, body: impl FnOnce(&mut egui::Ui)) -> bool {
+    dialog_opt(ctx, id, title, width, open, true, body)
+}
+
+pub fn dialog_opt(ctx: &egui::Context, id: &str, title: &str, width: f32, open: &mut bool, scroll: bool, body: impl FnOnce(&mut egui::Ui)) -> bool {
     let t = ui::theme(ctx);
     let shown = Id::new(id).with("shown");
     let k = ui::motion::appear(ctx, shown, *open);
@@ -33,6 +37,9 @@ pub fn dialog(ctx: &egui::Context, id: &str, title: &str, width: f32, open: &mut
         let lift = ui::motion::travel(ui.ctx(), k) * 10.0;
         let transform = egui::emath::TSTransform::new(vec2(c.x * (1.0 - s), c.y * (1.0 - s) + lift), s);
         ui.multiply_opacity(fade);
+        let max_w = (ui.ctx().content_rect().width() - 24.0).max(260.0);
+        let dialog_w = width.min(max_w);
+        let max_h = (ui.ctx().content_rect().height() - 80.0).max(200.0);
         ui.with_visual_transform(transform, |ui| {
             let frame = egui::Frame::new()
                 .fill(t.bg)
@@ -40,7 +47,7 @@ pub fn dialog(ctx: &egui::Context, id: &str, title: &str, width: f32, open: &mut
                 .stroke(if t.dark { Stroke::new(1.0, t.border) } else { Stroke::NONE })
                 .shadow(egui::Shadow { offset: [0, 16], blur: 44, spread: 0, color: Color32::from_black_alpha(if t.dark { 110 } else { 46 }) });
             frame.show(ui, |ui| {
-                ui.set_width(width);
+                ui.set_width(dialog_w);
                 egui::Frame::new().inner_margin(egui::Margin { left: 16, right: 10, top: 10, bottom: 10 }).show(ui, |ui| {
                     ui::row(ui, 24.0, |ui| {
                         ui.label(RichText::new(title).font(ui::medium(ui::px(13.0))).color(t.text));
@@ -51,12 +58,21 @@ pub fn dialog(ctx: &egui::Context, id: &str, title: &str, width: f32, open: &mut
                         });
                     });
                 });
-                let (r, _) = ui.allocate_exact_size(vec2(width, 1.0), Sense::hover());
+                let (r, _) = ui.allocate_exact_size(vec2(dialog_w, 1.0), Sense::hover());
                 ui.painter().hline(r.x_range(), r.center().y, Stroke::new(1.0, t.border));
-                egui::Frame::new().inner_margin(egui::Margin::same(16)).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 10.0;
-                    body(ui);
-                });
+                if scroll {
+                    egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
+                        egui::Frame::new().inner_margin(egui::Margin::same(16)).show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 10.0;
+                            body(ui);
+                        });
+                    });
+                } else {
+                    egui::Frame::new().inner_margin(egui::Margin::same(16)).show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 10.0;
+                        body(ui);
+                    });
+                }
             });
         });
     });
@@ -116,7 +132,7 @@ const SIDEBAR_W: f32 = 168.0;
 pub fn settings(ctx: &egui::Context, open: &mut bool, p: &mut Prefs, host: bool) {
     let tab_id = Id::new("settings-tab");
     let mut tab: SettingsTab = ctx.data(|d| d.get_temp(tab_id)).unwrap_or_default();
-    let _ = dialog(ctx, "settings", "Impostazioni", SETTINGS_W, open, |ui| {
+    let _ = dialog_opt(ctx, "settings", "Impostazioni", SETTINGS_W, open, false, |ui| {
         let t = ui::theme(ui.ctx());
         let all: &[(SettingsTab, &str, &str)] = &[
             (SettingsTab::Access, "person", "Accessibilità"),
@@ -128,12 +144,13 @@ pub fn settings(ctx: &egui::Context, open: &mut bool, p: &mut Prefs, host: bool)
             (SettingsTab::Updates, "refresh-cw", "Aggiornamenti"),
         ];
         let tabs: &[(SettingsTab, &str, &str)] = if host { all } else { &all[..all.len() - 1] };
+        let h = SETTINGS_H.min((ui.ctx().content_rect().height() - 160.0).max(280.0));
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             // Sections.
             ui.vertical(|ui| {
                 ui.set_width(SIDEBAR_W);
-                ui.set_height(SETTINGS_H);
+                ui.set_height(h);
                 ui.spacing_mut().item_spacing.y = 2.0;
                 let rects: Vec<egui::Rect> = tabs.iter().map(|_| ui.allocate_exact_size(vec2(SIDEBAR_W - 12.0, ui::ctl(32.0)), Sense::hover()).0).collect();
                 let at = tabs.iter().position(|x| x.0 == tab).unwrap_or(0);
@@ -153,12 +170,12 @@ pub fn settings(ctx: &egui::Context, open: &mut bool, p: &mut Prefs, host: bool)
                     }
                 }
             });
-            let (line, _) = ui.allocate_exact_size(vec2(1.0, SETTINGS_H), Sense::hover());
+            let (line, _) = ui.allocate_exact_size(vec2(1.0, h), Sense::hover());
             ui.painter().vline(line.center().x, line.y_range(), Stroke::new(1.0, t.border));
             ui.add_space(20.0);
             // The chosen section slides in from the side it comes from (from below the list
             // when going down it, from above when going up), fading in.
-            let content_w = SETTINGS_W - 32.0 - SIDEBAR_W - 21.0;
+            let content_w = (ui.available_width() - 8.0).max(200.0);
             let index = tabs.iter().position(|x| x.0 == tab).unwrap_or(0) as f32;
             let from_id = Id::new("settings-tab-from");
             let (seen, dir) = ui.data(|d| d.get_temp::<(f32, f32)>(from_id)).unwrap_or((index, 0.0));
@@ -166,12 +183,12 @@ pub fn settings(ctx: &egui::Context, open: &mut bool, p: &mut Prefs, host: bool)
             ui.data_mut(|d| d.insert_temp(from_id, (index, dir)));
             ui.vertical(|ui| {
                 ui.set_width(content_w);
-                ui.set_height(SETTINGS_H);
+                ui.set_height(h);
                 let k = ui::motion::entering(ui.ctx(), Id::new("settings-content"), tab);
                 ui.multiply_opacity(k.clamp(0.0, 1.0));
                 let shift = ui::motion::travel(ui.ctx(), k.clamp(0.0, 1.0)) * 28.0 * dir;
                 ui.with_visual_transform(egui::emath::TSTransform::from_translation(vec2(0.0, shift)), |ui| {
-                    egui::ScrollArea::vertical().id_salt(("settings-scroll", tab)).auto_shrink(false).max_height(SETTINGS_H).show(ui, |ui| {
+                    egui::ScrollArea::vertical().id_salt(("settings-scroll", tab)).auto_shrink(false).max_height(h).show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 12.0;
                         ui.set_width(content_w - 8.0);
                         settings_section(ui, tab, p, host);
@@ -251,6 +268,9 @@ fn settings_section(ui: &mut egui::Ui, tab: SettingsTab, p: &mut Prefs, host: bo
             });
             row(ui, "Barra degli strumenti", None, |ui| {
                 ui::segmented(ui, &mut p.toolbar_pos, &[(ToolbarPos::Bottom, "In basso"), (ToolbarPos::Top, "In alto")], 200.0);
+            });
+            row(ui, "Posizione del timer", Some("Puoi tenerlo fluttuante in alto o attaccarlo alla barra a destra per una vista più pulita."), |ui| {
+                ui::segmented(ui, &mut p.timer_pos, &[(crate::prefs::TimerPos::Top, "Fluttuante"), (crate::prefs::TimerPos::RightBar, "Barra a destra")], 200.0);
             });
             ui.add_space(4.0);
             ui::heading(ui, "Pannelli");
@@ -407,7 +427,7 @@ fn shortcut_list(ui: &mut egui::Ui) {
 }
 
 pub fn shortcuts(ctx: &egui::Context, open: &mut bool) {
-    let _ = dialog(ctx, "shortcuts", "Scorciatoie da tastiera", 640.0, open, |ui| {
+    let _ = dialog_opt(ctx, "shortcuts", "Scorciatoie da tastiera", 640.0, open, false, |ui| {
         egui::ScrollArea::vertical().max_height(480.0).auto_shrink([false, true]).show(ui, shortcut_list);
     });
 }

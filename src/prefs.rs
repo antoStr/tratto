@@ -111,6 +111,14 @@ pub enum ToolbarPos {
     Top,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum TimerPos {
+    #[default]
+    Top,
+    RightBar,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Prefs {
@@ -174,6 +182,9 @@ pub struct Prefs {
     pub toolbar_hidden: Vec<String>,
     /// Toolbars saved under a name, to switch between them.
     pub toolbar_profiles: Vec<ToolbarProfile>,
+    /// Where the timer sits: floating at top, or docked to the right bar.
+    #[serde(default)]
+    pub timer_pos: TimerPos,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
@@ -278,6 +289,7 @@ impl Default for Prefs {
             toolbar_order: toolbar_default(),
             toolbar_hidden: Vec::new(),
             toolbar_profiles: Vec::new(),
+            timer_pos: TimerPos::Top,
         }
     }
 }
@@ -362,5 +374,14 @@ mod tests {
         assert!(at("laser") < at("pen") && at("pen") < at("select"));
         assert_eq!(at("highlighter"), at("pen") + 1);
         assert_eq!(items[0], "laser");
+    }
+
+    #[test]
+    fn timer_pos_default_and_roundtrip() {
+        assert_eq!(Prefs::default().timer_pos, TimerPos::Top);
+        let p = Prefs::from_json(r#"{"timerPos":"rightBar"}"#);
+        assert_eq!(p.timer_pos, TimerPos::RightBar);
+        let round = Prefs::from_json(&p.to_json());
+        assert_eq!(round.timer_pos, TimerPos::RightBar);
     }
 }

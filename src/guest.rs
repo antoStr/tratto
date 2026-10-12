@@ -520,6 +520,7 @@ impl GuestApp {
         });
         let mut prefs = self.prefs.clone();
         prefs.name = self.name.trim().chars().take(40).collect();
+        prefs.finger_draw = true;
         let mut editor = Editor::new(board, self.board_id.clone(), painter, prefs, voter);
         editor.read_only = self.access == "view";
         editor.tool = if editor.read_only { Tool::Select } else { Tool::Pen };
@@ -605,16 +606,19 @@ impl GuestApp {
 fn card(ui: &mut egui::Ui, t: &Theme, body: impl FnOnce(&mut egui::Ui)) {
     let ctx = ui.ctx().clone();
     ui.painter().rect_filled(ui.max_rect(), 0.0, t.canvas);
+    let max_h = (ui.ctx().content_rect().height() - 32.0).max(200.0);
     egui::Area::new(Id::new("join")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(&ctx, |ui| {
         let width = (ui.ctx().content_rect().width() - 32.0).min(400.0);
         egui::Frame::new().fill(t.bg).stroke(egui::Stroke::new(1.0, t.border)).corner_radius(ui::RADIUS_LG).inner_margin(egui::Margin::same(24)).show(ui, |ui| {
             ui.set_width(width - 48.0);
-            ui.spacing_mut().item_spacing.y = 12.0;
-            ui.horizontal(|ui| {
-                ui::logo(ui, 24.0);
-                ui.label(RichText::new("Tratto").font(ui::medium(ui::px(14.0))).color(t.text));
+            egui::ScrollArea::vertical().max_height(max_h - 48.0).auto_shrink([false, true]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 12.0;
+                ui.horizontal(|ui| {
+                    ui::logo(ui, 24.0);
+                    ui.label(RichText::new("Tratto").font(ui::medium(ui::px(14.0))).color(t.text));
+                });
+                body(ui);
             });
-            body(ui);
         });
     });
 }

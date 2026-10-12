@@ -610,7 +610,22 @@ pub fn toolbar(ctx: &egui::Context, stage: Rect, ed: &mut Editor, st: &mut Board
     while shown.len() > 2 && width(&shown) + if hidden.is_empty() { 0.0 } else { BTN + 13.0 } > room {
         let current = |id: &str| match id {
             "select" => ed.tool == Tool::Select,
+            "hand" => ed.tool == Tool::Hand,
             "pen" => ed.tool == Tool::Pen,
+            "highlighter" => ed.tool == Tool::Highlighter,
+            "tape" => ed.tool == Tool::Tape,
+            "eraser" => ed.tool == Tool::Eraser,
+            "lasso" => ed.tool == Tool::Lasso,
+            "sticky" => ed.tool == Tool::Sticky,
+            "shape" => ed.tool == Tool::Shape,
+            "arrow" => ed.tool == Tool::Arrow,
+            "line" => ed.tool == Tool::Line,
+            "text" => ed.tool == Tool::Text,
+            "section" => ed.tool == Tool::Section,
+            "table" => ed.tool == Tool::Table,
+            "stamp" => ed.tool == Tool::Stamp,
+            "comment" => ed.tool == Tool::Comment,
+            "laser" => ed.tool == Tool::Laser,
             _ => false,
         };
         let Some(at) = shown.iter().rposition(|id| !current(id) && id != "select") else { break };
@@ -716,10 +731,12 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
         Tool::Stamp => 96.0,
         _ => ui::ctl(TRAY_H),
     };
-    let shown = egui::Area::new(Id::new(("tray", format!("{tool:?}")))).pivot(pivot).fixed_pos(at).order(egui::Order::Foreground).show(ctx, |ui| {
+    let max_tray_w = (ctx.content_rect().width() - 24.0).max(200.0);
+    let shown = egui::Area::new(Id::new(("tray", format!("{tool:?}")))).pivot(pivot).fixed_pos(at).constrain_to(ctx.content_rect().shrink(8.0)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
         ui::float_frame(t).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
-            ui::row(ui, h, |ui| {
+            egui::ScrollArea::horizontal().max_width(max_tray_w).auto_shrink([true, true]).show(ui, |ui| {
+                ui::row(ui, h, |ui| {
                 ui.spacing_mut().item_spacing = vec2(6.0, 0.0);
                 let p = &mut ed.prefs;
                 match tool {
@@ -858,6 +875,7 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                 if icon_button(ui, if top { "chevron-up" } else { "chevron-down" }, "Nascondi le opzioni (clicca di nuovo lo strumento per riaprirle)", None, vec2(24.0, 24.0), 14.0, false, false).clicked() {
                     close = true;
                 }
+            });
             });
         });
     });

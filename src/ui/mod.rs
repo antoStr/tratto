@@ -1118,6 +1118,7 @@ pub fn text_field(ui: &mut Ui, value: &mut String, hint: &str, limit: usize) -> 
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
     let well = ui.painter().add(egui::Shape::Noop);
+    let inner_rect = rect.shrink2(vec2(10.0, 0.0));
     let edit = egui::TextEdit::singleline(value)
         .hint_text(RichText::new(hint).color(t.text3))
         .char_limit(limit)
@@ -1125,10 +1126,15 @@ pub fn text_field(ui: &mut Ui, value: &mut String, hint: &str, limit: usize) -> 
         .font(font)
         .text_color(t.text)
         .vertical_align(egui::Align::Center)
-        .margin(egui::Margin::symmetric(10, 0))
-        .desired_width(w);
-    let resp = ui.put(rect, edit);
-    let hk = motion::hover(ui.ctx(), resp.id.with("well-h"), resp.hovered() && !resp.has_focus());
+        .desired_width((w - 20.0).max(0.0));
+    let resp = ui.put(inner_rect, edit);
+    let hovered = ui.rect_contains_pointer(rect);
+    let clicked_outside = ui.input(|i| i.pointer.primary_clicked())
+        && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p) && !inner_rect.contains(p));
+    if clicked_outside && !resp.has_focus() {
+        resp.request_focus();
+    }
+    let hk = motion::hover(ui.ctx(), resp.id.with("well-h"), hovered && !resp.has_focus());
     let fk = motion::hover(ui.ctx(), resp.id.with("well-f"), resp.has_focus());
     let edge = blend(blend(t.border, t.border_strong, hk), t.brand, fk);
     ui.painter().set(well, egui::Shape::Rect(egui::epaint::RectShape::new(rect, 8.0, blend(t.bg2, t.bg, fk), Stroke::new(1.0 + fk * 0.5, edge), egui::StrokeKind::Inside)));

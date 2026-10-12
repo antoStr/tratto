@@ -511,14 +511,15 @@ impl BoardScreen {
         // and in a very narrow one the left one too.
         let narrow = rect.width() < 1000.0;
         let tiny = rect.width() < 720.0;
+        let is_mobile = rect.width() < 640.0;
         let (show_left, show_right) = (!zen && !prefs.focus && prefs.left_panel && (!tiny || self.ui.peek_left), !zen && !prefs.focus && prefs.right_panel && (!narrow || self.ui.peek_right));
         ctx.data_mut(|d| d.insert_temp(Id::new("panels-shown"), (show_left, show_right)));
         let kl = ui::motion::presence(&ctx, Id::new("left-panel"), show_left);
         let kr = ui::motion::presence(&ctx, Id::new("right-panel"), show_right);
         const GAP: f32 = 8.0;
         // Wider with bigger text, so names and fields keep their room.
-        let panel: f32 = (240.0 * (1.0 + (ui::text_scale() - 1.0) * 0.6)).round();
-        self.editor.safe = [if show_left { (panel + GAP * 2.0) as f64 } else { 0.0 }, 0.0, if show_right { (panel + GAP * 2.0) as f64 } else { 0.0 }, 0.0];
+        let panel: f32 = if is_mobile { (rect.width() - GAP * 2.0).min(320.0) } else { (240.0 * (1.0 + (ui::text_scale() - 1.0) * 0.6)).round() };
+        self.editor.safe = [if show_left && !is_mobile { (panel + GAP * 2.0) as f64 } else { 0.0 }, 0.0, if show_right && !is_mobile { (panel + GAP * 2.0) as f64 } else { 0.0 }, 0.0];
         let left_rect = Rect::from_min_size(rect.min + vec2(GAP, GAP), vec2(panel, rect.height() - GAP * 2.0));
         let right_rect = Rect::from_min_size(pos2(rect.max.x - GAP - panel, rect.min.y + GAP), vec2(panel, rect.height() - GAP * 2.0));
         panel_card(&ctx, "left-panel", left_rect, kl, -1.0, t, |ui| {
@@ -529,7 +530,11 @@ impl BoardScreen {
         panel_card(&ctx, "right-panel", right_rect, kr, 1.0, t, |ui| super::panels::right(ui, self, toasts));
         // What floats over the board centres on the part the panels leave free.
         let stage = rect;
-        let rect = Rect::from_min_max(rect.min + vec2((panel + GAP) * kl.clamp(0.0, 1.0), 0.0), rect.max - vec2((panel + GAP) * kr.clamp(0.0, 1.0), 0.0));
+        let rect = if is_mobile {
+            stage
+        } else {
+            Rect::from_min_max(rect.min + vec2((panel + GAP) * kl.clamp(0.0, 1.0), 0.0), rect.max - vec2((panel + GAP) * kr.clamp(0.0, 1.0), 0.0))
+        };
 
         let resp = ui.interact(stage, Id::new("board"), Sense::click_and_drag());
         let ed = &mut self.editor;
@@ -582,7 +587,8 @@ impl BoardScreen {
         if !zen {
             super::context_bar::context_bar(&ctx, rect, &mut self.editor);
             super::toolbar::toolbar(&ctx, rect, &mut self.editor, &mut self.ui);
-            if !self.editor.prefs.focus {
+            let is_mobile = stage.width() < 600.0;
+            if !self.editor.prefs.focus && !is_mobile {
                 super::toolbar::view_controls(&ctx, rect, &mut self.editor);
                 if self.editor.prefs.minimap {
                     super::toolbar::minimap(&ctx, rect, &mut self.editor, &mut self.ui.minimap);
@@ -855,6 +861,9 @@ impl BoardScreen {
         if finish {
             self.editor.stop_editing();
             self.ui.text_for = None;
+            ui::motion::reset(ctx, Id::new("text-tools-anim"));
+            ui::motion::reset(ctx, Id::new("table-tools-anim"));
+            ui::motion::reset(ctx, Id::new("code-tools-anim"));
         } else if let Some(el) = self.editor.board.get(&id).cloned()
             && !matches!(el.kind, Kind::Section { .. })
         {
@@ -867,6 +876,7 @@ impl BoardScreen {
     fn context_menu(&mut self, ctx: &egui::Context) {
         let Some(at) = self.ui.menu else {
             ctx.data_mut(|d| d.remove::<Pos2>(Id::new("board-menu-at")));
+            ui::motion::reset(ctx, Id::new("board-menu-anim"));
             return;
         };
         let t = ui::theme(ctx);
@@ -874,7 +884,10 @@ impl BoardScreen {
         // Measured afresh each time it opens: as wide as its longest row, not a pixel more.
         let fresh = ctx.data(|d| d.get_temp::<Pos2>(Id::new("board-menu-at"))) != Some(at);
         ctx.data_mut(|d| d.insert_temp(Id::new("board-menu-at"), at));
-        let resp = egui::Area::new(Id::new("board-menu")).fixed_pos(at).order(egui::Order::Foreground).constrain(true).sizing_pass(fresh).show(ctx, |ui| {
+        let k = ui::motion::appear(ctx, Id::new("board-menu-anim"), true);
+        let lift = ui::motion::travel(ctx, k) * 4.0;
+        let resp = egui::Area::new(Id::new("board-menu")).fixed_pos(at + vec2(0.0, lift)).order(egui::Order::Foreground).constrain(true).sizing_pass(fresh).show(ctx, |ui| {
+            ui.set_opacity(k.clamp(0.0, 1.0));
             ui::menu_frame(&t).show(ui, |ui| {
                 ui.set_min_width(180.0);
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -884,6 +897,7 @@ impl BoardScreen {
         let clicked_out = ctx.input(|i| i.pointer.any_pressed()) && !resp.response.contains_pointer() && resp.response.ctx.input(|i| i.pointer.press_origin()).is_some_and(|p| !resp.response.rect.contains(p));
         if close || clicked_out {
             self.ui.menu = None;
+            ui::motion::reset(ctx, Id::new("board-menu-anim"));
         }
     }
 

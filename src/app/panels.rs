@@ -165,11 +165,16 @@ pub fn left(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, dialogs: &mut
             tab_strip(ui, &mut b.ui.left_tab, options);
         });
     });
-    if b.ui.left_tab == LeftTab::Templates && !b.editor.read_only {
-        templates(ui, &mut b.editor, &t);
-    } else {
-        layers(ui, &mut b.editor, &mut b.ui, &t);
-    }
+    let k = ui::motion::entering(ui.ctx(), Id::new("left-tab-content"), b.ui.left_tab as u8);
+    ui.multiply_opacity(k.clamp(0.0, 1.0));
+    let shift = ui::motion::travel(ui.ctx(), k.clamp(0.0, 1.0)) * 12.0;
+    ui.with_visual_transform(egui::emath::TSTransform::from_translation(vec2(0.0, shift)), |ui| {
+        if b.ui.left_tab == LeftTab::Templates && !b.editor.read_only {
+            templates(ui, &mut b.editor, &t);
+        } else {
+            layers(ui, &mut b.editor, &mut b.ui, &t);
+        }
+    });
     action
 }
 
@@ -618,13 +623,13 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
 /* ---------- templates ---------- */
 
 fn templates(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
+    ui.add_space(8.0);
+    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(16, 0)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui::hint(ui, "Clicca per aggiungere, o trascina sulla lavagna.");
+    });
+    ui.add_space(6.0);
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.add_space(16.0);
-            ui::hint(ui, "Clicca per aggiungere, o trascina sulla lavagna.");
-        });
-        ui.add_space(4.0);
         for tpl in crate::templates::TEMPLATES.iter() {
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 72.0), Sense::click_and_drag());
             let r = rect.shrink2(vec2(8.0, 4.0));
@@ -681,6 +686,22 @@ pub fn right(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
             });
         });
     });
+    if b.editor.prefs.timer_pos == crate::prefs::TimerPos::RightBar
+        && b.editor.board.timer_field("total").is_some()
+    {
+        egui::Frame::new()
+            .fill(t.bg2)
+            .stroke(Stroke::new(1.0, t.border))
+            .corner_radius(ui::RADIUS as f32)
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    super::live::timer_content(ui, &mut b.editor, true);
+                });
+            });
+        ui.add_space(4.0);
+    }
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         if b.editor.read_only {
@@ -1467,11 +1488,19 @@ const CELL_COLORS: [&str; 8] = ["#F5F5F5", "#FFF3A3", "#C9F2C7", "#C7E5FF", "#FF
 /// Left panel closed (or focus mode): this pill stays at the top left to bring it back.
 pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs: &mut Dialogs) -> Option<Action> {
     let t = ui::theme(ctx);
-    egui::Area::new(Id::new("focus-pill")).fixed_pos(stage.min + vec2(12.0, 12.0)).order(egui::Order::Foreground).show(ctx, |ui| {
-        ui::float_frame(&t).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+    let is_mobile = stage.width() < 600.0;
+    let k = ui::motion::appear(ctx, Id::new("focus-pill-anim"), true);
+    let lift = ui::motion::travel(ctx, k) * 6.0;
+    egui::Area::new(Id::new("focus-pill")).fixed_pos(stage.min + vec2(12.0, 12.0 + lift)).order(egui::Order::Foreground).show(ctx, |ui| {
+        ui.set_opacity(k.clamp(0.0, 1.0));
+        ui::float_frame(&t).inner_margin(egui::Margin::symmetric(if is_mobile { 6 } else { 10 }, 6)).show(ui, |ui| {
             ui::row(ui, 24.0, |ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                ui.label(RichText::new(&b.title).font(ui::medium(ui::px(11.0))).color(t.text));
+                ui.spacing_mut().item_spacing.x = if is_mobile { 4.0 } else { 6.0 };
+                if !is_mobile {
+                    ui.label(RichText::new(&b.title).font(ui::medium(ui::px(11.0))).color(t.text));
+                } else {
+                    ui::logo(ui, 18.0);
+                }
                 ui.spacing_mut().item_spacing.x = 2.0;
                 if !b.host {
                     guest_buttons(ui, b, dialogs);
@@ -1512,6 +1541,7 @@ pub fn zen_pill(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
 /// Right panel closed: people, share and the way back, floating at the top right.
 pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
     let t = ui::theme(ctx);
+    let is_mobile = stage.width() < 600.0;
     // Beside the minimap when it sits in the top right corner.
     let mini = if b.editor.prefs.minimap { ctx.data(|d| d.get_temp::<Rect>(Id::new("minimap-rect"))) } else { None };
     let x = match mini {
@@ -1519,20 +1549,27 @@ pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
         _ => stage.max.x - 12.0,
     };
     let x = ui::motion::spring(ctx, Id::new("right-pill-x"), x, 0.3, 0.9);
-    egui::Area::new(Id::new("right-pill")).pivot(egui::Align2::RIGHT_TOP).fixed_pos(pos2(x, stage.min.y + 12.0)).order(egui::Order::Foreground).show(ctx, |ui| {
-        ui::float_frame(&t).inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
+    let k = ui::motion::appear(ctx, Id::new("right-pill-anim"), true);
+    let lift = ui::motion::travel(ctx, k) * 6.0;
+    egui::Area::new(Id::new("right-pill")).pivot(egui::Align2::RIGHT_TOP).fixed_pos(pos2(x, stage.min.y + 12.0 + lift)).order(egui::Order::Foreground).show(ctx, |ui| {
+        ui.set_opacity(k.clamp(0.0, 1.0));
+        ui::float_frame(&t).inner_margin(egui::Margin::symmetric(if is_mobile { 6 } else { 8 }, 6)).show(ui, |ui| {
             ui::row(ui, 28.0, |ui| {
                 let line = |ui: &mut Ui| {
                     let (r, _) = ui.allocate_exact_size(vec2(13.0, 28.0), Sense::hover());
                     ui.painter().vline(r.center().x, (r.center().y - 9.0)..=(r.center().y + 9.0), Stroke::new(1.0, t.border));
                 };
-                participants(ui, &mut b.editor);
-                ui.spacing_mut().item_spacing.x = 4.0;
-                line(ui);
+                if !is_mobile {
+                    participants(ui, &mut b.editor);
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    line(ui);
+                }
                 super::live::timer_button(ui, &mut b.editor);
                 super::live::vote_button(ui, &mut b.editor);
-                super::live::spotlight_button(ui, &mut b.editor);
-                line(ui);
+                if !is_mobile {
+                    super::live::spotlight_button(ui, &mut b.editor);
+                    line(ui);
+                }
                 share_button(ui, b);
                 ui.add_space(2.0);
                 if small_icon_button(ui, "panel-right-open", "Mostra il pannello", false).clicked() {
@@ -1545,6 +1582,27 @@ pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
             });
         });
     });
+    let show_docked = b.editor.prefs.timer_pos == crate::prefs::TimerPos::RightBar
+        && b.editor.board.timer_field("total").is_some();
+    let kt = ui::motion::presence(ctx, Id::new("right-pill-timer-anim"), show_docked);
+    if kt > 0.01 {
+        let has_voting = b.editor.board.voting().is_some();
+        let timer_y = if is_mobile && has_voting { stage.min.y + 96.0 } else { stage.min.y + 54.0 };
+        let lift = ui::motion::travel(ctx, kt) * 6.0;
+        egui::Area::new(Id::new("right-pill-timer"))
+            .pivot(egui::Align2::RIGHT_TOP)
+            .fixed_pos(pos2(x, timer_y + lift))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.set_opacity(kt.clamp(0.0, 1.0));
+                ui::float_frame(&t).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        super::live::timer_content(ui, &mut b.editor, true);
+                    });
+                });
+            });
+    }
 }
 
 /// While a cell is written in: its colour, and rows and columns added or taken away around it,
@@ -1559,7 +1617,10 @@ fn table_tools(ctx: &egui::Context, stage: Rect, ed: &mut Editor, el: &El, tb: &
     let x = a.x.clamp(stage.min.x + 8.0, (stage.max.x - 320.0).max(stage.min.x + 8.0));
     let id = el.id.clone();
     let mut next: Option<(Table, (usize, usize))> = None;
-    egui::Area::new(Id::new("table-tools")).fixed_pos(pos2(x, y)).order(egui::Order::Foreground).show(ctx, |ui| {
+    let k = ui::motion::appear(ctx, Id::new("table-tools-anim"), true);
+    let lift = ui::motion::travel(ctx, k) * 6.0;
+    egui::Area::new(Id::new("table-tools")).fixed_pos(pos2(x, y + lift)).order(egui::Order::Foreground).show(ctx, |ui| {
+        ui.set_opacity(k.clamp(0.0, 1.0));
         ui::float_frame(&t).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
             ui::row(ui, 28.0, |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
@@ -1660,7 +1721,10 @@ fn code_tools(ctx: &egui::Context, stage: Rect, ed: &mut Editor, el: &El, code: 
     let a = ed.to_screen(el.x, el.y) + stage.min.to_vec2();
     let y = if a.y - 40.0 >= stage.min.y + 8.0 { a.y - 40.0 } else { a.y + 8.0 };
     let id = el.id.clone();
-    egui::Area::new(Id::new("code-tools")).fixed_pos(pos2(a.x.max(stage.min.x + 8.0), y)).order(egui::Order::Foreground).show(ctx, |ui| {
+    let k = ui::motion::appear(ctx, Id::new("code-tools-anim"), true);
+    let lift = ui::motion::travel(ctx, k) * 6.0;
+    egui::Area::new(Id::new("code-tools")).fixed_pos(pos2(a.x.max(stage.min.x + 8.0), y + lift)).order(egui::Order::Foreground).show(ctx, |ui| {
+        ui.set_opacity(k.clamp(0.0, 1.0));
         ui::float_frame(&t).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
             ui::row(ui, 24.0, |ui| {
                 if let Some(lang) = language_picker(ui, &code.language, &t) {
@@ -1916,7 +1980,10 @@ pub fn text_tools(ctx: &egui::Context, stage: Rect, ed: &mut Editor, el: &El) {
     let y = if a.y - 40.0 >= stage.min.y + 8.0 { a.y - 40.0 } else { below.y + 8.0 };
     let x = a.x.clamp(stage.min.x + 8.0, (stage.max.x - width - 8.0).max(stage.min.x + 8.0));
     let id = el.id.clone();
-    egui::Area::new(Id::new("text-tools")).fixed_pos(pos2(x, y)).order(egui::Order::Foreground).show(ctx, |ui| {
+    let k = ui::motion::appear(ctx, Id::new("text-tools-anim"), true);
+    let lift = ui::motion::travel(ctx, k) * 6.0;
+    egui::Area::new(Id::new("text-tools")).fixed_pos(pos2(x, y + lift)).order(egui::Order::Foreground).show(ctx, |ui| {
+        ui.set_opacity(k.clamp(0.0, 1.0));
         ui::float_frame(&t).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
             ui::row(ui, 24.0, |ui| {
                 let mut f = match &el.kind {

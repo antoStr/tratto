@@ -129,10 +129,28 @@ impl Home {
                 if side_button(ui, "settings-2", "Impostazioni").clicked() {
                     dialogs.settings = true;
                 }
-                if let crate::updates::State::Available { version, url } = crate::updates::current()
-                    && side_button(ui, "download", &format!("Scarica Tratto {version}")).clicked()
-                {
-                    let _ = webbrowser::open(&url);
+                match crate::updates::current() {
+                    crate::updates::State::Available { version, download_url, url, .. } => {
+                        if side_button(ui, "download", &format!("Aggiorna a Tratto {version}")).clicked() {
+                            if download_url.is_some() {
+                                crate::updates::start_download(ui.ctx());
+                            } else {
+                                let _ = webbrowser::open(&url);
+                            }
+                        }
+                    }
+                    crate::updates::State::Downloading { version, .. } => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(RichText::new(format!("Scarico {version}…")).color(t.chrome_text));
+                        });
+                    }
+                    crate::updates::State::ReadyToInstall { version, .. } => {
+                        if side_button(ui, "check", &format!("Installa {version} e riavvia")).clicked() {
+                            crate::updates::install_and_restart();
+                        }
+                    }
+                    _ => {}
                 }
                 if side_button(ui, "file-up", "Importa una lavagna").clicked() {
                     action = self.import(store, toasts);

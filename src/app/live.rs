@@ -65,8 +65,60 @@ pub fn timer_button(ui: &mut egui::Ui, ed: &mut Editor) {
                 }
             }
         });
-        ui::hint(ui, "Il conto alla rovescia compare in alto per chiunque sia sulla lavagna.");
+        ui::hint(ui, "Il conto alla rovescia compare per chiunque sia sulla lavagna.");
+        ui.add_space(4.0);
+        ui::heading(ui, "Posizione del timer");
+        let mut cur = ed.prefs.timer_pos;
+        ui::segmented(ui, &mut cur, &[(crate::prefs::TimerPos::Top, "Fluttuante"), (crate::prefs::TimerPos::RightBar, "Barra a destra")], 216.0);
+        ed.prefs.timer_pos = cur;
     });
+}
+
+pub fn timer_content(ui: &mut egui::Ui, ed: &mut Editor, is_docked: bool) {
+    let t = ui::theme(ui.ctx());
+    let Some(tm) = read_timer(ed) else { return };
+    let left = match tm.end {
+        Some(end) => (end - now()).max(0.0),
+        None => tm.left,
+    };
+    let done = left <= 0.0;
+    if tm.end.is_some() && !done {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+    }
+    icon(ui, "timer", ui.cursor().min + vec2(7.0, 12.0), 14.0, t.icon);
+    ui.add_space(18.0);
+    ui.label(RichText::new(if done { "Tempo scaduto".to_string() } else { clock(left) }).font(ui::medium(ui::px(13.0))).color(if done { t.danger_text } else { t.text }));
+    let bar_w = if is_docked { 60.0 } else { 80.0 };
+    let (r, _) = ui.allocate_exact_size(vec2(bar_w, 4.0), Sense::hover());
+    ui.painter().rect_filled(r, 2.0, t.bg3);
+    ui.painter().rect_filled(Rect::from_min_size(r.min, vec2(r.width() * (left / tm.total).clamp(0.0, 1.0) as f32, 4.0)), 2.0, t.brand_fill);
+    if !ed.read_only {
+        if !done {
+            if let Some(end) = tm.end {
+                if ui::small_icon_button(ui, "pause", "Pausa", false).clicked() {
+                    set_timer(ed, &[("left", json!((end - now()).max(0.0))), ("end", Value::Null)]);
+                }
+            } else if ui::small_icon_button(ui, "play", "Riprendi", false).clicked() {
+                set_timer(ed, &[("end", json!(now() + tm.left))]);
+            }
+        }
+        if ui::button(ui, "+1 min", Btn::Ghost, None, false, true).clicked() {
+            match tm.end {
+                Some(end) => set_timer(ed, &[("total", json!(tm.total + 60_000.0)), ("end", json!(end.max(now()) + 60_000.0))]),
+                None => set_timer(ed, &[("total", json!(tm.total + 60_000.0)), ("left", json!(tm.left + 60_000.0))]),
+            }
+        }
+        if ui::small_icon_button(ui, "square", "Ferma il timer", false).clicked() {
+            ed.board.transact_plain(|txn, b| b.timer.clear(txn));
+        }
+    }
+    if is_docked {
+        if ui::small_icon_button(ui, "external-link", "Stacca il timer (fluttuante in alto)", false).clicked() {
+            ed.prefs.timer_pos = crate::prefs::TimerPos::Top;
+        }
+    } else if ui::small_icon_button(ui, "panel-right", "Attacca alla barra a destra", false).clicked() {
+        ed.prefs.timer_pos = crate::prefs::TimerPos::RightBar;
+    }
 }
 
 /* ---------------- voting ---------------- */
@@ -165,49 +217,25 @@ pub fn top_bars(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     }
 
     let timer = read_timer(ed);
+    let timer_floating = timer.is_some() && ed.prefs.timer_pos == crate::prefs::TimerPos::Top;
     let voting = ed.board.voting();
-    if timer.is_none() && voting.is_none() && !mine && presenter.is_none() {
+    let show_any = timer_floating || voting.is_some() || mine || presenter.is_some();
+    let k = ui::motion::presence(ctx, Id::new("live-top-anim"), show_any);
+    if k <= 0.01 && !show_any {
+        ui::motion::reset(ctx, Id::new("live-top-anim"));
         ctx.data_mut(|d| d.insert_temp(fid, f));
         return;
     }
-    egui::Area::new(Id::new("live-top")).pivot(egui::Align2::CENTER_TOP).fixed_pos(pos2(stage.center().x, stage.min.y + 32.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+    let is_mobile = stage.width() < 640.0;
+    let travel = ui::motion::travel(ctx, k);
+    let base_y = if is_mobile { stage.min.y + 54.0 } else { stage.min.y + 32.0 };
+    let y = base_y - travel * 16.0;
+    egui::Area::new(Id::new("live-top")).pivot(egui::Align2::CENTER_TOP).fixed_pos(pos2(stage.center().x, y)).order(egui::Order::Foreground).show(ctx, |ui| {
+        ui.set_opacity(k.clamp(0.0, 1.0));
         ui.vertical_centered(|ui| {
-            if let Some(tm) = &timer {
-                let left = match tm.end {
-                    Some(end) => (end - now()).max(0.0),
-                    None => tm.left,
-                };
-                let done = left <= 0.0;
-                if tm.end.is_some() && !done {
-                    ctx.request_repaint_after(std::time::Duration::from_millis(250));
-                }
+            if timer_floating {
                 pill(ui, &t, |ui| {
-                    icon(ui, "timer", ui.cursor().min + vec2(7.0, 12.0), 14.0, t.icon);
-                    ui.add_space(18.0);
-                    ui.label(RichText::new(if done { "Tempo scaduto".to_string() } else { clock(left) }).font(ui::medium(ui::px(13.0))).color(if done { t.danger_text } else { t.text }));
-                    let (r, _) = ui.allocate_exact_size(vec2(80.0, 4.0), Sense::hover());
-                    ui.painter().rect_filled(r, 2.0, t.bg3);
-                    ui.painter().rect_filled(Rect::from_min_size(r.min, vec2(r.width() * (left / tm.total).clamp(0.0, 1.0) as f32, 4.0)), 2.0, t.brand_fill);
-                    if !ed.read_only {
-                        if !done {
-                            if let Some(end) = tm.end {
-                                if ui::small_icon_button(ui, "pause", "Pausa", false).clicked() {
-                                    set_timer(ed, &[("left", json!((end - now()).max(0.0))), ("end", Value::Null)]);
-                                }
-                            } else if ui::small_icon_button(ui, "play", "Riprendi", false).clicked() {
-                                set_timer(ed, &[("end", json!(now() + tm.left))]);
-                            }
-                        }
-                        if ui::button(ui, "+1 min", Btn::Ghost, None, false, true).clicked() {
-                            match tm.end {
-                                Some(end) => set_timer(ed, &[("total", json!(tm.total + 60_000.0)), ("end", json!(end.max(now()) + 60_000.0))]),
-                                None => set_timer(ed, &[("total", json!(tm.total + 60_000.0)), ("left", json!(tm.left + 60_000.0))]),
-                            }
-                        }
-                        if ui::small_icon_button(ui, "square", "Ferma il timer", false).clicked() {
-                            ed.board.transact_plain(|txn, b| b.timer.clear(txn));
-                        }
-                    }
+                    timer_content(ui, ed, false);
                 });
                 ui.add_space(6.0);
             }
@@ -327,7 +355,10 @@ pub fn comment_thread(ctx: &egui::Context, ed: &mut Editor, st: &mut BoardUi) {
     let screen = ctx.content_rect();
     let at = pos2((p.x + pin + 10.0).clamp(8.0, screen.max.x - 300.0), (p.y - pin).clamp(8.0, screen.max.y - 320.0));
     let mut close = false;
-    egui::Area::new(Id::new("comment-thread")).fixed_pos(at).order(egui::Order::Foreground).show(ctx, |ui| {
+    let k = ui::motion::appear(ctx, Id::new("comment-thread-anim"), true);
+    let lift = ui::motion::travel(ctx, k) * 8.0;
+    egui::Area::new(Id::new("comment-thread")).fixed_pos(at + vec2(0.0, lift)).order(egui::Order::Foreground).show(ctx, |ui| {
+        ui.set_opacity(k.clamp(0.0, 1.0));
         ui::float_frame(&t).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
             ui.set_width(268.0);
             ui.horizontal(|ui| {
@@ -387,6 +418,7 @@ pub fn comment_thread(ctx: &egui::Context, ed: &mut Editor, st: &mut BoardUi) {
     });
     if close {
         ed.comment = None;
+        ui::motion::reset(ctx, Id::new("comment-thread-anim"));
     }
 }
 
@@ -405,7 +437,10 @@ pub fn cursor_chat(ctx: &egui::Context, ed: &mut Editor, st: &mut BoardUi) {
     let color = peer_color(&me);
     let on = if is_dark(&hex(color)) { Color32::WHITE } else { crate::model::DARK };
     let mut close: Option<bool> = None;
-    egui::Area::new(Id::new("cursor-chat")).fixed_pos(at).order(egui::Order::Foreground).show(ctx, |ui| {
+    let k = ui::motion::appear(ctx, Id::new("cursor-chat-anim"), true);
+    let lift = ui::motion::travel(ctx, k) * 6.0;
+    egui::Area::new(Id::new("cursor-chat")).fixed_pos(at + vec2(0.0, lift)).order(egui::Order::Foreground).show(ctx, |ui| {
+        ui.set_opacity(k.clamp(0.0, 1.0));
         egui::Frame::new().fill(color).corner_radius(egui::CornerRadius { nw: 4, ne: 14, sw: 14, se: 14 }).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
             let resp = ui.add(egui::TextEdit::singleline(text).frame(egui::Frame::NONE).text_color(on).hint_text(RichText::new("Scrivi un messaggio…").color(ui::mix(on, 0.6, color))).desired_width(220.0).char_limit(80).id(Id::new("chat-input")));
             resp.request_focus();
@@ -424,6 +459,7 @@ pub fn cursor_chat(ctx: &egui::Context, ed: &mut Editor, st: &mut BoardUi) {
     // The message stays a few seconds after you finish, then fades for everyone.
     if let Some(keep) = close {
         st.chat = None;
+        ui::motion::reset(ctx, Id::new("cursor-chat-anim"));
         if keep {
             st.chat_clear = Some(now() + 5000.0);
             ctx.request_repaint_after(std::time::Duration::from_millis(5100));

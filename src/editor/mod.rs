@@ -307,9 +307,9 @@ pub fn editable(el: &El) -> bool {
     !el.locked && !el.hidden
 }
 
-/// What can receive votes: things with content, not lines, strokes or comments.
+/// What can receive votes: sticky notes, shapes, text, stamps, code, images; not lines, strokes, comments, tables or sections.
 fn votable(el: &El) -> bool {
-    !matches!(el.kind, Kind::Line(_) | Kind::Ink(_) | Kind::Highlighter(_) | Kind::Comment { .. })
+    !matches!(el.kind, Kind::Line(_) | Kind::Ink(_) | Kind::Highlighter(_) | Kind::Comment { .. } | Kind::Table(_) | Kind::Section { .. })
 }
 
 /// Elements with text to type into: text, stickies, shapes, section titles.
@@ -2392,5 +2392,36 @@ mod tests {
         }
         let mid = boxes.iter().map(|b| b.center().y).sum::<f64>() / boxes.len() as f64;
         assert!((mid - 40.0).abs() < 1.0, "centred on the root: {mid}");
+    }
+
+    #[test]
+    fn tables_and_sections_are_not_votable() {
+        let mut ed = editor();
+        ed.tool = Tool::Select;
+        let mut table = El::new(Kind::Table(crate::model::Table::new(3, 3)));
+        table.id = "table-1".into();
+        table.w = 300.0;
+        table.h = 90.0;
+
+        let mut sticky = El::new(Kind::Sticky(crate::model::Sticky::default()));
+        sticky.id = "sticky-1".into();
+        sticky.x = 400.0;
+        sticky.w = 100.0;
+        sticky.h = 100.0;
+
+        ed.board.put([table.clone(), sticky.clone()]);
+        ed.board.start_voting(3);
+
+        assert!(!super::votable(&table), "tables are not votable items");
+        assert!(super::votable(&sticky), "stickies are votable");
+
+        // try_vote at the table returns false so that clicks can select/move the table!
+        assert!(!ed.try_vote(Pt { x: 50.0, y: 50.0 }, false), "try_vote on table must return false");
+        // table can be selected and moved during voting!
+        ed.selection = vec![table.id.clone()];
+        ed.start_move(Pt { x: 50.0, y: 50.0 }, egui::pos2(50.0, 50.0), false);
+        assert!(matches!(ed.gesture, Some(super::Gesture::Move { .. })), "table can be moved during voting");
+        // try_vote at the sticky returns true and casts a vote
+        assert!(ed.try_vote(Pt { x: 450.0, y: 50.0 }, false), "try_vote on sticky casts a vote");
     }
 }
