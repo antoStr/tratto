@@ -24,9 +24,14 @@ pub fn set_reduced(ctx: &Context, on: bool) {
     ctx.data_mut(|d| d.insert_temp(reduce_id(), on));
 }
 
+/// Least damping of any spring: things glide and settle, they never wobble (below this the
+/// overshoot becomes visible and the interface feels rubbery).
+const MIN_DAMPING: f32 = 0.92;
+
 /// A value following `target` like a SwiftUI spring: `response` is roughly how long it takes
-/// (seconds); `damping` 1 settles without overshoot, lower bounces a little.
+/// (seconds); `damping` 1 settles without overshoot (never less than `MIN_DAMPING`).
 pub fn spring(ctx: &Context, id: Id, target: f32, response: f32, damping: f32) -> f32 {
+    let damping = damping.max(MIN_DAMPING);
     let Some(mut s) = ctx.data(|d| d.get_temp::<Spring>(id)) else {
         ctx.data_mut(|d| d.insert_temp(id, Spring { x: target, v: 0.0 }));
         return target;
@@ -66,7 +71,7 @@ pub fn presence(ctx: &Context, id: Id, shown: bool) -> f32 {
     if reduced(ctx) {
         return ctx.animate_bool_with_time(id.with("fade"), shown, 0.12);
     }
-    if shown { spring(ctx, id, 1.0, 0.36, 0.82) } else { spring(ctx, id, 0.0, 0.2, 1.0) }
+    if shown { spring(ctx, id, 1.0, 0.26, 0.95) } else { spring(ctx, id, 0.0, 0.16, 1.0) }
 }
 
 /// Like `presence`, for something that is drawn only while shown: starts from 0 each time it
@@ -153,7 +158,7 @@ mod tests {
             ctx.end_pass().textures_delta.clear();
         }
         assert_eq!(x, 100.0, "settled exactly");
-        assert!(peak > 100.0 && peak < 110.0, "a small overshoot, not a wobble: {peak}");
+        assert!(peak < 100.5, "no visible overshoot, even when a call asks for a bouncy spring: {peak}");
     }
 
     #[test]

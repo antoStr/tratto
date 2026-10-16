@@ -397,10 +397,10 @@ impl Painter {
             // screen = (o + v) · z + cam + origin, computed in f64 so far-away boards stay exact.
             let (gx, gy) = f.glides.and_then(|g| g.get(&el.id)).copied().unwrap_or((0.0, 0.0));
             let (ax, ay) = ((built.ox + gx) * z + f.cam.x + f.origin.x as f64, (built.oy + gy) * z + f.cam.y + f.origin.y as f64);
-            // Popping in: a quick grow with a little overshoot, and a fade, about its centre.
+            // Popping in: a quick grow and a fade, about its centre (no overshoot: no wobble).
             let (k, fade) = self.born.get(&el.id).map_or((1.0, 1.0), |t| {
                 let t = ((now - t) / POP_MS).clamp(0.0, 1.0) as f32;
-                (0.86 + 0.14 * egui::emath::easing::back_out(t), egui::emath::easing::cubic_out((t / 0.6).min(1.0)))
+                (0.92 + 0.08 * egui::emath::easing::cubic_out(t), egui::emath::easing::cubic_out((t / 0.6).min(1.0)))
             });
             let (cx, cy) = ((el.x + el.w / 2.0 - built.ox) * z + ax, (el.y + el.h / 2.0 - built.oy) * z + ay);
             let place = |p: [f32; 2]| {
