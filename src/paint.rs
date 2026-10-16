@@ -705,14 +705,20 @@ const TEXTURE: TextureOptions = TextureOptions {
 /// Pictures bigger than this are scaled down when decoded.
 const MAX_SIDE: u32 = 4096;
 
-pub fn decode_image(bytes: &[u8]) -> Option<ColorImage> {
+/// Decodes a picture within limits: a small file can claim to hold a gigantic picture (a
+/// "decompression bomb"), so at most 12 000 px a side and 256 MB while decoding.
+pub fn decode_limited(bytes: &[u8]) -> Option<image::DynamicImage> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
     let mut limits = image::Limits::default();
-    limits.max_image_width = Some(16_384);
-    limits.max_image_height = Some(16_384);
-    limits.max_alloc = Some(512 * 1024 * 1024);
+    limits.max_image_width = Some(12_000);
+    limits.max_image_height = Some(12_000);
+    limits.max_alloc = Some(256 * 1024 * 1024);
     reader.limits(limits);
-    let mut img = reader.decode().ok()?;
+    reader.decode().ok()
+}
+
+pub fn decode_image(bytes: &[u8]) -> Option<ColorImage> {
+    let mut img = decode_limited(bytes)?;
     if img.width().max(img.height()) > MAX_SIDE {
         img = img.resize(MAX_SIDE, MAX_SIDE, image::imageops::FilterType::Triangle);
     }

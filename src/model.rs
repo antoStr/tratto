@@ -581,26 +581,33 @@ impl El {
     /// Elements come from other people's machines: anything malformed is refused instead of
     /// breaking rendering. Image ids are checked so a guest can't point others at an outside URL.
     pub fn is_valid(&self) -> bool {
-        let num = |v: f64| v.is_finite();
+        // Finite, and far from the limits where drawing would stall or overflow: what arrives
+        // from a guest is checked here before anything is drawn.
+        let num = |v: f64| v.is_finite() && v.abs() <= 1e6;
         let opt_id = |v: &Option<String>| v.as_ref().is_none_or(|s| s.len() <= 64);
         if self.id.is_empty() || self.id.len() > 64 || !opt_id(&self.group_id) {
             return false;
         }
-        if ![self.x, self.y, self.w, self.h, self.rotation, self.z, self.opacity].into_iter().all(num) {
+        let far = |v: f64| v.is_finite() && v.abs() <= 1e9;
+        // z only orders (the first Tratto used timestamps for it): finite is enough.
+        if ![self.x, self.y].into_iter().all(far) || !self.z.is_finite() || ![self.w, self.h, self.rotation, self.opacity].into_iter().all(num) || self.w < 0.0 || self.h < 0.0 {
             return false;
         }
-        if self.erase.len() > 4000 || !self.erase.iter().all(|m| m.p.len() >= 2 && m.p.len() <= 20_000 && num(m.s) && num(m.a) && m.p.iter().all(|v| v.is_finite())) {
+        if self.shadow.is_some_and(|s| ![s.opacity, s.blur, s.y].into_iter().all(num)) {
+            return false;
+        }
+        if self.erase.len() > 4000 || !self.erase.iter().all(|m| m.p.len() >= 2 && m.p.len() <= 20_000 && num(m.s) && num(m.a) && m.p.iter().all(|v| num(*v as f64))) {
             return false;
         }
         if self.name.as_ref().is_some_and(|n| n.len() > 400) {
             return false;
         }
         match &self.kind {
-            Kind::Ink(i) | Kind::Highlighter(i) => i.points.len() >= 3 && i.points.len() < 200_000 && num(i.size) && i.points.iter().all(|v| v.is_finite()),
-            Kind::Line(l) => l.points.len() == 4 && l.points.iter().all(|v| v.is_finite()) && num(l.stroke_width) && opt_id(&l.from) && opt_id(&l.to) && l.label.as_ref().is_none_or(|t| t.len() <= 1000),
-            Kind::Comment { thread } => thread.len() <= 500 && thread.iter().all(|m| m.text.len() <= 4000 && m.author.len() <= 64 && num(m.t)),
+            Kind::Ink(i) | Kind::Highlighter(i) => i.points.len() >= 3 && i.points.len() < 200_000 && num(i.size) && i.size > 0.0 && i.points.iter().all(|v| num(*v as f64)),
+            Kind::Line(l) => l.points.len() == 4 && l.points.iter().all(|v| num(*v as f64)) && num(l.stroke_width) && opt_id(&l.from) && opt_id(&l.to) && l.label.as_ref().is_none_or(|t| t.len() <= 1000),
+            Kind::Comment { thread } => thread.len() <= 500 && thread.iter().all(|m| m.text.len() <= 4000 && m.author.len() <= 64 && m.t.is_finite()),
             Kind::Shape(s) => {
-                num(s.stroke_width) && num(s.radius) && s.text.as_ref().is_none_or(|t| t.len() < 10_000) && s.points.as_ref().is_none_or(|p| p.len() <= 2000 && p.iter().all(|v| v.is_finite())) && s.font_size.is_none_or(num) && s.text_color.as_ref().is_none_or(|c| c.len() <= 32)
+                num(s.stroke_width) && num(s.radius) && s.text.as_ref().is_none_or(|t| t.len() < 10_000) && s.points.as_ref().is_none_or(|p| p.len() <= 2000 && p.iter().all(|v| num(*v as f64))) && s.font_size.is_none_or(num) && s.text_color.as_ref().is_none_or(|c| c.len() <= 32)
             }
             Kind::Text(t) => t.text.len() < 100_000 && num(t.font_size),
             Kind::Sticky(s) => s.text.len() < 100_000 && s.author.as_ref().is_none_or(|a| a.len() <= 64) && s.font_size.is_none_or(num) && s.radius.is_none_or(num) && s.text_color.as_ref().is_none_or(|c| c.len() <= 32),
@@ -614,7 +621,7 @@ impl El {
                     && t.cells.len() == t.rows.len()
                     && t.cells.iter().all(|r| r.len() == t.cols.len() && r.iter().all(|c| c.text.len() <= 20_000 && c.fill.as_ref().is_none_or(|f| f.len() <= 32)))
                     && cells <= 5000
-                    && t.cols.iter().chain(&t.rows).all(|v| v.is_finite() && *v > 0.0)
+                    && t.cols.iter().chain(&t.rows).all(|v| num(*v) && *v > 0.0)
                     && num(t.font_size)
                     && t.radius.is_none_or(num)
                     && t.color.as_ref().is_none_or(|c| c.len() <= 32)

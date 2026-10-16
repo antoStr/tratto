@@ -734,6 +734,34 @@ mod compat {
     use super::*;
     use crate::model::{FontKind, Kind, ShapeKind};
 
+    /// Every board of a database still opens whole (no element refused by the checks):
+    /// `TRATTO_CHECK_DB=copy/of/tratto.db cargo test every_board_of_a_database -- --ignored --nocapture`.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[ignore]
+    fn every_board_of_a_database_opens_whole() {
+        let path = std::env::var("TRATTO_CHECK_DB").expect("TRATTO_CHECK_DB");
+        let store = crate::store::Store::open(std::path::Path::new(&path)).unwrap();
+        let (mut boards, mut total, mut refused) = (0, 0, 0);
+        for row in store.boards().unwrap() {
+            let Some(state) = store.ydoc(&row.id).unwrap() else { continue };
+            let doc = Doc::new();
+            apply_update(&doc, &state, REMOTE).unwrap();
+            let map = doc.get_or_insert_map("elements");
+            let txn = doc.transact();
+            for (k, v) in map.iter(&txn) {
+                total += 1;
+                if parse(k, &v).is_none() {
+                    refused += 1;
+                    println!("refused in «{}»: {}", row.title, out_json(&v).map(|j| j.to_string().chars().take(300).collect::<String>()).unwrap_or_default());
+                }
+            }
+            boards += 1;
+        }
+        println!("{boards} boards, {total} elements, {refused} refused");
+        assert_eq!(refused, 0);
+    }
+
     /// A board written by the first Tratto (its own Yjs, one element of each kind).
     #[test]
     fn boards_made_by_the_first_tratto_open_unchanged() {

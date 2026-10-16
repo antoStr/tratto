@@ -37,6 +37,20 @@ pub fn presence_interval(people: usize) -> f64 {
     if people > 10 { 33.0 * people as f64 / 10.0 } else { 33.0 }
 }
 
+/// A guest's presence made harmless before it is passed on and drawn: numbers within ±1e9,
+/// texts of at most 200 characters, lists of at most 9 000 values, four levels deep at most.
+pub fn tame(v: serde_json::Value, depth: usize) -> serde_json::Value {
+    use serde_json::Value;
+    match v {
+        _ if depth > 4 => Value::Null,
+        Value::Number(n) => n.as_f64().filter(|f| f.is_finite()).map_or(Value::Null, |f| if f.abs() <= 1e9 { Value::Number(n) } else { f.clamp(-1e9, 1e9).into() }),
+        Value::String(s) => Value::String(s.chars().take(200).collect()),
+        Value::Array(a) => Value::Array(a.into_iter().take(9000).map(|x| tame(x, depth + 1)).collect()),
+        Value::Object(m) => Value::Object(m.into_iter().filter(|(k, _)| k.len() <= 32).take(32).map(|(k, x)| (k, tame(x, depth + 1))).collect()),
+        other => other,
+    }
+}
+
 /// Points of a stroke being drawn kept for the others: enough for a long sentence.
 const LIVE_KEEP: usize = 3000;
 
@@ -68,6 +82,17 @@ pub fn merge_presence(prev: Option<&serde_json::Value>, mut next: serde_json::Va
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    #[test]
+    fn a_guests_presence_is_tamed_before_it_goes_on() {
+        let wild = json!({ "cursor": { "x": 1e300, "y": -5 }, "user": { "name": "x".repeat(5000) }, "a": { "b": { "c": { "d": { "e": { "f": 1 } } } } }, "live": { "pts": vec![1; 20_000] } });
+        let t = super::tame(wild, 0);
+        assert_eq!(t["cursor"]["x"], json!(1e9));
+        assert_eq!(t["cursor"]["y"], json!(-5));
+        assert_eq!(t["user"]["name"].as_str().unwrap().len(), 200);
+        assert_eq!(t["live"]["pts"].as_array().unwrap().len(), 9000);
+        assert!(t["a"]["b"]["c"]["d"]["e"].is_null(), "deep nesting cut");
+    }
 
     #[test]
     fn a_stroke_sent_in_pieces_is_whole_again() {

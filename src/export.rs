@@ -329,7 +329,7 @@ pub fn store_images(store: &crate::store::Store, board: &str) -> impl Fn(&ImageK
 /// A picture to put on a board: at most 2560 px a side, re-encoded (JPEG when opaque, PNG
 /// otherwise) so boards stay light and only plain raster images are stored.
 pub fn prepare_image(bytes: &[u8]) -> Option<(Vec<u8>, egui::ColorImage)> {
-    let img = image::load_from_memory(bytes).ok()?;
+    let img = crate::paint::decode_limited(bytes)?;
     let img = if img.width().max(img.height()) > 2560 { img.resize(2560, 2560, image::imageops::FilterType::Lanczos3) } else { img };
     let rgba = img.to_rgba8();
     let opaque = rgba.pixels().all(|p| p[3] == 255);

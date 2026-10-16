@@ -108,7 +108,8 @@ impl Editor {
             if let (Some(pts), Some(size)) = (live["pts"].as_array(), live["size"].as_f64()) {
                 let pts: Vec<f64> = pts.iter().take(3000).filter_map(|v| v.as_f64()).collect();
                 let c = live["color"].as_str().filter(|c| c.len() == 7).and_then(parse_color).unwrap_or(color);
-                if pts.len() >= 3 && pts.len() % 3 == 0 && size > 0.0 {
+                // A guest's numbers are tamed by the host, still: nothing absurd gets drawn.
+                if pts.len() >= 3 && pts.len() % 3 == 0 && size > 0.0 && size < 1e5 {
                     self.stroke_shape(&mut out, &pts, size, live["hl"].as_bool().unwrap_or(false), c, live["op"].as_f64().unwrap_or(1.0));
                 }
             }

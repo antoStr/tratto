@@ -32,6 +32,9 @@ const MAX_PENDING: usize = 30;
 const MAX_GUEST_UPLOAD: usize = 300 * 1024 * 1024;
 const MAX_GUEST_MESSAGE: usize = 4 * 1024 * 1024;
 const MAX_IMAGE: usize = 15 * 1024 * 1024;
+/// Board changes all guests together may send in a session: beyond this they no longer apply
+/// (a board this big is not made by hand).
+const MAX_GUEST_DOC: usize = 256 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
@@ -91,6 +94,43 @@ struct Inner {
     fails: HashMap<String, (u32, Instant)>,
     /// The tunnel's address while Tratto checks it can be reached from the internet.
     confirming: Option<String>,
+    /// Requests per guest address (see `allow`).
+    buckets: HashMap<String, Bucket>,
+    /// Board changes received from guests in this session, in bytes (see `MAX_GUEST_DOC`).
+    guest_doc_bytes: usize,
+}
+
+/// A refilling allowance: `tokens` left, last refilled `at`.
+struct Bucket {
+    tokens: f64,
+    at: Instant,
+}
+
+impl Bucket {
+    fn new(full: f64) -> Bucket {
+        Bucket { tokens: full, at: Instant::now() }
+    }
+    /// Takes `cost` if there is that much left, after refilling `rate` a second up to `full`.
+    fn take(&mut self, cost: f64, full: f64, rate: f64) -> bool {
+        let now = Instant::now();
+        self.tokens = (self.tokens + now.duration_since(self.at).as_secs_f64() * rate).min(full);
+        self.at = now;
+        if self.tokens >= cost {
+            self.tokens -= cost;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Each guest address may make 240 requests at once (a board with a hundred pictures loads them
+/// together) and 4 more a second; asking to enter costs 30, so a script can't flood the lobby.
+fn allow(i: &mut Inner, ip: &str, cost: f64) -> bool {
+    if i.buckets.len() > 10_000 {
+        i.buckets.clear();
+    }
+    i.buckets.entry(ip.to_string()).or_insert_with(|| Bucket::new(240.0)).take(cost, 240.0, 4.0)
 }
 
 #[derive(Clone)]
@@ -189,6 +229,8 @@ impl Share {
             host_state: Value::Null,
             fails: HashMap::new(),
             confirming: None,
+            buckets: HashMap::new(),
+            guest_doc_bytes: 0,
         };
         let shared = Arc::new(Shared { inner: Mutex::new(inner), senders: senders.clone(), doc: doc.clone(), store, notify });
         // Every change to the document goes to everyone but the guest it came from.
@@ -279,9 +321,15 @@ impl Share {
     }
 
     /// Takes a person's access away.
+    /// Takes a person's access away. Letting people in without asking stops too: otherwise they
+    /// could simply ask again and be back at once.
     pub fn kick(&self, ticket: &str) {
-        if let Some(t) = lock(&self.shared.inner).tickets.get_mut(ticket) {
-            t.status = TicketStatus::Denied;
+        {
+            let mut i = lock(&self.shared.inner);
+            if let Some(t) = i.tickets.get_mut(ticket) {
+                t.status = TicketStatus::Denied;
+            }
+            i.auto_admit = false;
         }
         self.shared.close_where(CLOSE_REMOVED, |p| p.ticket == ticket);
     }
@@ -498,9 +546,19 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/collab", get(collab))
         .route("/", get(|h: HeaderMap| async move { asset("index.html", &h) }))
         .route("/{*path}", get(|Path(p): Path<String>, h: HeaderMap| async move { asset(&p, &h) }))
+        .layer(axum::middleware::from_fn_with_state(shared.clone(), rate_limit))
         .layer(axum::middleware::from_fn(security_headers))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(shared)
+}
+
+async fn rate_limit(State(s): State<Arc<Shared>>, req: Request, next: Next) -> Response {
+    let ip = client_ip(req.headers());
+    let cost = if req.uri().path() == "/api/guest/join" { 30.0 } else { 1.0 };
+    if !allow(&mut lock(&s.inner), &ip, cost) {
+        return err(StatusCode::TOO_MANY_REQUESTS, "Troppe richieste. Riprova tra qualche secondo.");
+    }
+    next.run(req).await
 }
 
 async fn security_headers(req: Request, next: Next) -> Response {
@@ -514,13 +572,14 @@ async fn security_headers(req: Request, next: Next) -> Response {
         ("cross-origin-resource-policy", "same-origin"),
         ("permissions-policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()"),
         ("strict-transport-security", "max-age=31536000"),
+        ("x-robots-tag", "noindex, nofollow"),
     ] {
         h.insert(k, HeaderValue::from_static(v));
     }
     if !h.contains_key(header::CONTENT_SECURITY_POLICY) {
         h.insert(
             header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static("default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' wss: ws://127.0.0.1:*; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"),
+            HeaderValue::from_static("default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' wss://*.trycloudflare.com ws://127.0.0.1:*; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"),
         );
     }
     res
@@ -708,9 +767,15 @@ async fn upload(State(s): State<Arc<Shared>>, h: HeaderMap, Path(board): Path<St
     if body.is_empty() || sniff_image(&body).is_none() {
         return err(StatusCode::UNSUPPORTED_MEDIA_TYPE, "Formato non supportato: usa PNG, JPG, GIF o WebP");
     }
-    match s.store.save_file(&board, &body) {
+    // Stored as Tratto makes it (decoded within limits, scaled, re-encoded), not as sent: what
+    // the others download is always a plain, reasonable picture.
+    let sent = body.len();
+    let Ok(Some((data, _))) = tokio::task::spawn_blocking(move || crate::export::prepare_image(&body)).await else {
+        return err(StatusCode::UNSUPPORTED_MEDIA_TYPE, "Questa immagine non si può aprire. Usa PNG, JPG, GIF o WebP.");
+    };
+    match s.store.save_file(&board, &data) {
         Ok(id) => {
-            lock(&s.inner).upload_bytes += body.len();
+            lock(&s.inner).upload_bytes += sent;
             Json(json!({ "id": id })).into_response()
         }
         Err(e) => err(StatusCode::BAD_REQUEST, &e),
@@ -733,7 +798,7 @@ async fn collab(State(s): State<Arc<Shared>>, h: HeaderMap, ws: WebSocketUpgrade
     if lock(&s.senders).len() >= MAX_GUESTS + 5 {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
-    ws.max_message_size(32 << 20).on_upgrade(move |socket| conn(socket, s, ip))
+    ws.max_message_size(MAX_GUEST_MESSAGE + 1024).on_upgrade(move |socket| conn(socket, s, ip))
 }
 
 async fn close(mut tx: impl SinkExt<Message> + Unpin, code: u16) {
@@ -793,6 +858,11 @@ async fn conn(socket: WebSocket, s: Arc<Shared>, ip: String) {
         }
     }
     let origin = format!("guest:{id}");
+    // Board changes: 8 MB at once, 1 MB a second after that (more and the guest reconnects
+    // and starts over); presence: 60 at once, 40 a second (more are dropped, the next one
+    // carries the same).
+    let mut doc_budget = Bucket::new(8e6);
+    let mut presence_budget = Bucket::new(60.0);
     loop {
         tokio::select! {
             out = out_rx.recv() => match out {
@@ -823,9 +893,16 @@ async fn conn(socket: WebSocket, s: Arc<Shared>, ip: String) {
                         if access != Access::Edit {
                             continue;
                         }
-                        if b.len() > MAX_GUEST_MESSAGE {
+                        if b.len() > MAX_GUEST_MESSAGE || !doc_budget.take(b.len() as f64, 8e6, 1e6) {
                             close(&mut tx, CLOSE_RECONNECT).await;
                             break;
+                        }
+                        {
+                            let mut i = lock(&s.inner);
+                            if i.guest_doc_bytes + b.len() > MAX_GUEST_DOC {
+                                continue;
+                            }
+                            i.guest_doc_bytes += b.len();
                         }
                         let doc = s.doc.clone();
                         let origin = origin.clone();
@@ -833,11 +910,16 @@ async fn conn(socket: WebSocket, s: Arc<Shared>, ip: String) {
                         let _ = tokio::task::spawn_blocking(move || crate::doc::apply_update(&doc, &update, &origin)).await;
                         (s.notify)();
                     }
-                    PRESENCE if b.len() < 256 * 1024 => {
+                    PRESENCE if b.len() < 96 * 1024 => {
+                        if !presence_budget.take(1.0, 60.0, 40.0) {
+                            continue;
+                        }
                         let Ok(state) = serde_json::from_slice::<Value>(&b[1..]) else { continue };
                         if !state.is_object() && !state.is_null() {
                             continue;
                         }
+                        // Passed on to everyone: numbers, texts and lists kept within bounds.
+                        let state = net::tame(state, 0);
                         if let Some(p) = lock(&s.inner).peers.get_mut(&id) {
                             p.state = net::merge_presence(Some(&p.state), state.clone());
                         }
@@ -959,6 +1041,9 @@ pub fn dialog(ui: &mut egui::Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
                         ui.label(RichText::new(name).color(t.text));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui::button(ui, "Rimuovi", Btn::DangerText, None, false, true).clicked() {
+                                if v.auto_admit {
+                                    toasts.info(format!("{name} è fuori. D'ora in poi chi entra deve chiedertelo."));
+                                }
                                 share.kick(ticket);
                             }
                             let role = if !online { "Non collegato" } else if v.access == Access::Edit { "Può modificare" } else { "Guarda" };
@@ -1054,6 +1139,15 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn an_allowance_runs_out_and_refills() {
+        let mut b = Bucket::new(3.0);
+        assert!(b.take(1.0, 3.0, 10.0) && b.take(1.0, 3.0, 10.0) && b.take(1.0, 3.0, 10.0));
+        assert!(!b.take(1.0, 3.0, 10.0), "empty");
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(b.take(1.0, 3.0, 10.0), "a tenth of a second later, one more");
+    }
 
     /// A guest asks to enter, is let in, connects, edits; a view-only guest can't.
     #[test]
