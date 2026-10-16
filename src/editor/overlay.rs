@@ -307,6 +307,7 @@ impl Editor {
             ruler_shapes(painter, &mut out, c, self.ruler.angle as f32, 1.0, dark_ui, 1.0, None);
         }
         self.cursor_shapes(painter, &mut out);
+        self.emote_shapes(painter, &mut out);
         painter.extend(out);
     }
 
@@ -430,6 +431,66 @@ impl Editor {
                     out.push(Shape::galley(origin + vec2(10.0, 4.0 + h), body, on));
                 }
             }
+        }
+    }
+}
+
+/// How long an emote floats, ms.
+const FLOAT_MS: f64 = 1800.0;
+
+impl Editor {
+    /// One of the 3D emoji as a picture, `size` points wide, centred on `c`.
+    fn emoji_shape(&mut self, ctx: &egui::Context, out: &mut Vec<Shape>, emoji: &str, c: Pos2, size: f32, alpha: f32) {
+        if let Some(Ok(tex)) = self.painter.images.texture(ctx, &crate::prims::ImageKey::Stamp(emoji.to_string())) {
+            let r = egui::Rect::from_center_size(c, vec2(size, size));
+            out.push(Shape::image(tex, r, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE.gamma_multiply(alpha.clamp(0.0, 1.0))));
+        }
+    }
+
+    /// Emotes: everyone's floating up and fading, and the wheel while E is held.
+    fn emote_shapes(&mut self, painter: &Painter, out: &mut Vec<Shape>) {
+        let ctx = painter.ctx().clone();
+        self.catch_emotes();
+        let t = now();
+        self.floaters.retain(|f| t - f.3 < FLOAT_MS);
+        let still = crate::ui::motion::reduced(&ctx);
+        let floaters = self.floaters.clone();
+        for (i, (e, x, y, t0)) in floaters.iter().enumerate() {
+            let p = ((t - t0) / FLOAT_MS) as f32;
+            let ease = 1.0 - (1.0 - p).powi(3);
+            let rise = if still { 0.0 } else { 120.0 * ease };
+            let sway = if still { 0.0 } else { (p * 7.0 + i as f32 * 1.7).sin() * 7.0 };
+            let grow = 0.55 + 0.45 * (1.0 - (1.0 - (p / 0.18).min(1.0)).powi(3));
+            let fade = 1.0 - ((p - 0.6) / 0.4).clamp(0.0, 1.0);
+            let c = self.sp(*x, *y) + vec2(sway, -rise - 24.0);
+            self.emoji_shape(&ctx, out, e, c, 44.0 * if still { 1.0 } else { grow }, fade);
+        }
+        if !self.floaters.is_empty() {
+            ctx.request_repaint();
+        }
+        let Some((at, c)) = self.emote_hold else { return };
+        let held = t - at;
+        if held < EMOTE_HOLD_MS {
+            ctx.request_repaint_after(std::time::Duration::from_millis((EMOTE_HOLD_MS - held) as u64 + 5));
+            return;
+        }
+        ctx.request_repaint();
+        let k = if still { 1.0 } else { (((held - EMOTE_HOLD_MS) / 140.0) as f32).min(1.0) };
+        let k = 1.0 - (1.0 - k).powi(3);
+        let pointer = ctx.input(|i| i.pointer.hover_pos());
+        let on = pointer.and_then(|p| self.emote_under(p));
+        let r = 84.0 * (0.85 + 0.15 * k);
+        out.push(Shape::circle_filled(c + vec2(0.0, 6.0), r + 2.0, Color32::from_black_alpha((40.0 * k) as u8)));
+        out.push(Shape::circle_filled(c, r, Color32::from_white_alpha((245.0 * k) as u8)));
+        out.push(Shape::circle_stroke(c, r, Stroke::new(1.0, Color32::from_black_alpha((26.0 * k) as u8))));
+        for (i, e) in EMOTES.iter().enumerate() {
+            let a = i as f32 / 8.0 * std::f32::consts::TAU;
+            let at = c + vec2(a.sin(), -a.cos()) * 54.0 * (0.8 + 0.2 * k);
+            let hot = on == Some(*e);
+            if hot {
+                out.push(Shape::circle_filled(at, 22.0, Color32::from_black_alpha(18)));
+            }
+            self.emoji_shape(&ctx, out, e, at, if hot { 38.0 } else { 30.0 }, k);
         }
     }
 }

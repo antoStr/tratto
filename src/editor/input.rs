@@ -26,6 +26,8 @@ pub struct InputState {
     /// stroke: a worn switch (or a "chattering" one, as on some gaming mice) lets go for a few
     /// milliseconds while the button is still held, and the stroke must not break there.
     pending_up: Option<PendingUp>,
+    /// Where the pointer is (screen), for the emote wheel.
+    pub(crate) pointer_at: Option<Pos2>,
 }
 
 struct PendingUp {
@@ -126,6 +128,7 @@ impl Editor {
                     }
                 }
                 Event::PointerMoved(pos) => {
+                    self.input.pointer_at = Some(pos);
                     let m = ctx.input(|i| i.modifiers);
                     let t = at(&mut nth);
                     // Writing, erasing or drawing a lasso with the mouse: first the positions the
@@ -162,6 +165,21 @@ impl Editor {
                     if !pressed {
                         if key == Key::Space {
                             self.space = false;
+                        }
+                        // E let go: a quick press was the eraser; held, the wheel sends what it points at.
+                        if key == Key::E
+                            && let Some((at, _)) = self.emote_hold.take()
+                        {
+                            if now() - at < EMOTE_HOLD_MS {
+                                if !self.read_only {
+                                    self.set_tool(Tool::Eraser);
+                                }
+                            } else if let Some(p) = ctx.input(|i| i.pointer.hover_pos())
+                                && let Some(e) = self.emote_under(p)
+                            {
+                                let w = self.to_world(self.screen_pt(p));
+                                self.send_emote(e, w);
+                            }
                         }
                     } else if keys && (!repeat || matches!(key, Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown)) {
                         self.on_key(key, physical_key, modifiers);
@@ -305,6 +323,16 @@ impl Editor {
             return;
         }
         if self.gesture.is_some() {
+            return;
+        }
+        // A click while the emote wheel is open sends the one under the pointer.
+        if let Some((at, _)) = self.emote_hold
+            && now() - at >= EMOTE_HOLD_MS
+        {
+            if let Some(e) = self.emote_under(s + self.origin.to_vec2()) {
+                let w = self.to_world(s);
+                self.send_emote(e, w);
+            }
             return;
         }
         // Leave any text being typed before acting on the board.
@@ -894,6 +922,12 @@ impl Editor {
             } else {
                 self.set_tool(Tool::Select);
             }
+            return;
+        }
+        // E: held, the emote wheel (FigJam's); a quick press still picks the eraser (on release).
+        if key == Key::E && !m.shift && !m.ctrl && !m.command {
+            let at = self.input.pointer_at.unwrap_or_else(|| pos2(self.origin.x + self.size.0 as f32 / 2.0, self.origin.y + self.size.1 as f32 / 2.0));
+            self.emote_hold = Some((now(), at));
             return;
         }
         let tool_key = match key {

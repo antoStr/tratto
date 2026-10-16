@@ -666,6 +666,7 @@ pub fn right(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
                 share_button(ui, b);
                 ui.add_space(4.0);
                 super::live::timer_button(ui, &mut b.editor);
+                super::live::emote_button(ui, &mut b.editor);
             });
         });
     });
@@ -1615,6 +1616,7 @@ pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
                     line(ui);
                 }
                 super::live::timer_button(ui, &mut b.editor);
+                super::live::emote_button(ui, &mut b.editor);
                 super::live::vote_button(ui, &mut b.editor);
                 if !is_mobile {
                     super::live::spotlight_button(ui, &mut b.editor);

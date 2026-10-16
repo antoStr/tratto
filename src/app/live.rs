@@ -467,6 +467,48 @@ fn timer_banner(ui: &mut egui::Ui, ed: &mut Editor) {
     }
 }
 
+/* ---------------- emotes ---------------- */
+
+/// A 3D emoji picture in the interface.
+fn emoji(ui: &egui::Ui, ed: &mut Editor, e: &str, rect: Rect) {
+    if let Some(Ok(tex)) = ed.painter.images.texture(ui.ctx(), &crate::prims::ImageKey::Stamp(e.to_string())) {
+        ui.painter().image(tex, rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    }
+}
+
+/// Emotes without a keyboard (with one: hold E): a feeling that floats up for everyone from
+/// the middle of the view.
+pub fn emote_button(ui: &mut egui::Ui, ed: &mut Editor) {
+    let t = ui::theme(ui.ctx());
+    let (r, resp) = ui.allocate_exact_size(vec2(24.0, 24.0), egui::Sense::click());
+    ui::hover_fill(ui, resp.id, r, resp.hovered(), ui::RADIUS as f32, t.hover);
+    emoji(ui, ed, "❤️", Rect::from_center_size(r.center(), vec2(17.0, 17.0)));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Emote"));
+    ui::focus_ring(ui, &resp, r);
+    let resp = ui::tip(resp, "Emote: un'emoji che vola per tutti", Some("tieni premuto E"));
+    egui::Popup::from_toggle_button_response(&resp)
+        .frame(ui::float_frame(&t).inner_margin(egui::Margin::same(6)))
+        .align(egui::RectAlign::BOTTOM_END)
+        .gap(8.0)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for e in crate::editor::EMOTES {
+                    let (r, b) = ui.allocate_exact_size(vec2(36.0, 36.0), egui::Sense::click());
+                    let h = ui::motion::hover(ui.ctx(), b.id, b.hovered());
+                    ui.painter().rect_filled(r, 8.0, t.hover.gamma_multiply(h));
+                    emoji(ui, ed, e, Rect::from_center_size(r.center(), vec2(26.0 + 4.0 * h, 26.0 + 4.0 * h)));
+                    b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, crate::assets::stamp(e).map_or(e, |s| s.name)));
+                    if b.clicked() {
+                        let at = ed.viewport_center();
+                        ed.send_emote(e, at);
+                    }
+                }
+            });
+        });
+}
+
 /* ---------------- voting ---------------- */
 
 pub fn vote_button(ui: &mut egui::Ui, ed: &mut Editor) {

@@ -770,6 +770,13 @@ mod picture {
                         ed.hover_adds = Some(first);
                     }
                     "zen" => ed.prefs.zen = true,
+                    "emote" => {
+                        let now = crate::platform::now_ms();
+                        ed.emote_hold = Some((now - 2000.0, egui::pos2(900.0, 300.0)));
+                        for (i, e) in crate::editor::EMOTES.iter().enumerate().take(3) {
+                            ed.floaters.push((e.to_string(), -300.0 + i as f64 * 60.0, 150.0, now - 300.0 - i as f64 * 250.0));
+                        }
+                    }
                     "menu-main" => (ed.prefs.left_panel, ed.prefs.right_panel, ed.prefs.minimap) = (false, false, false),
                     "dot" => {
                         let mut d = crate::model::El::new(crate::model::Kind::Ink(crate::model::Ink { points: vec![0.0, 0.0, 0.5, 1.0, 1.0, 0.5], color: "#1E1E1E".into(), size: 6.0 }));

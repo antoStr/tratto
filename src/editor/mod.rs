@@ -286,7 +286,20 @@ pub struct Editor {
     /// The camera changed since the app last saved it.
     pub cam_dirty: bool,
     pub(crate) input: input::InputState,
+    /// E held down: when, and where the emote wheel opens (screen).
+    pub(crate) emote_hold: Option<(f64, Pos2)>,
+    /// Emotes floating up, everyone's: emoji, board point, when it started (ms, this clock).
+    pub(crate) floaters: Vec<(String, f64, f64, f64)>,
+    emote_n: u64,
+    /// The last emote seen from each person, so each one floats once.
+    pub(crate) seen_emotes: HashMap<u64, u64>,
 }
+
+/// FigJam's emotes: a quick feeling, floating up from the cursor for everyone, then gone.
+pub const EMOTES: [&str; 8] = ["❤️", "👍", "😂", "🎉", "👏", "🔥", "😮", "💯"];
+
+/// How long the E key is held before the emote wheel opens (a quick press picks the eraser).
+pub const EMOTE_HOLD_MS: f64 = 250.0;
 
 /// Rounds to 1/100.
 fn r2(n: f64) -> f64 {
@@ -364,6 +377,47 @@ impl Editor {
             laser_clear: None,
             cam_dirty: false,
             input: Default::default(),
+            emote_hold: None,
+            floaters: Vec::new(),
+            emote_n: 0,
+            seen_emotes: HashMap::new(),
+        }
+    }
+
+    /* ---------- emotes ---------- */
+
+    /// Sends an emote from a board point: it floats here and for everyone else.
+    pub fn send_emote(&mut self, emoji: &str, at: Pt) {
+        self.emote_n += 1;
+        self.presence.set("emote", json!({ "e": emoji, "x": r2(at.x), "y": r2(at.y), "n": self.emote_n }));
+        self.floaters.push((emoji.to_string(), at.x, at.y, now()));
+    }
+
+    /// The emote the wheel points at, for a pointer at `p` (screen).
+    pub fn emote_under(&self, p: Pos2) -> Option<&'static str> {
+        let (_, c) = self.emote_hold?;
+        let d = p - c;
+        if d.length() < 18.0 || d.length() > 110.0 {
+            return None;
+        }
+        // Eight slices, the first straight up, going round clockwise.
+        let a = (d.x.atan2(-d.y) / std::f32::consts::TAU).rem_euclid(1.0);
+        Some(EMOTES[((a * 8.0 + 0.5) as usize) % 8])
+    }
+
+    /// Others' emotes, new since last time: they start floating.
+    pub(crate) fn catch_emotes(&mut self) {
+        for (id, s) in &self.presence.peers {
+            let e = &s["emote"];
+            let (Some(n), Some(emoji), Some(x), Some(y)) = (e["n"].as_u64(), e["e"].as_str(), e["x"].as_f64(), e["y"].as_f64()) else { continue };
+            let seen = self.seen_emotes.insert(*id, n);
+            // The first state seen of someone may hold an old emote: only changes float.
+            if seen.is_some_and(|old| old != n) && EMOTES.contains(&emoji) && x.is_finite() && y.is_finite() {
+                self.floaters.push((emoji.to_string(), x, y, now()));
+            }
+        }
+        if self.floaters.len() > 60 {
+            self.floaters.drain(..self.floaters.len() - 60);
         }
     }
 
@@ -2336,6 +2390,29 @@ mod tests {
     fn editor() -> Editor {
         let board = Board::new(yrs::Doc::new(), Arc::new(|| {}));
         Editor::new(board, "b".into(), Painter::new(crate::paint::Images::new(None)), Prefs::default(), "v".into())
+    }
+
+    #[test]
+    fn emotes_point_round_the_wheel_and_float_once_for_everyone() {
+        let mut ed = editor();
+        ed.emote_hold = Some((0.0, pos2(100.0, 100.0)));
+        assert_eq!(ed.emote_under(pos2(100.0, 50.0)), Some(EMOTES[0]), "straight up: the first");
+        assert_eq!(ed.emote_under(pos2(150.0, 100.0)), Some(EMOTES[2]), "right: a quarter round");
+        assert_eq!(ed.emote_under(pos2(100.0, 150.0)), Some(EMOTES[4]), "down: half round");
+        assert_eq!(ed.emote_under(pos2(104.0, 102.0)), None, "in the middle: none");
+        // Someone already there with an old emote: nothing floats; a new one floats once.
+        ed.presence.peers = vec![(7, json!({ "emote": { "e": "🎉", "x": 1.0, "y": 2.0, "n": 3 } }))];
+        ed.catch_emotes();
+        assert!(ed.floaters.is_empty());
+        ed.presence.peers = vec![(7, json!({ "emote": { "e": "🔥", "x": 1.0, "y": 2.0, "n": 4 } }))];
+        ed.catch_emotes();
+        ed.catch_emotes();
+        assert_eq!(ed.floaters.len(), 1);
+        assert_eq!(ed.floaters[0].0, "🔥");
+        // Our own: floats here, and goes to the others.
+        ed.send_emote("❤️", pt(5.0, 5.0));
+        assert_eq!(ed.floaters.len(), 2);
+        assert_eq!(ed.presence.local["emote"]["e"], "❤️");
     }
 
     fn node(id: &str, x: f64, y: f64) -> El {

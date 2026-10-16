@@ -341,6 +341,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
             ("Penne 1–4", "1 2 3 4"),
             ("Evidenziatore", "M"),
             ("Gomma", "E"),
+            ("Emote (un'emoji che vola per tutti)", "tieni premuto E"),
             ("Lazo", "Q"),
             ("Righello", "U"),
             ("Rettangolo / Ellisse", "R / O"),
