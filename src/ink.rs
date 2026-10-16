@@ -89,7 +89,7 @@ fn stroke_points(input: &[[f64; 3]], o: &Options) -> Vec<StrokePoint> {
         let distance = len(sub(point, prev));
         running += distance;
         if i < max && !reached {
-            if running < o.size {
+            if running < o.size * 0.15 {
                 continue;
             }
             reached = true;
@@ -233,8 +233,10 @@ pub fn stroke_outline(pts: &[f32], size: f64, highlighter: bool) -> Vec<Pt> {
             [p[0] as f64 * k, p[1] as f64 * k, if p[2] < 0.0 { 0.5 } else { p[2] as f64 }]
         })
         .collect();
-    // Never derive width from speed: slow movements would swell into round blobs.
-    let o = Options { size: PEN_UNIT, thinning: if highlighter || !real { 0.0 } else { 0.42 }, smoothing: 0.5, streamline: if highlighter { 0.3 } else { 0.18 }, last: true };
+    // Never derive width from speed: slow movements would swell into round blobs. Outline points
+    // every eighth of the width, and only a sliver of the start skipped: perfect-freehand's half
+    // width and whole width made thick pens and highlighters lumpy, like a dry brush.
+    let o = Options { size: PEN_UNIT, thinning: if highlighter || !real { 0.0 } else { 0.42 }, smoothing: 0.12, streamline: if highlighter { 0.3 } else { 0.18 }, last: true };
     outline_points(&stroke_points(&input, &o), &o).into_iter().map(|[x, y]| pt(x / k, y / k)).collect()
 }
 
@@ -786,6 +788,22 @@ mod tests {
         assert!(dot.iter().map(|p| (p.x - 10.0).hypot(p.y - 10.0)).fold(0.0, f64::max) * 32.0 < 3.0);
         let small: Vec<f32> = flat(&circle(100.0, 100.0, 80.0)).iter().enumerate().map(|(i, &v)| if i % 3 == 2 { v } else { v / 16.0 }).collect();
         assert_eq!(kind(recognize(&small, 1.0 / 16.0)), "ellipse");
+    }
+
+    #[test]
+    fn a_thick_stroke_keeps_a_fine_outline_from_its_very_start() {
+        // A tight curve drawn with a 64 px pen: the sides of the outline must follow it closely,
+        // not cut across in long straight steps (the "dry brush" look), from the first point on.
+        let pts: Vec<f32> = (0..=90).flat_map(|i| {
+            let a = i as f64 / 90.0 * std::f64::consts::PI;
+            [(100.0 + a.cos() * 60.0) as f32, (100.0 + a.sin() * 60.0) as f32, -1.0]
+        }).collect();
+        let outline = stroke_outline(&pts, 64.0, false);
+        let step = outline.windows(2).map(|w| (w[1].x - w[0].x).hypot(w[1].y - w[0].y)).fold(0.0, f64::max);
+        assert!(step < 64.0 * 0.4, "outline points up to {step:.1} px apart");
+        // The first sample is still inside the stroke's start, with the round cap around it.
+        let near = outline.iter().map(|p| (p.x - 160.0).hypot(p.y - 100.0)).fold(f64::INFINITY, f64::min);
+        assert!(near < 33.0, "start cap {near:.1} px away");
     }
 
     #[test]

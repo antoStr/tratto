@@ -37,6 +37,9 @@ pub fn dialog_opt(ctx: &egui::Context, id: &str, title: &str, width: f32, open: 
         let lift = ui::motion::travel(ui.ctx(), k) * 10.0;
         let transform = egui::emath::TSTransform::new(vec2(c.x * (1.0 - s), c.y * (1.0 - s) + lift), s);
         ui.multiply_opacity(fade);
+        // Room for what the dialog may become (an area lays out in last frame's size): a share
+        // dialog that grows from its form to the link must not stay cut at its first height.
+        ui.set_max_size(ui.ctx().content_rect().size());
         let max_w = (ui.ctx().content_rect().width() - 24.0).max(260.0);
         let dialog_w = width.min(max_w);
         let max_h = (ui.ctx().content_rect().height() - 80.0).max(200.0);

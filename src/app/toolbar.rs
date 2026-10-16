@@ -720,23 +720,34 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
     let rise = ui::motion::travel(ctx, k) * 10.0;
     let at = if top { pos2(bar.center().x, bar.max.y + 8.0 - rise) } else { pos2(bar.center().x, bar.min.y - 8.0 + rise) };
     let mut close = false;
-    // Too wide for the window: the sliders and pickers give up some of their length.
-    let natural = ctx.data(|d| d.get_temp::<f32>(Id::new(("tray-natural", format!("{tool:?}")))));
-    // About half of it (sliders, pickers) can give way; the swatches and buttons can't.
-    let squeeze = natural.map_or(1.0, |w| (1.0 - (w - (room - 24.0)) / (w * 0.5)).clamp(0.35, 1.0));
-    let sw = move |w: f32| (w * squeeze).round();
+    // A narrow window: sliders and pickers give up some length, and what still doesn't fit goes
+    // on a second row (never a scroll bar).
+    let max_tray_w = (room.min(ctx.content_rect().width()) - 24.0).max(200.0);
+    let natural_id = Id::new(("tray-natural", format!("{tool:?}")));
+    let natural = ctx.data(|d| d.get_temp::<f32>(natural_id));
+    // No room for the whole row: each slider becomes a chip that opens it, and what still
+    // doesn't fit (a phone) goes on a second row.
+    let narrow = natural.is_some_and(|w| w > max_tray_w);
+    let sw = move |w: f32| w;
+    // Squeezed hard, the rows may wrap: dividers would end up at the start or end of a row.
+    let sep_h = move |ui: &mut Ui, t: &Theme, h: f32| if narrow { ui.add_space(6.0) } else { sep_h(ui, t, h) };
+    #[allow(clippy::too_many_arguments)]
+    let slide = move |ui: &mut Ui, label: &str, v: &mut f64, min: f64, max: f64, step: f64, log: bool, f: fn(f64) -> String, w: f32| {
+        if narrow { ui::slider_chip(ui, label, v, min, max, step, log, f, top) } else { ui::slider_inline(ui, label, v, min, max, step, log, f, w) }
+    };
     // The tallest thing in the tray sets its height; everything else is centred on it.
     let h = match tool {
         Tool::Shape => 88.0,
         Tool::Stamp => 96.0,
         _ => ui::ctl(TRAY_H),
     };
-    let max_tray_w = (ctx.content_rect().width() - 24.0).max(200.0);
     let shown = egui::Area::new(Id::new(("tray", format!("{tool:?}")))).pivot(pivot).fixed_pos(at).constrain_to(ctx.content_rect().shrink(8.0)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
+        // An area lays out in last frame's size: give the row the width it may take.
+        ui.set_max_width(max_tray_w);
         ui::float_frame(t).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
-            egui::ScrollArea::horizontal().max_width(max_tray_w).auto_shrink([true, true]).show(ui, |ui| {
-                ui::row(ui, h, |ui| {
+            {
+                ui::wrap_row(ui, h, |ui| {
                 ui.spacing_mut().item_spacing = vec2(6.0, 0.0);
                 let p = &mut ed.prefs;
                 match tool {
@@ -751,9 +762,9 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                         let i = ed.pen.min(p.pens.len() - 1);
                         sep_h(ui, t, h);
                         let pen = &mut p.pens[i];
-                        ui::slider_inline(ui, "Spessore", &mut pen.size, 1.0, 64.0, 0.5, true, PX, sw(196.0));
+                        slide(ui, "Spessore", &mut pen.size, 1.0, 64.0, 0.5, true, PX, sw(196.0));
                         ui.add_space(8.0);
-                        ui::slider_inline(ui, "Opacità", &mut pen.opacity, 0.1, 1.0, 0.05, false, PCT, sw(172.0));
+                        slide(ui, "Opacità", &mut pen.opacity, 0.1, 1.0, 0.05, false, PCT, sw(172.0));
                         sep_h(ui, t, h);
                         ui.spacing_mut().item_spacing.x = 2.0;
                         if icon_button(ui, "shapes", "Da tratto a forma: trasforma linee, cerchi e rettangoli disegnati a mano", None, vec2(32.0, 32.0), 18.0, p.ink_to_shape, false).clicked() {
@@ -769,14 +780,14 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                             p.highlighter.color = c;
                         }
                         sep_h(ui, t, h);
-                        ui::slider_inline(ui, "Spessore", &mut p.highlighter.size, 4.0, 96.0, 0.0, true, PX, sw(196.0));
+                        slide(ui, "Spessore", &mut p.highlighter.size, 4.0, 96.0, 0.0, true, PX, sw(196.0));
                     }
                     Tool::Tape => {
                         if let Some(c) = ui::swatches(ui, &TAPE_COLORS, &p.tape.color, false) {
                             p.tape.color = c;
                         }
                         sep_h(ui, t, h);
-                        ui::slider_inline(ui, "Larghezza", &mut p.tape.size, 8.0, 120.0, 0.0, true, PX, sw(204.0));
+                        slide(ui, "Larghezza", &mut p.tape.size, 8.0, 120.0, 0.0, true, PX, sw(204.0));
                     }
                     Tool::Eraser => {
                         ui::segmented(ui, &mut p.eraser.mode, &[(EraserMode::Pixel, "Pixel"), (EraserMode::Stroke, "Tratto intero")], sw(196.0));
@@ -784,9 +795,9 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                         let (r, _) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::hover());
                         let d = (p.eraser.size as f32).clamp(4.0, 26.0);
                         ui.painter().circle(r.center(), d / 2.0, t.bg2, Stroke::new(1.0, t.border_strong));
-                        ui::slider_inline(ui, "Dimensione", &mut p.eraser.size, 2.0, 240.0, 0.0, true, PX, sw(212.0));
+                        slide(ui, "Dimensione", &mut p.eraser.size, 2.0, 240.0, 0.0, true, PX, sw(212.0));
                         if p.eraser.mode == EraserMode::Pixel {
-                            ui::slider_inline(ui, "Forza", &mut p.eraser.strength, 0.1, 1.0, 0.05, false, PCT, sw(164.0));
+                            slide(ui, "Forza", &mut p.eraser.strength, 0.1, 1.0, 0.05, false, PCT, sw(164.0));
                         }
                     }
                     Tool::Shape | Tool::Line | Tool::Arrow => {
@@ -825,7 +836,7 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                         }
                         color_pop(ui, "Contorno", &mut p.shape_style.stroke, false, true, top, t);
                         sep_h(ui, t, h);
-                        ui::slider_inline(ui, "Spessore", &mut p.shape_style.stroke_width, 0.5, 32.0, 0.5, true, PX, sw(196.0));
+                        slide(ui, "Spessore", &mut p.shape_style.stroke_width, 0.5, 32.0, 0.5, true, PX, sw(196.0));
                     }
                     Tool::Text => {
                         font_picker(ui, &mut p.text.font, sw(168.0), t);
@@ -876,15 +887,18 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                     close = true;
                 }
             });
-            });
+            }
         });
     });
     if close {
         ed.prefs.tray = false;
     }
-    // Its width at full size, measured while it is not squeezed.
-    if squeeze >= 1.0 {
-        ctx.data_mut(|d| d.insert_temp(Id::new(("tray-natural", format!("{tool:?}"))), shown.response.rect.width()));
+    // Its natural width, measured whenever it is laid out in full on one row; when it wraps in
+    // full, it is known to be too wide.
+    if !narrow {
+        let one_row = shown.response.rect.height() < h + 20.0;
+        let w = if one_row { shown.response.rect.width() } else { max_tray_w + 1.0 };
+        ctx.data_mut(|d| d.insert_temp(natural_id, w));
     }
     Some(shown.response.rect)
 }

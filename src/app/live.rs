@@ -359,6 +359,8 @@ pub fn comment_thread(ctx: &egui::Context, ed: &mut Editor, st: &mut BoardUi) {
     let lift = ui::motion::travel(ctx, k) * 8.0;
     egui::Area::new(Id::new("comment-thread")).fixed_pos(at + vec2(0.0, lift)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
+        // Room to grow as replies come (an area lays out in last frame's size).
+        ui.set_max_size(ctx.content_rect().size());
         ui::float_frame(&t).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
             ui.set_width(268.0);
             ui.horizontal(|ui| {

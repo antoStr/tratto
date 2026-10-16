@@ -296,6 +296,16 @@ pub fn row<R>(ui: &mut Ui, h: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
     .inner
 }
 
+/// Like `row`, but what doesn't fit in the width goes on to another row of the same height.
+pub fn wrap_row<R>(ui: &mut Ui, h: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.allocate_ui_with_layout(vec2(ui.available_width(), h), egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true), |ui| {
+        ui.set_min_height(h);
+        ui.spacing_mut().interact_size.y = h;
+        add(ui)
+    })
+    .inner
+}
+
 /// A rounded highlight that eases in and out under the pointer (Apple's and Figma's hovers:
 /// a flat tint, no shadows).
 pub fn hover_fill(ui: &Ui, id: Id, rect: Rect, on: bool, radius: f32, color: Color32) {
@@ -799,6 +809,34 @@ pub fn slider_inline(ui: &mut Ui, label: &str, value: &mut f64, min: f64, max: f
     child.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
         changed = track(ui, label, value, min, max, step, log, (right - left).max(20.0));
     });
+    changed
+}
+
+/// Where there is no room for a slider: its label and value as a chip that opens the slider,
+/// full length, in a small card above (or below, with `below`) it.
+#[allow(clippy::too_many_arguments)]
+pub fn slider_chip(ui: &mut Ui, label: &str, value: &mut f64, min: f64, max: f64, step: f64, log: bool, format: impl Fn(f64) -> String, below: bool) -> bool {
+    let t = theme(ui.ctx());
+    let s = sizes(ui.ctx());
+    let text = format(*value);
+    let g = ui.painter().layout_no_wrap(text.clone(), FontId::proportional(s.fs), t.text);
+    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 30.0, ctl(28.0)), Sense::click());
+    hover_fill(ui, resp.id, rect, resp.hovered(), RADIUS as f32, t.hover);
+    ui.painter().rect_stroke(rect, RADIUS, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+    ui.painter().galley(pos2(rect.min.x + 8.0, rect.center().y - g.size().y / 2.0), g, t.text);
+    icon(ui, "chevron-down", pos2(rect.max.x - 11.0, rect.center().y), 10.0, t.icon2);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{label}: {text}")));
+    focus_ring(ui, &resp, rect);
+    let resp = tip(resp, label, None);
+    let mut changed = false;
+    egui::Popup::from_toggle_button_response(&resp)
+        .frame(float_frame(&t).inner_margin(egui::Margin::same(12)))
+        .align(if below { egui::RectAlign::BOTTOM } else { egui::RectAlign::TOP })
+        .gap(10.0)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            changed = slider_inline(ui, label, value, min, max, step, log, &format, 232.0);
+        });
     changed
 }
 

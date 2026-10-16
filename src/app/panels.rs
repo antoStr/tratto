@@ -1763,6 +1763,7 @@ pub fn language_picker(ui: &mut Ui, current: &str, t: &Theme) -> Option<String> 
     let mut picked = None;
     egui::Popup::menu(&resp).frame(ui::menu_frame(t)).show(|ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
+        ui.set_max_height(320.0);
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
             for (id, label) in crate::code::LANGUAGES {
                 if ui::menu_item(ui, (id == current).then_some("check"), label, None, false).clicked() {

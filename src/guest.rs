@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use egui::{Align2, Id, RichText};
+use egui::{Align2, Id, RichText, vec2};
 use serde_json::{Value, json};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
@@ -608,6 +608,9 @@ fn card(ui: &mut egui::Ui, t: &Theme, body: impl FnOnce(&mut egui::Ui)) {
     ui.painter().rect_filled(ui.max_rect(), 0.0, t.canvas);
     let max_h = (ui.ctx().content_rect().height() - 32.0).max(200.0);
     egui::Area::new(Id::new("join")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(&ctx, |ui| {
+        // An area lays out in last frame's size: without this the card stays as small as its
+        // first step and cuts off the name field and the button of the next one.
+        ui.set_max_size(ui.ctx().content_rect().size() - vec2(32.0, 32.0));
         let width = (ui.ctx().content_rect().width() - 32.0).min(400.0);
         egui::Frame::new().fill(t.bg).stroke(egui::Stroke::new(1.0, t.border)).corner_radius(ui::RADIUS_LG).inner_margin(egui::Margin::same(24)).show(ui, |ui| {
             ui.set_width(width - 48.0);
