@@ -9,6 +9,8 @@ mod editor;
 mod export;
 mod geom;
 mod ink;
+#[cfg(target_os = "linux")]
+mod install;
 mod model;
 mod music;
 mod net;

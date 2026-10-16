@@ -304,8 +304,30 @@ fn settings_section(ui: &mut egui::Ui, tab: SettingsTab, p: &mut Prefs, host: bo
             ui::hint(ui, &format!("Versione installata: {}", env!("CARGO_PKG_VERSION")));
             #[cfg(not(target_arch = "wasm32"))]
             crate::updates::settings_ui(ui);
+            #[cfg(target_os = "linux")]
+            linux_install(ui);
             let _ = host;
         }
+    }
+}
+
+/// Linux: Tratto in the applications menu, from its AppImage.
+#[cfg(target_os = "linux")]
+fn linux_install(ui: &mut egui::Ui) {
+    if crate::install::appimage().is_none() {
+        return;
+    }
+    ui.add_space(6.0);
+    ui::heading(ui, "Installazione");
+    let installed = crate::install::in_menu();
+    ui::hint(ui, if installed { "Tratto è nel menu delle applicazioni, nella tua cartella personale (~/.local/share/tratto). Gli aggiornamenti sostituiscono quella copia." } else { "Tratto è partito da un'AppImage. Aggiungilo al menu delle applicazioni: lo trovi tra le altre app, con la sua icona, senza password di amministratore." });
+    let result = if installed {
+        ui::button(ui, "Togli dal menu delle applicazioni", Btn::Secondary, Some("trash-2"), false, true).clicked().then(crate::install::uninstall)
+    } else {
+        ui::button(ui, "Aggiungi al menu delle applicazioni", Btn::Primary, Some("download"), false, true).clicked().then(crate::install::install)
+    };
+    if let Some(Err(e)) = result {
+        ui.label(RichText::new(e).color(ui::theme(ui.ctx()).danger_text));
     }
 }
 

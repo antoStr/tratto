@@ -66,8 +66,12 @@ pub fn check(ctx: &egui::Context) {
                         let matches = |name: &str| name.ends_with("-setup.exe") || name.ends_with(".exe");
                         #[cfg(target_os = "macos")]
                         let matches = |name: &str| name.ends_with(".dmg");
+                        // Linux: an AppImage replaces itself; a .deb or .rpm is updated by the
+                        // system's software centre (the button opens the download page).
                         #[cfg(target_os = "linux")]
-                        let matches = |name: &str| name.ends_with(".AppImage") || name.ends_with(".deb");
+                        let appimage = crate::install::appimage().is_some();
+                        #[cfg(target_os = "linux")]
+                        let matches = |name: &str| appimage && name.ends_with(".AppImage");
                         #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
                         let matches = |_: &str| false;
 
@@ -118,7 +122,17 @@ pub fn start_download(ctx: &egui::Context) {
 
     #[cfg(not(target_arch = "wasm32"))]
     std::thread::spawn(move || {
-        let target_path = std::env::temp_dir().join(&fname);
+        // In this person's own cache folder, not the shared temporary one, where someone else
+        // on the computer could put something in its place.
+        let dir = dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("tratto-updates");
+        let _ = std::fs::create_dir_all(&dir);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        }
+        let fname = std::path::Path::new(&fname).file_name().map_or_else(|| "tratto-update".into(), |n| n.to_string_lossy().to_string());
+        let target_path = dir.join(fname);
         let mut req = ehttp::Request::get(&dl_url);
         req.headers.insert("User-Agent", "Tratto");
         ehttp::fetch(req, move |res| {
@@ -169,20 +183,15 @@ pub fn install_and_restart() {
             std::process::exit(0);
         }
     }
+    // Linux: the new AppImage takes the place of the one running, then starts.
     #[cfg(target_os = "linux")]
-    {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = std::fs::metadata(&path) {
-                let mut perm = meta.permissions();
-                perm.set_mode(0o755);
-                let _ = std::fs::set_permissions(&path, perm);
+    match crate::install::replace_running(&path) {
+        Ok(exe) => {
+            if std::process::Command::new(&exe).spawn().is_ok() {
+                std::process::exit(0);
             }
         }
-        if std::process::Command::new(&path).spawn().is_ok() {
-            std::process::exit(0);
-        }
+        Err(e) => *s.lock().unwrap() = State::Error(e),
     }
 }
 

@@ -155,6 +155,14 @@ impl Home {
                 if side_button(ui, "file-up", "Importa una lavagna").clicked() {
                     action = self.import(store, toasts);
                 }
+                // Linux, started from an AppImage not yet in the menu: one click installs it.
+                #[cfg(target_os = "linux")]
+                if crate::install::appimage().is_some() && !crate::install::in_menu() && side_button(ui, "download", "Aggiungi al menu delle app").clicked() {
+                    match crate::install::install() {
+                        Ok(()) => toasts.info("Tratto è nel menu delle applicazioni: d'ora in poi aprilo da lì."),
+                        Err(e) => toasts.error(e),
+                    }
+                }
             });
         });
         egui::CentralPanel::default().frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin { left: 32, right: 32, top: 18, bottom: 0 })).show(ui, |ui| {

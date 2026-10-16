@@ -60,7 +60,7 @@ jobs:
           key: ${{ matrix.target }}
       - uses: taiki-e/install-action@v2
         with:
-          tool: wasm-bindgen@0.2.129,cargo-packager
+          tool: wasm-bindgen@0.2.129,cargo-packager,cargo-generate-rpm
       # The guests' page (the same app in the browser), bundled into the desktop app.
       - run: sh scripts/web.sh
       - if: runner.os == 'Linux'
@@ -94,6 +94,9 @@ jobs:
           TRUSTED_SIGNING_ENDPOINT: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
           TRUSTED_SIGNING_ACCOUNT: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
           TRUSTED_SIGNING_PROFILE: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
+      # Fedora, openSUSE…: the same program as an .rpm (the AppImage and the .deb come from cargo-packager).
+      - if: runner.os == 'Linux'
+        run: cargo generate-rpm --target ${{ matrix.target }} -o dist/
       - uses: actions/upload-artifact@v4
         with:
           name: Tratto-${{ matrix.name }}
@@ -102,6 +105,7 @@ jobs:
             dist/*.dmg
             dist/*.AppImage
             dist/*.deb
+            dist/*.rpm
           if-no-files-found: error
 
   release:

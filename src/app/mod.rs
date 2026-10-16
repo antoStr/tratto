@@ -400,6 +400,10 @@ mod picture {
         if std::env::var("TRATTO_MINIMAP").is_ok_and(|v| v == "br") {
             prefs.minimap_at = Some([1.0, 1.0]);
         }
+        // TRATTO_CLEAN=1: both side panels closed and no minimap (FigJam's layout).
+        if std::env::var_os("TRATTO_CLEAN").is_some() {
+            (prefs.left_panel, prefs.right_panel, prefs.minimap) = (false, false, false);
+        }
         let mut harness = egui_kittest::Harness::builder().with_size(size).with_pixels_per_point(ppp()).wgpu().build_ui(move |ui| {
             let ctx = ui.ctx().clone();
             if screen.is_none() {

@@ -50,6 +50,19 @@ signing-identity = "-"
 [package.metadata.packager.deb]
 section = "graphics"
 
+# Fedora, openSUSE and the other RPM systems: `cargo generate-rpm` (see the build workflow).
+[package.metadata.generate-rpm]
+summary = "Lavagna infinita con penna e condivisione sicura"
+license = "Proprietary"
+url = "https://github.com/antoStr/tratto"
+assets = [
+    { source = "target/release/tratto", dest = "/usr/bin/tratto", mode = "755" },
+    { source = "target/release/tratto-cloudflared", dest = "/usr/bin/tratto-cloudflared", mode = "755" },
+    { source = "assets/linux/tratto.desktop", dest = "/usr/share/applications/tratto.desktop", mode = "644" },
+    { source = "assets/icon.png", dest = "/usr/share/icons/hicolor/512x512/apps/tratto.png", mode = "644" },
+]
+auto-req = "builtin"
+
 [dependencies]
 base64 = "0.23.1"
 egui = "0.36.2"

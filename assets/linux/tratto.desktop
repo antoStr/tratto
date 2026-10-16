@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Tratto
+GenericName=Lavagna
+Comment=Lavagna infinita con penna e condivisione sicura
+Exec=tratto
+Icon=tratto
+Terminal=false
+Categories=Graphics;Office;Education;
+Keywords=lavagna;whiteboard;disegno;penna;
+StartupWMClass=tratto
