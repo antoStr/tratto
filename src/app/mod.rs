@@ -365,7 +365,7 @@ mod picture {
         }
         let mut home: Option<home::Home> = None;
         let (mut toasts, mut dialogs, mut prefs) = (Toasts::default(), dialogs::Dialogs::default(), Prefs::default());
-        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).with_pixels_per_point(ppp()).wgpu().build_ui(move |ui| {
+        let mut harness = egui_kittest::Harness::builder().with_size(std::env::var("TRATTO_SIZE").ok().and_then(|s| s.split_once('x').and_then(|(w, h)| Some(egui::vec2(w.parse().ok()?, h.parse().ok()?)))).unwrap_or(egui::vec2(1440.0, 900.0))).with_pixels_per_point(ppp()).wgpu().build_ui(move |ui| {
             let ctx = ui.ctx().clone();
             if home.is_none() {
                 ui::install_fonts(&ctx);

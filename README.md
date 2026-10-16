@@ -9,7 +9,7 @@ Dalla versione 2 Tratto è un'app nativa scritta in Rust con [egui]: si apre in 
 **Installazione.** Scarica il file giusto da https://github.com/antoStr/tratto/releases/latest:
 - **Windows**: il file che finisce con `-setup.exe`. L'installer non è firmato digitalmente, quindi SmartScreen può avvisare: *Ulteriori informazioni → Esegui comunque*. Le lavagne si salvano da sole in `%APPDATA%\Tratto`. Se c'era Tratto 1, l'installer lo toglie e tiene le lavagne. Disinstallando, Tratto chiede se cancellare anche le lavagne (di base le tiene).
 - **Mac**: il `.dmg` con `aarch64` per i Mac con chip Apple (M1 e successivi), quello con `x64` per i Mac Intel. Trascina Tratto in Applicazioni. Non avendo un certificato Apple a pagamento, al primo avvio macOS lo blocca: *Impostazioni di Sistema ▸ Privacy e sicurezza ▸ Apri comunque*.
-- **Linux**: il `.deb` per Ubuntu e Debian (`sudo apt install ./tratto_….deb`, si disinstalla con `sudo apt remove tratto`), oppure l'`.AppImage` per le altre distribuzioni (rendilo eseguibile e avvialo).
+- **Linux**: il `.rpm` per Fedora e openSUSE (`sudo dnf install ./tratto-….rpm`, si disinstalla con `sudo dnf remove tratto`), il `.deb` per Ubuntu e Debian (`sudo apt install ./tratto_….deb`, si disinstalla con `sudo apt remove tratto`), oppure l'`.AppImage` per tutte le altre: rendila eseguibile, avviala e premi *Aggiungi al menu delle app* (nessuna password: si copia in `~/.local/share/tratto`; si toglie da *Impostazioni ▸ Aggiornamenti*).
 
 Per **entrare** in una lavagna condivisa non serve installare niente, su nessun sistema: basta aprire il link nel browser.
 
@@ -25,7 +25,11 @@ Il collegamento passa da un tunnel cifrato di Cloudflare. Il PC si collega solo 
 
 **Impostazioni** (l'ingranaggio accanto alla casetta, o `Ctrl+,`): tema, dimensione dell'interfaccia e del testo, contrasto elevato, *riduci il movimento* (solo dissolvenze, niente scorrimenti), colore principale (anche personalizzato), posizione della barra, pannelli, minimappa, penna, scorciatoie, aggiornamenti. In *Profilo* il nome e il colore con cui ti vedono gli altri (cursore, selezione, commenti) e il colore del puntatore laser; si aprono anche cliccando il tuo avatar. In *Barra degli strumenti* scegli quali pulsanti vedere e in che ordine (trascinandoli), e salvi la barra in profili con un nome.
 
-**Modalità zen** (`Ctrl+Maiusc+\`, o l'icona in alto a destra): solo la lavagna, senza pannelli né barre; `Esc` per uscire. Le opzioni dello strumento sopra la barra si chiudono con la freccia, o cliccando di nuovo lo strumento, che resta in uso.
+**Modalità zen** (il pulsante *Zen* in alto a destra, `Alt+Z` o `Ctrl+Maiusc+\`): tutto schermo, solo la lavagna; la barra degli strumenti compare avvicinandosi al bordo e si fa da parte mentre disegni; `Esc` per uscire.
+
+**Timer e musica** (il cronometro accanto a *Condividi*): il tempo si imposta con − e + (o le frecce, Maiusc per 5 minuti) e parte con Invio per tutti; *Pausa*, *+1 min* e *Ferma*; a 00:00 il tempo trema e suona un campanello. La musica (Lo-fi, Ambient, Pianoforte, Pioggia, composte e generate da Tratto stesso, senza file né diritti) la sentono tutti allo stesso punto; il volume è di ognuno.
+
+**Emote**: tieni premuto `E` (un tocco breve resta la gomma) e scegli un'emoji dalla ruota, o usa il cuore accanto al timer: vola dal cursore e la vedono tutti. Le opzioni dello strumento sopra la barra si chiudono con la freccia, o cliccando di nuovo lo strumento, che resta in uso.
 
 **Come in FigJam.** Selezionando qualcosa compare sopra una barra scura con i suoi colori, la forma, il carattere e le altre impostazioni. Il **+** della barra degli strumenti aggiunge blocchi di codice e widget: con un clic in mezzo alla vista, trascinandoli dove li lasci (lo stesso per i modelli). *Connettori*: si attaccano al centro dei lati, dritti, a gomito o curvi; inizio e fine hanno la punta che vuoi (triangolo, freccia aperta, cerchio, rombo, barra) e la direzione si inverte con un clic; doppio clic su una linea per scriverci un'etichetta. *Widget*: si cliccano direttamente sulla lavagna (con lo strumento di selezione) e si scrivono nel pannello a destra.
 
@@ -51,7 +55,7 @@ cargo run --release         # l'app; per condividere serve bin/cloudflared
 cargo test
 ```
 
-**Installer.** La GitHub Action `.github/workflows/build.yml` costruisce su Windows (NSIS), Mac (dmg arm64 e x64) e Linux (AppImage e deb) con [cargo-packager]. Su un tag `vX.Y.Z` pubblica una sola release con tutti i file, più `latest.yml` e `latest-linux.yml` che fanno aggiornare da soli i Tratto 1.x. Per una nuova versione: alza `version` in `Cargo.toml`, scrivi le note in `.github/notes/vX.Y.Z.md` (facoltative), crea il tag annotato `vX.Y.Z` e caricalo.
+**Installer.** La GitHub Action `.github/workflows/build.yml` costruisce su Windows (NSIS), Mac (dmg arm64 e x64) e Linux (AppImage e deb) con [cargo-packager], più l'rpm con `cargo generate-rpm`. Su un tag `vX.Y.Z` pubblica una sola release con tutti i file, più `latest.yml` e `latest-linux.yml` che fanno aggiornare da soli i Tratto 1.x. Per una nuova versione: alza `version` in `Cargo.toml`, scrivi le note in `.github/notes/vX.Y.Z.md` (facoltative), crea il tag annotato `vX.Y.Z` e caricalo.
 
 **Firma su Windows.** SmartScreen e gli antivirus trattano da sconosciuto un programma senza firma digitale. `scripts/sign.ps1` firma l'app, l'installer e il programma di disinstallazione (la build di Windows lo fa chiamare a cargo-packager per ognuno) appena il repository ha un certificato di firma del codice nei *Secrets* delle Actions: o un certificato in formato .pfx (`WINDOWS_CERTIFICATE` con il file in base64, `WINDOWS_CERTIFICATE_PASSWORD`) o Azure Trusted Signing (le variabili elencate nello script). Senza certificato la build resta uguale, non firmata. Un certificato autofirmato non serve: Windows non lo riconosce. Anche con un certificato vero, SmartScreen può avvisare nei primi giorni, finché il programma non si fa una reputazione; se Defender segnala per errore una versione, il file si invia come falso positivo dal portale di Microsoft per gli sviluppatori.
 
@@ -67,7 +71,7 @@ cargo test
 ### Limiti noti
 - Il link `trycloudflare.com` cambia a ogni condivisione. Per un indirizzo fisso serve un tunnel Cloudflare con nome e un dominio tuo.
 - Tutti gli ospiti condividono un solo link per volta, legato a una sola lavagna.
-- Dei servizi di FigJam mancano quelli che richiedono un cloud: l'intelligenza artificiale, i plugin e i widget della community, la musica del timer.
+- Dei servizi di FigJam mancano quelli che richiedono un cloud: l'intelligenza artificiale, i plugin e i widget della community. Le emoji 3D sono le Fluent Emoji di Microsoft (licenza MIT): quelle di Apple non si possono usare fuori dai suoi dispositivi.
 
 [egui]: https://github.com/emilk/egui
 [cargo-packager]: https://github.com/crabnebula-dev/cargo-packager
