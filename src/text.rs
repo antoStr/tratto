@@ -530,3 +530,29 @@ mod tests {
         assert!(l.height <= 220.0 - 32.0);
     }
 }
+
+/// The first web address in a text (http, https or www.), ready to open; None if there is none.
+/// Only web addresses: what someone else wrote on the board can't start anything else.
+pub fn first_link(text: &str) -> Option<String> {
+    let start = ["https://", "http://", "www."].iter().filter_map(|p| text.find(p)).min()?;
+    let raw: String = text[start..].chars().take_while(|c| !c.is_whitespace() && !c.is_control()).collect();
+    let link = raw.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '»', '"', '\'']);
+    if link.len() < 5 || link.len() > 2000 {
+        return None;
+    }
+    let url = if link.starts_with("www.") { format!("https://{link}") } else { link.to_string() };
+    let host = url.split("://").nth(1)?.split(['/', '?', '#']).next()?;
+    (host.contains('.') && !host.starts_with('.')).then_some(url)
+}
+
+#[cfg(test)]
+mod link_tests {
+    #[test]
+    fn web_addresses_in_text_are_found_and_nothing_else() {
+        assert_eq!(super::first_link("vedi https://figma.com/file/x, poi"), Some("https://figma.com/file/x".into()));
+        assert_eq!(super::first_link("(www.esempio.it)."), Some("https://www.esempio.it".into()));
+        assert_eq!(super::first_link("javascript:alert(1) file:///etc/passwd"), None);
+        assert_eq!(super::first_link("solo testo"), None);
+        assert_eq!(super::first_link("https://"), None);
+    }
+}

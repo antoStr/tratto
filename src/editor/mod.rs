@@ -171,6 +171,8 @@ pub enum Request {
     /// Ctrl+V with this text: the app pastes a picture instead if the clipboard holds one.
     Paste(String),
     Shortcuts,
+    /// Open a web address (http or https only), in the browser.
+    OpenLink(String),
 }
 
 pub(crate) struct Draw {
@@ -382,6 +384,45 @@ impl Editor {
             emote_n: 0,
             seen_emotes: HashMap::new(),
         }
+    }
+
+    /* ---------- sorting notes ---------- */
+
+    /// FigJam's "Sort": the selected notes in columns, one per colour (or per author), from
+    /// where the selection starts; within a column in their reading order.
+    pub fn sort_stickies(&mut self, by_author: bool) {
+        let mut notes: Vec<Arc<El>> = self.selected().into_iter().filter(|e| e.sticky().is_some() && editable(e)).collect();
+        if notes.len() < 2 {
+            return;
+        }
+        let Some(b) = union(notes.iter().map(|e| frame_box(e))) else { return };
+        notes.sort_by(|a, c| (a.y / 50.0).round().total_cmp(&(c.y / 50.0).round()).then(a.x.total_cmp(&c.x)));
+        let key = |e: &El| {
+            let s = e.sticky().unwrap();
+            if by_author { s.author.clone().unwrap_or_default() } else { s.color.to_uppercase() }
+        };
+        let mut groups: Vec<(String, Vec<Arc<El>>)> = Vec::new();
+        for n in notes {
+            let k = key(&n);
+            match groups.iter_mut().find(|g| g.0 == k) {
+                Some(g) => g.1.push(n),
+                None => groups.push((k, vec![n])),
+            }
+        }
+        let (w, h) = groups.iter().flat_map(|g| &g.1).fold((0.0f64, 0.0f64), |(w, h), e| (w.max(e.w), h.max(e.h)));
+        let gap = 16.0;
+        let mut out = Vec::new();
+        let mut col = 0.0;
+        for (_, group) in &groups {
+            // Long groups wrap into several columns of at most six.
+            for (i, e) in group.iter().enumerate() {
+                let (c, r) = (i / 6, i % 6);
+                out.push(El { x: b.x + (col + c as f64) * (w + gap), y: b.y + r as f64 * (h + gap), ..(**e).clone() });
+            }
+            col += group.len().div_ceil(6) as f64 + 0.5;
+        }
+        self.board.stop_capturing();
+        self.board.put(out);
     }
 
     /* ---------- emotes ---------- */
@@ -2390,6 +2431,25 @@ mod tests {
     fn editor() -> Editor {
         let board = Board::new(yrs::Doc::new(), Arc::new(|| {}));
         Editor::new(board, "b".into(), Painter::new(crate::paint::Images::new(None)), Prefs::default(), "v".into())
+    }
+
+    #[test]
+    fn sorting_notes_puts_each_colour_in_its_own_column() {
+        let mut ed = editor();
+        let note = |id: &str, x: f64, y: f64, color: &str| {
+            let mut el = El::new(Kind::Sticky(Sticky { text: id.into(), color: color.into(), ..Default::default() }));
+            (el.id, el.x, el.y, el.w, el.h) = (id.into(), x, y, 100.0, 100.0);
+            el
+        };
+        ed.board.put([note("a", 0.0, 0.0, "#FFF3A3"), note("b", 500.0, 40.0, "#C7E5FF"), note("c", 200.0, 300.0, "#FFF3A3"), note("d", 900.0, 900.0, "#C7E5FF")]);
+        ed.selection = vec!["a".into(), "b".into(), "c".into(), "d".into()];
+        ed.sort_stickies(false);
+        let at = |id: &str| { let e = ed.board.get(id).unwrap(); (e.x, e.y) };
+        assert_eq!(at("a"), (0.0, 0.0));
+        assert_eq!(at("c"), (0.0, 116.0), "same colour: under the first");
+        assert_eq!(at("b").1, 0.0);
+        assert!(at("b").0 > 100.0, "the other colour: a column to the right");
+        assert_eq!(at("d"), (at("b").0, 116.0));
     }
 
     #[test]

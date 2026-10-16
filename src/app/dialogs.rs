@@ -374,6 +374,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
             ("Blocca", "Ctrl+Maiusc+L"),
             ("Nascondi", "Ctrl+Maiusc+H"),
             ("Duplica trascinando", "Alt + trascina"),
+            ("Apri il link scritto in un testo o in una nota", "Ctrl + clic"),
             ("Senza aggancio", "Ctrl + trascina"),
         ],
     ),

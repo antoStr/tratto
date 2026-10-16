@@ -678,6 +678,11 @@ impl BoardScreen {
                 Request::Paste(text) => self.paste(&ctx, &text, toasts),
                 Request::Shortcuts => self.ui.shortcuts = true,
                 Request::Templates => self.ui.left_tab = super::board::LeftTab::Templates,
+                Request::OpenLink(url) => {
+                    if url.starts_with("https://") || url.starts_with("http://") {
+                        ctx.open_url(egui::OpenUrl::new_tab(url));
+                    }
+                }
             }
         }
         // Files dropped on the window: pictures go on the board where they land.

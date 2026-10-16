@@ -580,6 +580,17 @@ impl El {
 
     /// Elements come from other people's machines: anything malformed is refused instead of
     /// breaking rendering. Image ids are checked so a guest can't point others at an outside URL.
+    /// The text someone wrote in it (text box, note, shape, section name), for links.
+    pub fn written(&self) -> Option<&str> {
+        match &self.kind {
+            Kind::Text(t) => Some(&t.text),
+            Kind::Sticky(s) => Some(&s.text),
+            Kind::Shape(s) => s.text.as_deref(),
+            Kind::Section { .. } => self.name.as_deref(),
+            _ => None,
+        }
+    }
+
     pub fn is_valid(&self) -> bool {
         // Finite, and far from the limits where drawing would stall or overflow: what arrives
         // from a guest is checked here before anything is drawn.

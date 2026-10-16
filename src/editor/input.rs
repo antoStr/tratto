@@ -325,6 +325,14 @@ impl Editor {
         if self.gesture.is_some() {
             return;
         }
+        // Ctrl+click (Cmd on a Mac) on something with a web address in its text opens it.
+        if (m.command || m.ctrl)
+            && self.tool == Tool::Select
+            && let Some(url) = self.hit_element(self.to_world(s), 4.0).and_then(|e| e.written().and_then(crate::text::first_link))
+        {
+            self.requests.push(Request::OpenLink(url));
+            return;
+        }
         // A click while the emote wheel is open sends the one under the pointer.
         if let Some((at, _)) = self.emote_hold
             && now() - at >= EMOTE_HOLD_MS

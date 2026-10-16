@@ -99,6 +99,29 @@ fn controls(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], t: &Theme) {
                     });
                 }
             }
+            // Several notes: sort them, as in FigJam.
+            if els.len() > 1 {
+                let r = ui::icon_button(ui, "list", "Ordina le note", None, vec2(B, B), 16.0, false, false);
+                egui::Popup::menu(&r).frame(ui::menu_frame(t)).show(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    if ui::menu_item(ui, Some("palette"), "Ordina per colore", None, false).clicked() {
+                        ed.sort_stickies(false);
+                    }
+                    if els.iter().any(|e| e.sticky().is_some_and(|s| s.author.is_some())) && ui::menu_item(ui, Some("user-round"), "Ordina per autore", None, false).clicked() {
+                        ed.sort_stickies(true);
+                    }
+                });
+            }
+        }
+        // One element with a web address in its text: open it (Ctrl+click does it too).
+        if let [one] = els
+            && let Some(url) = one.written().and_then(crate::text::first_link)
+        {
+            gap(ui, &mut sep);
+            let host = url.split("://").nth(1).and_then(|h| h.split('/').next()).unwrap_or("").to_string();
+            if ui::icon_button(ui, "external-link", &format!("Apri {host}"), Some("Ctrl+clic"), vec2(B, B), 16.0, false, false).clicked() {
+                ed.requests.push(Request::OpenLink(url));
+            }
         }
         if only("shape") {
             gap(ui, &mut sep);
