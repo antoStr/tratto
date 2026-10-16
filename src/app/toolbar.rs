@@ -1103,7 +1103,10 @@ pub fn view_controls(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
             });
         });
     });
-    ctx.data_mut(|d| d.insert_temp(Id::new("view-controls-size"), resp.response.rect.size()));
+    ctx.data_mut(|d| {
+        d.insert_temp(Id::new("view-controls-size"), resp.response.rect.size());
+        d.insert_temp(Id::new("view-controls-rect"), resp.response.rect);
+    });
 }
 
 /// Zoom menu entries, shared by the Design panel and the zoom controls.

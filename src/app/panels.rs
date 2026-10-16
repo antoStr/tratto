@@ -776,9 +776,17 @@ fn profile_popup(ui: &Ui, resp: &egui::Response, ed: &mut Editor) {
 
 fn share_button(ui: &mut Ui, b: &mut BoardScreen) {
     if !b.host {
+        // A guest's permission: written out where there is room, an icon on a phone.
         let t = ui::theme(ui.ctx());
         let text = if b.editor.read_only { "Solo visione" } else { "Puoi modificare" };
-        ui.label(RichText::new(text).size(ui::px(10.0)).color(t.text2));
+        if ui::narrow(ui.ctx()) {
+            let (r, resp) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::hover());
+            icon(ui, if b.editor.read_only { "eye" } else { "pencil" }, r.center(), 15.0, t.icon2);
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
+            ui::tip(resp, text, None);
+        } else {
+            ui.label(RichText::new(text).size(ui::px(10.0)).color(t.text2));
+        }
         return;
     }
     let sharing = b.sharing();
@@ -1491,7 +1499,9 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
                     ui.label(RichText::new(&b.title).font(ui::medium(ui::px(11.0))).color(t.text));
                 }
                 ui.spacing_mut().item_spacing.x = 2.0;
-                if !b.host {
+                // On a phone zen mode and the settings are in the logo's menu: the two pills at
+                // the top must fit side by side.
+                if !b.host && !is_mobile {
                     guest_buttons(ui, b, dialogs);
                 }
                 let focus = b.editor.prefs.focus;
@@ -1501,6 +1511,10 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
                     } else if b.editor.prefs.left_panel {
                         // Hidden only because the window is narrow: shown over the board.
                         b.ui.peek_left = true;
+                        // A phone has room for one panel at a time.
+                        if ui::narrow(ui.ctx()) {
+                            b.ui.peek_right = false;
+                        }
                     } else {
                         b.editor.prefs.left_panel = true;
                     }
@@ -1543,16 +1557,23 @@ fn main_menu(ui: &mut Ui, b: &mut BoardScreen, dialogs: &mut Dialogs) -> Option<
             b.ui.export = Some(false);
         }
         ui::menu_sep(ui);
-        let p = &mut b.editor.prefs;
+        // What is on screen now (a narrow window shows a panel only when asked, one at a time on a phone).
+        let (left_on, right_on) = ui.ctx().data(|d| d.get_temp::<(bool, bool)>(Id::new("panels-shown"))).unwrap_or((false, false));
+        let phone = ui::narrow(ui.ctx());
         let check = |on: bool, icon: &'static str| Some(if on { "check" } else { icon });
-        if ui::menu_item(ui, check(p.left_panel && !p.focus, "panel-left-open"), "Pannello dei livelli", None, false).clicked() {
-            p.left_panel = !(p.left_panel && !p.focus);
-            p.focus = false;
+        if ui::menu_item(ui, check(left_on, "panel-left-open"), "Pannello dei livelli", None, false).clicked() {
+            (b.editor.prefs.left_panel, b.ui.peek_left, b.editor.prefs.focus) = (!left_on, !left_on, false);
+            if phone && !left_on {
+                b.ui.peek_right = false;
+            }
         }
-        if ui::menu_item(ui, check(p.right_panel && !p.focus, "panel-right-open"), "Pannello Design", None, false).clicked() {
-            p.right_panel = !(p.right_panel && !p.focus);
-            p.focus = false;
+        if ui::menu_item(ui, check(right_on, "panel-right-open"), "Pannello Design", None, false).clicked() {
+            (b.editor.prefs.right_panel, b.ui.peek_right, b.editor.prefs.focus) = (!right_on, !right_on, false);
+            if phone && !right_on {
+                b.ui.peek_left = false;
+            }
         }
+        let p = &mut b.editor.prefs;
         if ui::menu_item(ui, check(p.minimap, "map"), "Minimappa", None, false).clicked() {
             p.minimap = !p.minimap;
         }
@@ -1628,6 +1649,9 @@ pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
                 if small_icon_button(ui, "panel-right-open", "Mostra il pannello", false).clicked() {
                     if b.editor.prefs.right_panel {
                         b.ui.peek_right = true;
+                        if ui::narrow(ui.ctx()) {
+                            b.ui.peek_left = false;
+                        }
                     }
                     b.editor.prefs.right_panel = true;
                     b.editor.prefs.focus = false;

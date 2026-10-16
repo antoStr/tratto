@@ -638,6 +638,7 @@ impl BoardScreen {
                 ctx.data_mut(|d| d.remove::<Rect>(Id::new("bottom-bars")));
             }
         } else {
+            ctx.data_mut(|d| d.remove::<Rect>(Id::new("ctx-bar-rect")));
             super::context_bar::context_bar(&ctx, rect, &mut self.editor);
             super::toolbar::toolbar(&ctx, rect, &mut self.editor, &mut self.ui);
             let is_mobile = stage.width() < 600.0;
@@ -654,12 +655,14 @@ impl BoardScreen {
                 }
             }
             let (left_shown, right_shown) = ctx.data(|d| d.get_temp::<(bool, bool)>(Id::new("panels-shown"))).unwrap_or((true, true));
-            if !left_shown {
+            // On a phone a panel takes the whole width: the pills wait until it is closed.
+            let phone_panel = ui::narrow(&ctx) && (left_shown || right_shown);
+            if !left_shown && !phone_panel {
                 if let Some(a) = super::panels::focus_pill(&ctx, rect, self, dialogs) {
                     action = Some(a);
                 }
             }
-            if !right_shown && !self.editor.prefs.focus {
+            if !right_shown && !self.editor.prefs.focus && !phone_panel {
                 super::panels::right_pill(&ctx, rect, self);
             }
         }

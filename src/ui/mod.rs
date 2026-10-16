@@ -252,8 +252,17 @@ pub fn setup(ctx: &egui::Context, t: Theme, text_scale: f32) {
         sp.menu_margin = egui::Margin::same(8);
         sp.icon_width = 14.0;
         sp.text_edit_width = 160.0;
+        // Lists and dialogs scroll with the wheel, a finger or a drag, but no bar is ever drawn:
+        // floating, takes no room, and invisible in every state.
         sp.scroll.bar_width = 6.0;
         sp.scroll.floating = true;
+        sp.scroll.floating_allocated_width = 0.0;
+        sp.scroll.dormant_background_opacity = 0.0;
+        sp.scroll.active_background_opacity = 0.0;
+        sp.scroll.interact_background_opacity = 0.0;
+        sp.scroll.dormant_handle_opacity = 0.0;
+        sp.scroll.active_handle_opacity = 0.0;
+        sp.scroll.interact_handle_opacity = 0.0;
         let v = &mut style.visuals;
         *v = if t.dark { egui::Visuals::dark() } else { egui::Visuals::light() };
         v.panel_fill = t.bg;
@@ -445,8 +454,8 @@ pub fn segmented<T: PartialEq + Clone>(ui: &mut Ui, value: &mut T, options: &[(T
     let t = theme(ui.ctx());
     let s = sizes(ui.ctx());
     let ctx = ui.ctx().clone();
-    // Never wider than the room there is (a phone).
-    let width = width.min(ui.available_width().max(120.0));
+    // Never wider than the room there is; on a phone as wide as it.
+    let width = if narrow(&ctx) { ui.available_width().max(120.0) } else { width.min(ui.available_width().max(120.0)) };
     let h = if narrow(&ctx) { ctl(32.0) } else { ctl(24.0) };
     let (rect, _) = ui.allocate_exact_size(vec2(width, h), Sense::hover());
     let key: Vec<&str> = options.iter().map(|o| o.1).collect();

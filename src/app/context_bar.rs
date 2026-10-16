@@ -70,7 +70,10 @@ pub fn context_bar(ctx: &egui::Context, free: Rect, ed: &mut Editor) {
         });
         ctx.data_mut(|d| d.insert_temp(Id::NULL, light));
     });
-    ctx.data_mut(|d| d.insert_temp(Id::new("ctx-bar-h"), resp.response.rect.height()));
+    ctx.data_mut(|d| {
+        d.insert_temp(Id::new("ctx-bar-h"), resp.response.rect.height());
+        d.insert_temp(Id::new("ctx-bar-rect"), resp.response.rect);
+    });
 }
 
 fn controls(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], t: &Theme) {

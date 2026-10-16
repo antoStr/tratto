@@ -618,37 +618,23 @@ pub fn top_bars(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     }
     let is_mobile = stage.width() < 640.0;
     let travel = ui::motion::travel(ctx, k);
-    let mut base_y = if is_mobile { stage.min.y + 54.0 } else { stage.min.y + 32.0 };
-    // Clear of the minimap when it sits at the top: in the room on its left, or below it when
-    // that room is too narrow.
-    let mut cx = stage.center().x;
-    let mut room = stage.width() - 24.0;
+    // Where the bars go: the first place that covers nothing else on screen (the pills, the
+    // minimap, the zoom controls, the toolbar and its options): at the top in the middle, at
+    // the top beside the minimap, below the pills, or at the bottom above the toolbar.
     let size = ctx.data(|d| d.get_temp::<egui::Vec2>(Id::new("live-top-size"))).unwrap_or(vec2(320.0, 40.0));
-    if let Some(m) = ctx.data(|d| d.get_temp::<Rect>(Id::new("minimap-rect")))
-        && m.min.y < base_y + size.y
-        && m.max.x > cx - size.x / 2.0
-    {
-        let left = m.min.x - 12.0 - (stage.min.x + 12.0);
-        if left >= size.x + 8.0 {
-            cx = stage.min.x + 12.0 + left / 2.0;
-            room = left;
-        } else {
-            base_y = m.max.y + 10.0;
-        }
-    }
-    // Anything else at the top it would still touch (the pills, the minimap): below it.
-    for k in ["left-pill-rect", "right-pill-rect", "minimap-rect"] {
-        if let Some(o) = ctx.data(|d| d.get_temp::<Rect>(Id::new(k))) {
-            let r = Rect::from_min_size(pos2(cx - size.x / 2.0, base_y), size);
-            if r.intersects(o.expand(6.0)) {
-                base_y = o.max.y + 10.0;
-            }
-        }
-    }
+    let obstacles: Vec<Rect> = ["left-pill-rect", "right-pill-rect", "minimap-rect", "view-controls-rect", "bottom-bars", "toolbar-rect", "ctx-bar-rect"].iter().filter_map(|k| ctx.data(|d| d.get_temp::<Rect>(Id::new(*k)))).collect();
+    let fits = |r: Rect| stage.shrink(4.0).contains_rect(r) && !obstacles.iter().any(|o| r.intersects(o.expand(6.0)));
+    let top = if is_mobile { stage.min.y + 54.0 } else { stage.min.y + 32.0 };
+    let below_pills = obstacles.iter().filter(|o| o.min.y < stage.min.y + 80.0).map(|o| o.max.y + 10.0).fold(top, f32::max);
+    let beside_minimap = ctx.data(|d| d.get_temp::<Rect>(Id::new("minimap-rect"))).map(|m| (stage.min.x + 12.0 + (m.min.x - 24.0 - stage.min.x) / 2.0, top));
+    let bottom = ctx.data(|d| d.get_temp::<Rect>(Id::new("bottom-bars"))).map_or(stage.max.y - 80.0, |b| b.min.y - 10.0) - size.y;
+    let mut candidates = vec![(stage.center().x, top)];
+    candidates.extend(beside_minimap);
+    candidates.extend([(stage.center().x, below_pills), (stage.center().x, bottom)]);
+    let (cx, base_y) = candidates.iter().copied().find(|&(x, y)| fits(Rect::from_min_size(pos2(x - size.x / 2.0, y), size))).unwrap_or((stage.center().x, bottom));
     let y = base_y - travel * 16.0;
     let resp = egui::Area::new(Id::new("live-top")).pivot(egui::Align2::CENTER_TOP).fixed_pos(pos2(cx, y)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
-        let _ = room;
         ui.vertical_centered(|ui| {
             if timer_floating {
                 pill(ui, &t, |ui| {
