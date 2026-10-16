@@ -272,9 +272,8 @@ fn settings_section(ui: &mut egui::Ui, tab: SettingsTab, p: &mut Prefs, host: bo
             row(ui, "Barra degli strumenti", None, |ui| {
                 ui::segmented(ui, &mut p.toolbar_pos, &[(ToolbarPos::Bottom, "In basso"), (ToolbarPos::Top, "In alto")], 200.0);
             });
-            row(ui, "Posizione del timer", Some("Puoi tenerlo fluttuante in alto o attaccarlo alla barra a destra per una vista più pulita."), |ui| {
-                ui::segmented(ui, &mut p.timer_pos, &[(crate::prefs::TimerPos::Top, "Fluttuante"), (crate::prefs::TimerPos::RightBar, "Barra a destra")], 200.0);
-            });
+            ui::switch(ui, &mut p.timer_banner, "Timer anche grande in alto sulla lavagna (oltre che sul suo pulsante)");
+            ui::switch(ui, &mut p.timer_sound, "Un suono quando il tempo del timer finisce");
             ui.add_space(4.0);
             ui::heading(ui, "Pannelli");
             ui::switch(ui, &mut p.left_panel, "Livelli e modelli, a sinistra");

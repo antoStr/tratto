@@ -654,6 +654,48 @@ mod picture {
         assert_eq!(out.borrow().as_slice(), ["Ciao a tutti"], "the message is in the thread");
     }
 
+    /// The timer and music panel, open, while a timer runs and music plays (TRATTO_PAUSED=1 for
+    /// a paused timer): `TRATTO_SHOT=out.png cargo test timer_picture`.
+    #[test]
+    fn timer_picture() {
+        let Ok(path) = std::env::var("TRATTO_SHOT") else { return };
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let id = store.create("Riunione", None).unwrap();
+        let mut screen: Option<board::BoardScreen> = None;
+        let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 760.0)).with_pixels_per_point(ppp()).wgpu().build_ui(move |ui| {
+            let ctx = ui.ctx().clone();
+            if screen.is_none() {
+                ui::install_fonts(&ctx);
+                ui::setup(&ctx, Theme::new(std::env::var("TRATTO_DARK").is_ok(), egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), text_scale());
+                let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs { music_volume: 0.0, ..Prefs::default() }, Some("flow".into())).unwrap();
+                let now = crate::platform::shared_now();
+                let paused = std::env::var_os("TRATTO_PAUSED").is_some();
+                let idle = std::env::var_os("TRATTO_IDLE").is_some();
+                b.editor.board.transact_plain(|txn, m| {
+                    use yrs::Map;
+                    if !idle {
+                        m.timer.insert(txn, "total", 300_000.0);
+                        m.timer.insert(txn, "left", 192_000.0);
+                    }
+                    if !paused && !idle {
+                        m.timer.insert(txn, "end", now + 192_000.0);
+                    }
+                    m.timer.insert(txn, "music", "lofi");
+                    m.timer.insert(txn, "musicAt", now);
+                });
+                screen = Some(b);
+                return;
+            }
+            screen.as_mut().unwrap().ui(ui, &mut toasts, &mut dialogs);
+        });
+        harness.run_steps(10);
+        use egui_kittest::kittest::Queryable;
+        harness.get_by_label_contains(if std::env::var_os("TRATTO_IDLE").is_some() { "Timer e musica" } else { "Timer:" }).click();
+        harness.run_steps(30);
+        harness.render().unwrap().save(path).unwrap();
+    }
+
     /// Situations to look at: `TRATTO_SHOT=out.png TRATTO_SCENE=table cargo test scene_picture`
     /// (table, menu, sticky, hover, dot, dark…).
     #[test]

@@ -774,7 +774,7 @@ async fn conn(socket: WebSocket, s: Arc<Shared>, ip: String) {
     // Listening before the document is read, so no change falls in between (repeats are harmless).
     lock(&s.senders).insert(id, out_tx);
     // Welcome, the whole document, and who is here.
-    let hello = net::frame(HELLO, json!({ "client": id, "access": access.name() }).to_string().as_bytes());
+    let hello = net::frame(HELLO, json!({ "client": id, "access": access.name(), "now": crate::platform::now_ms() }).to_string().as_bytes());
     let state = crate::doc::encode_state(&s.doc);
     let mut first = vec![hello, net::frame(DOC, &state)];
     {

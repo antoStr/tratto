@@ -661,7 +661,12 @@ pub fn right(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
     ui.scope_builder(egui::UiBuilder::new().max_rect(head.shrink2(vec2(10.0, 8.0))), |ui| {
         ui.horizontal_centered(|ui| {
             participants(ui, &mut b.editor);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| share_button(ui, b));
+            // As in FigJam: the timer (and music) beside Share.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                share_button(ui, b);
+                ui.add_space(4.0);
+                super::live::timer_button(ui, &mut b.editor);
+            });
         });
     });
     let (sub, _) = ui.allocate_exact_size(vec2(ui.available_width(), ui::ctl(40.0)), Sense::hover());
@@ -682,26 +687,9 @@ pub fn right(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
                 zoom_menu(ui, &mut b.editor, &t);
                 super::live::spotlight_button(ui, &mut b.editor);
                 super::live::vote_button(ui, &mut b.editor);
-                super::live::timer_button(ui, &mut b.editor);
             });
         });
     });
-    if b.editor.prefs.timer_pos == crate::prefs::TimerPos::RightBar
-        && b.editor.board.timer_field("total").is_some()
-    {
-        egui::Frame::new()
-            .fill(t.bg2)
-            .stroke(Stroke::new(1.0, t.border))
-            .corner_radius(ui::RADIUS as f32)
-            .inner_margin(egui::Margin::symmetric(10, 8))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    super::live::timer_content(ui, &mut b.editor, true);
-                });
-            });
-        ui.add_space(4.0);
-    }
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         if b.editor.read_only {
@@ -1586,27 +1574,6 @@ pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
             });
         });
     });
-    let show_docked = b.editor.prefs.timer_pos == crate::prefs::TimerPos::RightBar
-        && b.editor.board.timer_field("total").is_some();
-    let kt = ui::motion::presence(ctx, Id::new("right-pill-timer-anim"), show_docked);
-    if kt > 0.01 {
-        let has_voting = b.editor.board.voting().is_some();
-        let timer_y = if is_mobile && has_voting { stage.min.y + 96.0 } else { stage.min.y + 54.0 };
-        let lift = ui::motion::travel(ctx, kt) * 6.0;
-        egui::Area::new(Id::new("right-pill-timer"))
-            .pivot(egui::Align2::RIGHT_TOP)
-            .fixed_pos(pos2(x, timer_y + lift))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                ui.set_opacity(kt.clamp(0.0, 1.0));
-                ui::float_frame(&t).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        super::live::timer_content(ui, &mut b.editor, true);
-                    });
-                });
-            });
-    }
 }
 
 /// While a cell is written in: its colour, and rows and columns added or taken away around it,

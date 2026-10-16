@@ -2,6 +2,7 @@
 
 mod app;
 mod assets;
+mod audio;
 mod code;
 mod doc;
 mod editor;
@@ -9,6 +10,7 @@ mod export;
 mod geom;
 mod ink;
 mod model;
+mod music;
 mod net;
 mod paint;
 mod pen;

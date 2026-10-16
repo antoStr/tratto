@@ -268,6 +268,7 @@ impl BoardScreen {
 
     /// Saves everything; called when leaving the board or closing the app.
     pub fn close(&mut self) {
+        crate::audio::music(None, 0.0);
         self.stop_share();
         self.editor.stop_editing();
         self.editor.flush_preview();
@@ -657,6 +658,7 @@ impl BoardScreen {
             }
         }
         super::live::top_bars(&ctx, rect, &mut self.editor);
+        super::live::sound(&ctx, &self.editor);
         super::toolbar::insert_drag(&ctx, stage, &mut self.editor);
         if zen {
             super::panels::zen_pill(&ctx, rect, &mut self.editor);

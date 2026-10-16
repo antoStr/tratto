@@ -5,7 +5,8 @@
 //! - `DOC` + a Yjs (v1) update, both ways;
 //! - `PRESENCE` + JSON: from a guest its own state; from the host `{"id": n, "state": {…}}`
 //!   (state null when that person left);
-//! - `HELLO` + JSON `{"client": n, "access": "edit" | "view"}`, from the host after the token.
+//! - `HELLO` + JSON `{"client": n, "access": "edit" | "view", "now": ms}`, from the host after
+//!   the token (`now`: the host's clock, which shared moments like the timer's end refer to).
 //!
 //! Close codes: 4001 sharing ended, 4003 access removed (or new link), 4100 reconnect
 //! (permission changed).

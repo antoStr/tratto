@@ -241,6 +241,10 @@ impl BoardScreen {
                     HELLO => {
                         let v: Value = serde_json::from_slice(&m[1..]).unwrap_or_default();
                         let view = v["access"] == "view";
+                        // The host's clock: timers and music agree with it.
+                        if let Some(host) = v["now"].as_f64().filter(|t| t.is_finite()) {
+                            crate::platform::set_clock_offset(host - now());
+                        }
                         let ed = &mut self.editor;
                         ed.presence.client = v["client"].as_u64().unwrap_or(0);
                         if view && !ed.read_only {
@@ -701,6 +705,7 @@ impl eframe::App for GuestApp {
             }
         }
         if let Some(msg) = ended {
+            crate::audio::music(None, 0.0);
             self.stage = Stage::Ended(msg);
         }
         self.toasts.show(&ctx);
