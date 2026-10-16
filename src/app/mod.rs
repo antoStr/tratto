@@ -770,6 +770,7 @@ mod picture {
                         ed.hover_adds = Some(first);
                     }
                     "zen" => ed.prefs.zen = true,
+                    "menu-main" => (ed.prefs.left_panel, ed.prefs.right_panel, ed.prefs.minimap) = (false, false, false),
                     "dot" => {
                         let mut d = crate::model::El::new(crate::model::Kind::Ink(crate::model::Ink { points: vec![0.0, 0.0, 0.5, 1.0, 1.0, 0.5], color: "#1E1E1E".into(), size: 6.0 }));
                         (d.w, d.h) = (1.0, 1.0);
@@ -796,6 +797,11 @@ mod picture {
             b.ui(ui, &mut toasts, &mut dialogs);
         });
         harness.run_steps(60);
+        if std::env::var("TRATTO_SCENE").is_ok_and(|s| s == "menu-main") {
+            use egui_kittest::kittest::Queryable;
+            harness.get_by_label("Menu principale").click();
+            harness.run_steps(10);
+        }
         harness.render().unwrap().save(path).unwrap();
     }
 }

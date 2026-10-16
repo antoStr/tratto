@@ -181,6 +181,10 @@ pub struct Prefs {
     pub music_muted: bool,
     /// A chime when the timer runs out.
     pub timer_sound: bool,
+    /// Which default layout these preferences were last brought to (see `from_json`); missing in
+    /// what older versions saved, so 0 there.
+    #[serde(default)]
+    pub layout: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
@@ -241,6 +245,10 @@ pub fn toolbar_items(order: &[String]) -> Vec<String> {
 
 pub const DEFAULT_ACCENT: &str = "#0D99FF";
 
+/// The current default layout. 2: side panels and minimap closed (before, both panels and the
+/// minimap were open, which made the board feel crowded).
+const LAYOUT: u32 = 2;
+
 impl Default for Prefs {
     fn default() -> Self {
         let pen = |color: &str, size: f64| Pen { color: color.into(), size, opacity: 1.0 };
@@ -266,9 +274,11 @@ impl Default for Prefs {
             big_handles: false,
             accent: DEFAULT_ACCENT.into(),
             toolbar_pos: ToolbarPos::Bottom,
-            left_panel: true,
-            right_panel: true,
-            minimap: true,
+            // FigJam's layout: the board, the toolbar and the dark bar over the selection; the
+            // side panels and the minimap open from their buttons.
+            left_panel: false,
+            right_panel: false,
+            minimap: false,
             focus: false,
             text_scale: 1.0,
             new_board: BoardMeta::default(),
@@ -289,6 +299,7 @@ impl Default for Prefs {
             music_volume: 0.6,
             music_muted: false,
             timer_sound: true,
+            layout: LAYOUT,
         }
     }
 }
@@ -326,6 +337,12 @@ impl Prefs {
         }
         p.toolbar_profiles.truncate(20);
         p.music_volume = if p.music_volume.is_finite() { p.music_volume.clamp(0.0, 1.0) } else { 0.6 };
+        // Once, preferences saved by an older Tratto move to the new, cleaner layout; the panels
+        // reopen from their buttons and stay as chosen afterwards.
+        if p.layout < LAYOUT {
+            (p.left_panel, p.right_panel, p.minimap, p.focus) = (false, false, false, false);
+            p.layout = LAYOUT;
+        }
         p
     }
 
@@ -361,6 +378,14 @@ mod tests {
         assert_eq!(Prefs::from_json("not json"), Prefs::default());
         let round = Prefs::from_json(&Prefs::default().to_json());
         assert_eq!(round, Prefs::default());
+    }
+
+    #[test]
+    fn older_preferences_move_once_to_the_clean_layout() {
+        let old = Prefs::from_json(r#"{"leftPanel":true,"rightPanel":true,"minimap":true}"#);
+        assert!(!old.left_panel && !old.right_panel && !old.minimap);
+        let reopened = Prefs { left_panel: true, ..old };
+        assert!(Prefs::from_json(&reopened.to_json()).left_panel, "a panel opened afterwards stays open");
     }
 
     #[test]

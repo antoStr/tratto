@@ -1479,15 +1479,15 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
     let is_mobile = stage.width() < 600.0;
     let k = ui::motion::appear(ctx, Id::new("focus-pill-anim"), true);
     let lift = ui::motion::travel(ctx, k) * 6.0;
+    let mut action = None;
     egui::Area::new(Id::new("focus-pill")).fixed_pos(stage.min + vec2(12.0, 12.0 + lift)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
-        ui::float_frame(&t).inner_margin(egui::Margin::symmetric(if is_mobile { 6 } else { 10 }, 6)).show(ui, |ui| {
+        ui::float_frame(&t).inner_margin(egui::Margin::symmetric(if is_mobile { 6 } else { 8 }, 6)).show(ui, |ui| {
             ui::row(ui, 24.0, |ui| {
                 ui.spacing_mut().item_spacing.x = if is_mobile { 4.0 } else { 6.0 };
+                action = main_menu(ui, b, dialogs);
                 if !is_mobile {
                     ui.label(RichText::new(&b.title).font(ui::medium(ui::px(11.0))).color(t.text));
-                } else {
-                    ui::logo(ui, 18.0);
                 }
                 ui.spacing_mut().item_spacing.x = 2.0;
                 if !b.host {
@@ -1507,7 +1507,65 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
             });
         });
     });
-    None
+    action
+}
+
+/// The logo with its menu, as in FigJam: the board, what to add or export, what to show, and
+/// the way to the settings.
+fn main_menu(ui: &mut Ui, b: &mut BoardScreen, dialogs: &mut Dialogs) -> Option<Action> {
+    let t = ui::theme(ui.ctx());
+    let (r, resp) = ui.allocate_exact_size(vec2(38.0, 24.0), Sense::click());
+    ui::hover_fill(ui, resp.id, r, resp.hovered(), ui::RADIUS as f32, t.hover);
+    ui::icons::logo(ui, Rect::from_center_size(r.center() - vec2(6.0, 0.0), vec2(18.0, 18.0)));
+    icon(ui, "chevron-down", r.center() + vec2(12.0, 0.0), 10.0, t.icon2);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Menu principale"));
+    ui::focus_ring(ui, &resp, r);
+    let resp = ui::tip(resp, "Menu principale", None);
+    let mut action = None;
+    egui::Popup::menu(&resp).frame(ui::menu_frame(&t)).show(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        ui.set_min_width(240.0);
+        if b.host {
+            if ui::menu_item(ui, Some("home"), "Torna alle lavagne", None, false).clicked() {
+                action = Some(Action::Home);
+            }
+            if ui::menu_item(ui, Some("plus"), "Nuova lavagna", None, false).clicked() {
+                action = Some(Action::New { template: None });
+            }
+            ui::menu_sep(ui);
+        }
+        if !b.editor.read_only && ui::menu_item(ui, Some("image-plus"), "Inserisci immagine…", Some("I"), false).clicked() {
+            b.editor.requests.push(crate::editor::Request::InsertImage);
+        }
+        if ui::menu_item(ui, Some("download"), "Esporta…", Some("Ctrl+Maiusc+E"), false).clicked() {
+            b.ui.export = Some(false);
+        }
+        ui::menu_sep(ui);
+        let p = &mut b.editor.prefs;
+        let check = |on: bool, icon: &'static str| Some(if on { "check" } else { icon });
+        if ui::menu_item(ui, check(p.left_panel && !p.focus, "panel-left-open"), "Pannello dei livelli", None, false).clicked() {
+            p.left_panel = !(p.left_panel && !p.focus);
+            p.focus = false;
+        }
+        if ui::menu_item(ui, check(p.right_panel && !p.focus, "panel-right-open"), "Pannello Design", None, false).clicked() {
+            p.right_panel = !(p.right_panel && !p.focus);
+            p.focus = false;
+        }
+        if ui::menu_item(ui, check(p.minimap, "map"), "Minimappa", None, false).clicked() {
+            p.minimap = !p.minimap;
+        }
+        if ui::menu_item(ui, Some("scan"), "Modalità zen", Some("Alt+Z"), false).clicked() {
+            b.editor.toggle_zen();
+        }
+        ui::menu_sep(ui);
+        if ui::menu_item(ui, Some("settings"), "Impostazioni e personalizzazione…", Some("Ctrl+,"), false).clicked() {
+            dialogs.settings = true;
+        }
+        if ui::menu_item(ui, Some("keyboard"), "Scorciatoie da tastiera", Some("?"), false).clicked() {
+            b.ui.shortcuts = true;
+        }
+    });
+    action
 }
 
 /// Zen mode's way out: a quiet button in the corner that wakes up under the pointer.
