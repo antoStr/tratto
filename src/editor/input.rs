@@ -850,7 +850,9 @@ impl Editor {
                 Key::Num0 => self.zoom_to(1.0),
                 Key::CloseBracket if !ro => self.order(if m.shift { Order::Front } else { Order::Forward }),
                 Key::OpenBracket if !ro => self.order(if m.shift { Order::Back } else { Order::Backward }),
-                Key::Backslash if m.shift => self.prefs.zen = !self.prefs.zen,
+                // Maiusc+\ is | on Italian keyboards: both mean zen mode.
+                Key::Pipe => self.toggle_zen(),
+                Key::Backslash if m.shift => self.toggle_zen(),
                 Key::Backslash => self.toggle_focus(),
                 Key::G if !ro => {
                     if m.shift { self.ungroup() } else { self.group() }
@@ -864,6 +866,9 @@ impl Editor {
             return;
         }
         if m.alt {
+            if key == Key::Z || physical == Some(Key::Z) {
+                self.toggle_zen();
+            }
             return;
         }
         let digit = |n: Key| key == n || physical == Some(n);
@@ -981,6 +986,11 @@ impl Editor {
         } else {
             self.ruler = Ruler { visible: true, x: self.size.0 / 2.0, y: self.size.1 / 2.0 - 60.0, angle: self.ruler.angle };
         }
+    }
+
+    /// Zen mode (Alt+Z, Ctrl+Maiusc+\): only the board, full screen, the toolbar out of the way.
+    pub fn toggle_zen(&mut self) {
+        self.prefs.zen = !self.prefs.zen;
     }
 
     /// Ctrl+\: hides both panels, or brings both back when none is showing.

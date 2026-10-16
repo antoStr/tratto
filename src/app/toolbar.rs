@@ -636,7 +636,11 @@ pub fn toolbar(ctx: &egui::Context, stage: Rect, ed: &mut Editor, st: &mut Board
     // whole window (it floats over the panels).
     let width = ctx.data(|d| d.get_temp::<Rect>(Id::new("toolbar-rect"))).map_or(0.0, |r| r.width());
     let cx = if width > stage.width() - 16.0 { 0.0 } else { stage.center().x - ctx.content_rect().center().x };
-    let resp = egui::Area::new(Id::new("toolbar")).anchor(anchor, [cx, dy + if top { stage.min.y } else { stage.max.y - ctx.content_rect().max.y }]).order(egui::Order::Foreground).show(ctx, |ui| {
+    // Zen mode slides it away past the edge (1 in place, 0 gone).
+    let dock = ctx.data(|d| d.get_temp::<f32>(Id::new("toolbar-dock"))).unwrap_or(1.0).clamp(0.0, 1.0);
+    let away = (1.0 - dock) * 90.0 * if top { -1.0 } else { 1.0 };
+    let resp = egui::Area::new(Id::new("toolbar")).anchor(anchor, [cx, dy + away + if top { stage.min.y } else { stage.max.y - ctx.content_rect().max.y }]).interactable(dock > 0.5).order(egui::Order::Foreground).show(ctx, |ui| {
+        ui.multiply_opacity(dock);
         // FigJam's toolbar: a big friendly card with the markers waiting in a drawer.
         let [contact, soft] = ui::card_shadows(&t);
         let under = ui.painter().add(egui::Shape::Noop);
@@ -741,8 +745,9 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
         Tool::Stamp => 96.0,
         _ => ui::ctl(TRAY_H),
     };
-    let shown = egui::Area::new(Id::new(("tray", format!("{tool:?}")))).pivot(pivot).fixed_pos(at).constrain_to(ctx.content_rect().shrink(8.0)).order(egui::Order::Foreground).show(ctx, |ui| {
-        ui.set_opacity(k.clamp(0.0, 1.0));
+    let dock = ctx.data(|d| d.get_temp::<f32>(Id::new("toolbar-dock"))).unwrap_or(1.0).clamp(0.0, 1.0);
+    let shown = egui::Area::new(Id::new(("tray", format!("{tool:?}")))).pivot(pivot).fixed_pos(at).constrain_to(ctx.content_rect().shrink(8.0)).interactable(dock > 0.5).order(egui::Order::Foreground).show(ctx, |ui| {
+        ui.set_opacity(k.clamp(0.0, 1.0) * dock);
         // An area lays out in last frame's size: give the row the width it may take.
         ui.set_max_width(max_tray_w);
         ui::float_frame(t).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {

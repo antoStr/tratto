@@ -235,8 +235,8 @@ fn title(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, width: f32) {
 
 /// A guest's way to the settings and to zen mode (the desktop app has them in its tab bar).
 fn guest_buttons(ui: &mut Ui, b: &mut BoardScreen, dialogs: &mut Dialogs) {
-    if small_icon_button(ui, "scan", "Modalità zen: solo la lavagna (Ctrl+Maiusc+\\)", false).clicked() {
-        b.editor.prefs.zen = true;
+    if small_icon_button(ui, "scan", "Modalità zen: solo la lavagna (Alt+Z)", false).clicked() {
+        b.editor.toggle_zen();
     }
     if small_icon_button(ui, "settings", "Impostazioni (Ctrl+,)", false).clicked() {
         dialogs.settings = true;
@@ -1526,12 +1526,16 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
 pub fn zen_pill(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     let t = ui::theme(ctx);
     let k = ui::motion::appear(ctx, Id::new("zen-pill"), true);
-    let near = ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| p.distance(stage.max - vec2(40.0, 30.0)) < 140.0);
+    // Top right, faint until the pointer comes close (on a touch screen, always readable).
+    let corner = pos2(stage.max.x - 16.0, stage.min.y + 16.0);
+    let pointer = ctx.input(|i| i.pointer.hover_pos());
+    let near = pointer.is_none_or(|p| p.distance(corner) < 180.0);
     let wake = ui::motion::hover(ctx, Id::new("zen-pill-wake"), near);
-    egui::Area::new(Id::new("zen-pill")).pivot(egui::Align2::RIGHT_BOTTOM).fixed_pos(stage.max - vec2(16.0, 16.0 - ui::motion::travel(ctx, k) * 10.0)).order(egui::Order::Foreground).show(ctx, |ui| {
-        ui.set_opacity(k.clamp(0.0, 1.0) * (0.35 + 0.65 * wake));
+    egui::Area::new(Id::new("zen-pill")).pivot(egui::Align2::RIGHT_TOP).fixed_pos(corner - vec2(0.0, ui::motion::travel(ctx, k) * 10.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+        ui.set_opacity(k.clamp(0.0, 1.0) * (0.3 + 0.7 * wake));
         ui::float_frame(&t).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
-            if ui::button(ui, "Esci dalla modalità zen", Btn::Ghost, Some("minimize-2"), false, true).on_hover_text("Esc o Ctrl+Maiusc+\\").clicked() {
+            let r = ui::button(ui, "Esci da zen", Btn::Ghost, Some("minimize-2"), false, true);
+            if ui::tip(r, "Esci dalla modalità zen", Some("Esc · Alt+Z")).clicked() {
                 ed.prefs.zen = false;
             }
         });

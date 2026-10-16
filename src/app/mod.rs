@@ -723,6 +723,7 @@ mod picture {
                         let first = ed.board.all().iter().find(|e| e.shape().is_some()).unwrap().id.clone();
                         ed.hover_adds = Some(first);
                     }
+                    "zen" => ed.prefs.zen = true,
                     "dot" => {
                         let mut d = crate::model::El::new(crate::model::Kind::Ink(crate::model::Ink { points: vec![0.0, 0.0, 0.5, 1.0, 1.0, 0.5], color: "#1E1E1E".into(), size: 6.0 }));
                         (d.w, d.h) = (1.0, 1.0);

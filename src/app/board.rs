@@ -48,6 +48,12 @@ pub struct BoardUi {
     /// In a narrow window, a panel opened from its pill anyway.
     pub peek_left: bool,
     pub peek_right: bool,
+    /// Zen mode as last seen (to go full screen when it starts), and whether it made the window
+    /// full screen (so leaving it gives the window back as it was).
+    pub zen_seen: bool,
+    pub zen_fullscreen: bool,
+    /// Last time the pointer came near the toolbar's edge in zen mode (it shows for a while).
+    pub zen_near: f64,
 }
 
 impl Default for BoardUi {
@@ -72,6 +78,9 @@ impl Default for BoardUi {
             scroll_to: None,
             peek_left: false,
             peek_right: false,
+            zen_seen: false,
+            zen_fullscreen: false,
+            zen_near: 0.0,
         }
     }
 }
@@ -480,8 +489,16 @@ impl BoardScreen {
                     ui.painter().with_clip_rect((tab.shrink2(vec2(16.0, 0.0))).intersect(ui.clip_rect())).galley(pos2(tab.min.x + 16.0, tab.center().y - g.size().y / 2.0), g, t.chrome_text);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
-                        if chrome_button(ui, "scan", "Modalità zen: solo la lavagna", Some("Ctrl+Maiusc+\\")).clicked() {
-                            self.editor.prefs.zen = true;
+                        // Zen mode, with its name: an icon alone was easy to miss.
+                        let g = ui.painter().layout_no_wrap("Zen".into(), ui::medium(ui::px(11.0)), t.chrome_text);
+                        let r = ui.allocate_response(vec2(g.size().x + 40.0, 40.0), Sense::click());
+                        let pill = Rect::from_center_size(r.rect.center(), vec2(r.rect.width() - 8.0, 28.0));
+                        ui::hover_fill(ui, r.id, pill, r.hovered(), 8.0, t.chrome2);
+                        ui::icon(ui, "scan", pos2(pill.min.x + 14.0, pill.center().y), 15.0, t.chrome_text);
+                        ui.painter().galley(pos2(pill.min.x + 27.0, pill.center().y - g.size().y / 2.0), g, t.chrome_text);
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Modalità zen"));
+                        if ui::tip(r, "Modalità zen: solo la lavagna, a tutto schermo", Some("Alt+Z")).clicked() {
+                            self.editor.toggle_zen();
                         }
                     });
                 });
@@ -505,6 +522,18 @@ impl BoardScreen {
         let rect = ui.max_rect();
         let mut action_from_panel = None;
         // Figma UI3: the panels are cards floating over the board, which runs underneath them.
+        // Zen mode takes the whole screen on a computer, and gives the window back after.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.editor.prefs.zen != self.ui.zen_seen {
+            self.ui.zen_seen = self.editor.prefs.zen;
+            let full = ctx.input(|i| i.viewport().fullscreen).unwrap_or(false);
+            if self.editor.prefs.zen && !full {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+                self.ui.zen_fullscreen = true;
+            } else if !self.editor.prefs.zen && std::mem::take(&mut self.ui.zen_fullscreen) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            }
+        }
         let prefs = &self.editor.prefs;
         let zen = prefs.zen;
         // A window too narrow for both panels and the board: the right one waits in its pill,
@@ -584,7 +613,30 @@ impl BoardScreen {
         let mut action = action_from_panel;
         // Zen mode: nothing over the board but what is being done on it, and a way out.
         let zen = self.editor.prefs.zen;
-        if !zen {
+        // In zen mode the toolbar steps aside: it shows when the pointer (or a finger) comes near
+        // its edge, stays a moment, and slides away while something is being drawn.
+        let dock = if zen {
+            let top = self.editor.prefs.toolbar_pos == crate::prefs::ToolbarPos::Top;
+            let near = ctx.input(|i| i.pointer.hover_pos().or(i.pointer.interact_pos())).is_some_and(|p| if top { p.y < stage.min.y + 140.0 } else { p.y > stage.max.y - 140.0 });
+            if near || egui::Popup::is_any_open(&ctx) {
+                self.ui.zen_near = crate::platform::now_ms();
+            }
+            let recent = crate::platform::now_ms() - self.ui.zen_near < 2500.0;
+            if recent {
+                ctx.request_repaint_after(std::time::Duration::from_millis(300));
+            }
+            ui::motion::presence(&ctx, Id::new("zen-dock"), recent && self.editor.gesture.is_none())
+        } else {
+            1.0
+        };
+        ctx.data_mut(|d| d.insert_temp(Id::new("toolbar-dock"), dock));
+        if zen {
+            if dock > 0.01 {
+                super::toolbar::toolbar(&ctx, rect, &mut self.editor, &mut self.ui);
+            } else {
+                ctx.data_mut(|d| d.remove::<Rect>(Id::new("bottom-bars")));
+            }
+        } else {
             super::context_bar::context_bar(&ctx, rect, &mut self.editor);
             super::toolbar::toolbar(&ctx, rect, &mut self.editor, &mut self.ui);
             let is_mobile = stage.width() < 600.0;
@@ -603,8 +655,6 @@ impl BoardScreen {
             if !right_shown && !self.editor.prefs.focus {
                 super::panels::right_pill(&ctx, rect, self);
             }
-        } else {
-            ctx.data_mut(|d| d.remove::<Rect>(Id::new("bottom-bars")));
         }
         super::live::top_bars(&ctx, rect, &mut self.editor);
         super::toolbar::insert_drag(&ctx, stage, &mut self.editor);

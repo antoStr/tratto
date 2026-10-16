@@ -374,6 +374,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
             ("Adatta alla selezione", "Maiusc+2"),
             ("Zoom 100%", "Maiusc+0"),
             ("Nascondi o mostra i pannelli", "Ctrl+\\"),
+            ("Modalità zen (solo la lavagna)", "Alt+Z  ·  Ctrl+Maiusc+\\"),
             ("Esporta", "Ctrl+Maiusc+E"),
             ("Impostazioni", "Ctrl+,"),
         ],
