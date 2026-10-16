@@ -59,6 +59,8 @@ fn main() -> eframe::Result {
             std::process::exit(1);
         }
     };
+    #[cfg(target_os = "linux")]
+    std::thread::spawn(install::refresh);
     let icon = assets::rasterize_svg(assets::LOGO, 256).map(|p| egui::IconData { rgba: p.data().to_vec(), width: 256, height: 256 });
     let mut viewport = egui::ViewportBuilder::default().with_title("Tratto").with_app_id("tratto").with_inner_size([1440.0, 900.0]).with_min_inner_size([960.0, 640.0]);
     if let Some(icon) = icon {

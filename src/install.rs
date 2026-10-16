@@ -22,7 +22,14 @@ fn desktop_file() -> Option<PathBuf> {
     Some(share()?.join("applications").join("tratto.desktop"))
 }
 
+/// The icon, beside the installed copy and named in full in the menu entry: an icon added to
+/// the user's icon theme stays unseen by GNOME until its folder changes, which it may not.
 fn icon_file() -> Option<PathBuf> {
+    Some(share()?.join("tratto").join("tratto.png"))
+}
+
+/// Where Tratto 2.4.0 put the icon: taken away with the rest.
+fn old_icon_file() -> Option<PathBuf> {
     Some(share()?.join("icons/hicolor/256x256/apps/tratto.png"))
 }
 
@@ -31,11 +38,12 @@ pub fn in_menu() -> bool {
     desktop_file().is_some_and(|p| p.exists()) || std::path::Path::new("/usr/share/applications/tratto.desktop").exists()
 }
 
-/// A menu entry starting `exe` (quoted as the desktop entry rules ask).
-fn desktop_entry(exe: &std::path::Path) -> String {
+/// A menu entry starting `exe` with the picture `icon` (quoted as the desktop entry rules ask).
+fn desktop_entry(exe: &std::path::Path, icon: &std::path::Path) -> String {
     let quoted = exe.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"").replace('`', "\\`").replace('$', "\\$");
+    let icon = icon.to_string_lossy().replace('\\', "\\\\");
     format!(
-        "[Desktop Entry]\nType=Application\nName=Tratto\nGenericName=Lavagna\nComment=Lavagna infinita con penna e condivisione sicura\nExec=\"{quoted}\"\nIcon=tratto\nTerminal=false\nCategories=Graphics;Office;Education;\nKeywords=lavagna;whiteboard;disegno;penna;\nStartupWMClass=tratto\n"
+        "[Desktop Entry]\nType=Application\nName=Tratto\nGenericName=Lavagna\nComment=Lavagna infinita con penna e condivisione sicura\nExec=\"{quoted}\"\nIcon={icon}\nTerminal=false\nCategories=Graphics;Office;Education;\nKeywords=lavagna;whiteboard;disegno;penna;\nStartupWMClass=tratto\n"
     )
 }
 
@@ -59,14 +67,25 @@ pub fn install() -> Result<(), String> {
         std::fs::write(&icon, png).map_err(fail)?;
     }
     std::fs::create_dir_all(desktop.parent().unwrap()).map_err(fail)?;
-    std::fs::write(&desktop, desktop_entry(&dst)).map_err(fail)?;
+    if let Some(old) = old_icon_file() {
+        let _ = std::fs::remove_file(old);
+    }
+    std::fs::write(&desktop, desktop_entry(&dst, &icon)).map_err(fail)?;
     refresh_menu();
     Ok(())
 }
 
+/// Started from the copy in the menu: its entry and icon written again, as this version makes
+/// them (an older Tratto's entry named an icon GNOME could miss).
+pub fn refresh() {
+    if appimage().is_some() && appimage() == installed_path() && desktop_file().is_some_and(|p| p.exists()) {
+        let _ = install();
+    }
+}
+
 /// Takes the menu entry, the icon and the installed copy away (the boards stay).
 pub fn uninstall() -> Result<(), String> {
-    for p in [desktop_file(), icon_file(), installed_path()].into_iter().flatten() {
+    for p in [desktop_file(), icon_file(), old_icon_file(), installed_path()].into_iter().flatten() {
         if p.exists() {
             std::fs::remove_file(&p).map_err(|e| format!("Non riesco a togliere {}: {e}", p.display()))?;
         }
@@ -118,10 +137,10 @@ mod tests {
 
     #[test]
     fn the_menu_entry_starts_the_installed_copy_whatever_its_path() {
-        let e = super::desktop_entry(std::path::Path::new("/home/a b/.local/share/tratto/Tratto.AppImage"));
+        let e = super::desktop_entry(std::path::Path::new("/home/a b/.local/share/tratto/Tratto.AppImage"), std::path::Path::new("/home/a b/.local/share/tratto/tratto.png"));
         assert!(e.contains("Exec=\"/home/a b/.local/share/tratto/Tratto.AppImage\"\n"));
-        assert!(e.contains("Icon=tratto\n") && e.contains("StartupWMClass=tratto\n"));
-        let odd = super::desktop_entry(std::path::Path::new("/x/$HOME`id`\"q/T"));
+        assert!(e.contains("Icon=/home/a b/.local/share/tratto/tratto.png\n") && e.contains("StartupWMClass=tratto\n"));
+        let odd = super::desktop_entry(std::path::Path::new("/x/$HOME`id`\"q/T"), std::path::Path::new("/x/i.png"));
         assert!(odd.contains("Exec=\"/x/\\$HOME\\`id\\`\\\"q/T\""), "{odd}");
     }
 }
