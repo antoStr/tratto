@@ -310,6 +310,12 @@ fn settings_section(ui: &mut egui::Ui, tab: SettingsTab, p: &mut Prefs, host: bo
             row(ui, "Barra degli strumenti", None, |ui| {
                 ui::segmented(ui, &mut p.toolbar_pos, &[(ToolbarPos::Bottom, "In basso"), (ToolbarPos::Top, "In alto")], 200.0);
             });
+            row(ui, "Dimensione della barra", Some("Più grande è più comoda con la penna e con le dita."), |ui| {
+                let mut v = (p.toolbar_size * 100.0).round() as i32;
+                if ui::segmented(ui, &mut v, &[(85, "Compatta"), (100, "Normale"), (120, "Grande")], 270.0) {
+                    p.toolbar_size = v as f32 / 100.0;
+                }
+            });
             ui::switch(ui, &mut p.timer_banner, "Timer anche grande in alto sulla lavagna (oltre che sul suo pulsante)");
             ui::switch(ui, &mut p.timer_sound, "Un suono quando il tempo del timer finisce");
             ui::switch(ui, &mut p.sticky_arrows, "Il + accanto a una nota la collega con una freccia alla nuova (di base solo per le forme dei diagrammi)");

@@ -410,6 +410,10 @@ mod picture {
         if crowded {
             (prefs.left_panel, prefs.right_panel, prefs.minimap, prefs.timer_banner) = (true, true, true, true);
         }
+        // TRATTO_BAR=1.2: the large toolbar.
+        if let Some(b) = std::env::var("TRATTO_BAR").ok().and_then(|v| v.parse().ok()) {
+            prefs.toolbar_size = b;
+        }
         // TRATTO_UI=1.5 TRATTO_TEXT=1.36: the interface at its largest.
         if let Some(z) = std::env::var("TRATTO_UI").ok().and_then(|v| v.parse().ok()) {
             prefs.ui_scale = z;

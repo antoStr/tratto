@@ -184,6 +184,8 @@ pub struct Prefs {
     /// The "+" beside a note also draws an arrow to the new one (as for shapes); off: just a
     /// note beside it, as in FigJam.
     pub sticky_arrows: bool,
+    /// The toolbar's size: 0.85 compact, 1 normal, 1.2 large (easier with a pen or fingers).
+    pub toolbar_size: f32,
     /// Which default layout these preferences were last brought to (see `from_json`); missing in
     /// what older versions saved, so 0 there.
     #[serde(default)]
@@ -303,6 +305,7 @@ impl Default for Prefs {
             music_muted: false,
             timer_sound: true,
             sticky_arrows: false,
+            toolbar_size: 1.0,
             layout: LAYOUT,
         }
     }
@@ -341,6 +344,7 @@ impl Prefs {
         }
         p.toolbar_profiles.truncate(20);
         p.music_volume = if p.music_volume.is_finite() { p.music_volume.clamp(0.0, 1.0) } else { 0.6 };
+        p.toolbar_size = if p.toolbar_size.is_finite() { p.toolbar_size.clamp(0.8, 1.4) } else { 1.0 };
         // Once, preferences saved by an older Tratto move to the new, cleaner layout; the panels
         // reopen from their buttons and stay as chosen afterwards.
         if p.layout < LAYOUT {
