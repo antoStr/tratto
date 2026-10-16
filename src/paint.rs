@@ -618,8 +618,10 @@ impl Painter {
     /// A glyph flattened to within `tol` font units. Small text on screen gets coarser outlines:
     /// the finest level is needed only when zoomed in a lot, and costs ten times the vertices.
     fn glyph(&mut self, face: usize, g: u16, tol: f32) -> GlyphMesh {
-        let finest = text::faces()[face].upem * 0.0008;
-        let level = (tol / finest).log2().floor().clamp(0.0, 8.0) as u8;
+        // Fine enough for a letter filling the screen (huge text, or zoomed far in): a quarter of
+        // the old finest step, two more levels so small text costs the same.
+        let finest = text::faces()[face].upem * 0.0002;
+        let level = (tol / finest).log2().floor().clamp(0.0, 10.0) as u8;
         self.glyphs
             .entry((face, g, level))
             .or_insert_with(|| {

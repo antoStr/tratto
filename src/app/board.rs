@@ -54,6 +54,8 @@ pub struct BoardUi {
     pub zen_fullscreen: bool,
     /// Last time the pointer came near the toolbar's edge in zen mode (it shows for a while).
     pub zen_near: f64,
+    /// The board's size on screen last frame (None before the first).
+    pub seen_size: Option<(f64, f64)>,
 }
 
 impl Default for BoardUi {
@@ -81,6 +83,7 @@ impl Default for BoardUi {
             zen_seen: false,
             zen_fullscreen: false,
             zen_near: 0.0,
+            seen_size: None,
         }
     }
 }
@@ -568,7 +571,19 @@ impl BoardScreen {
 
         let resp = ui.interact(stage, Id::new("board"), Sense::click_and_drag());
         let ed = &mut self.editor;
-        ed.size = (stage.width() as f64, stage.height() as f64);
+        // The window resized (a phone turned, a window restored): what was in the middle stays in
+        // the middle, instead of sliding off to a corner.
+        let size = (stage.width() as f64, stage.height() as f64);
+        if let Some(was) = self.ui.seen_size
+            && was != size
+            && size.0 > 10.0
+        {
+            let (dx, dy) = ((size.0 - was.0) / 2.0, (size.1 - was.1) / 2.0);
+            let c = ed.cam;
+            ed.set_cam(Camera { x: c.x + dx, y: c.y + dy, z: c.z });
+        }
+        self.ui.seen_size = Some(size);
+        ed.size = size;
         ed.origin = stage.min;
         if self.need_fit && stage.width() > 10.0 {
             self.need_fit = false;
