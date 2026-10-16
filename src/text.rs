@@ -338,6 +338,14 @@ fn shape_text_room(kind: ShapeKind) -> (f64, f64) {
         Speech => (0.8, -0.08),
         Chevron => (0.5, 0.0),
         Trapezoid => (0.64, 0.0),
+        ManualInput => (0.82, 0.1),
+        Delay => (0.72, 0.0),
+        OffPage => (0.78, -0.12),
+        Documents => (0.72, 0.04),
+        Display => (0.74, 0.0),
+        InternalStorage => (0.76, 0.08),
+        Junction => (0.4, 0.0),
+        Cloud => (0.74, 0.04),
     }
 }
 

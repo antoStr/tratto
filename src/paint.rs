@@ -1089,6 +1089,13 @@ pub mod picture {
             (el.x, el.y, el.w, el.h) = (20.0 + i as f64 * 115.0, 500.0, 100.0, 80.0);
             els.push(Arc::new(el));
         }
+        // The flowchart and system shapes added later, in a row below.
+        for (i, k) in [ShapeKind::ManualInput, ShapeKind::Delay, ShapeKind::OffPage, ShapeKind::Documents, ShapeKind::Display, ShapeKind::InternalStorage, ShapeKind::Junction, ShapeKind::Cloud].into_iter().enumerate() {
+            let shape = Shape { shape: k, fill: "#FFF3BF".into(), stroke: "#E67700".into(), stroke_width: 2.0, text: Some(["Input", "Attesa", "Pag. 2", "Report", "Schermo", "RAM", "", "Internet"][i].into()), ..Default::default() };
+            let mut el = El::new(Kind::Shape(shape));
+            (el.x, el.y, el.w, el.h) = (20.0 + i as f64 * 115.0, 610.0, 100.0, if k == ShapeKind::Junction { 60.0 } else { 80.0 });
+            els.push(Arc::new(el));
+        }
         for (i, route) in [Route::Straight, Route::Elbow, Route::Curved].into_iter().enumerate() {
             let y = 470.0 + i as f64 * 45.0;
             let line = Line { points: vec![0.0, 0.0, 300.0, 40.0], stroke: "#1E1E1E".into(), stroke_width: 2.0, dash: i == 2, arrow_start: i == 1, arrow_end: true, from: None, to: None, tape: false, route, label: Some(["Sì", "Poi", "Forse"][i].into()), ..Default::default() };
@@ -1098,7 +1105,7 @@ pub mod picture {
         }
         let meta = BoardMeta::default();
         let mut painter = Painter::new(Images::new(None));
-        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 620.0)).wgpu().build_ui(move |ui| {
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 720.0)).wgpu().build_ui(move |ui| {
             let rect = ui.max_rect();
             let cam = Camera { x: 0.0, y: 0.0, z: 1.0 };
             let view = BBox { x: 0.0, y: 0.0, w: rect.width() as f64, h: rect.height() as f64 };

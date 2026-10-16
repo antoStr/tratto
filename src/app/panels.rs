@@ -56,6 +56,14 @@ fn shape_name(k: ShapeKind) -> &'static str {
         ShapeKind::Speech => "Fumetto",
         ShapeKind::Chevron => "Gallone",
         ShapeKind::Trapezoid => "Trapezio",
+        ShapeKind::ManualInput => "Inserimento manuale",
+        ShapeKind::Delay => "Ritardo",
+        ShapeKind::OffPage => "Connettore fuori pagina",
+        ShapeKind::Documents => "Più documenti",
+        ShapeKind::Display => "Display",
+        ShapeKind::InternalStorage => "Memoria interna",
+        ShapeKind::Junction => "Giunzione",
+        ShapeKind::Cloud => "Nuvola",
         ShapeKind::Process => "Processo predefinito",
     }
 }

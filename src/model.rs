@@ -31,6 +31,22 @@ pub enum ShapeKind {
     Trapezoid,
     /// Predefined process: a box with a bar at each side.
     Process,
+    /// Flowchart: data typed in by hand (the top slopes up).
+    ManualInput,
+    /// Flowchart: a wait (a D).
+    Delay,
+    /// Flowchart: continues on another page (a pentagon pointing down).
+    OffPage,
+    /// Flowchart: several documents.
+    Documents,
+    /// Flowchart: shown on a screen.
+    Display,
+    /// Flowchart: data held in memory (a box with a corner ruled off).
+    InternalStorage,
+    /// Flowchart: where branches join (a circle with an X).
+    Junction,
+    /// Diagrams of systems: the internet, a cloud service.
+    Cloud,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -12,7 +12,7 @@ use crate::ui::{self, Theme, icon, icon_button};
 const ICON: f32 = 22.0;
 const BTN: f32 = 40.0;
 
-pub const SHAPES: [(ShapeTool, &str, Option<&str>); 21] = [
+pub const SHAPES: [(ShapeTool, &str, Option<&str>); 29] = [
     (ShapeTool::Kind(ShapeKind::Rect), "Rettangolo", Some("R")),
     (ShapeTool::RoundRect, "Rettangolo arrotondato", None),
     (ShapeTool::Kind(ShapeKind::Ellipse), "Ellisse", Some("O")),
@@ -34,6 +34,14 @@ pub const SHAPES: [(ShapeTool, &str, Option<&str>); 21] = [
     (ShapeTool::Kind(ShapeKind::Speech), "Fumetto", None),
     (ShapeTool::Kind(ShapeKind::Chevron), "Gallone", None),
     (ShapeTool::Kind(ShapeKind::Trapezoid), "Trapezio", None),
+    (ShapeTool::Kind(ShapeKind::ManualInput), "Inserimento manuale", None),
+    (ShapeTool::Kind(ShapeKind::Delay), "Ritardo", None),
+    (ShapeTool::Kind(ShapeKind::OffPage), "Connettore fuori pagina", None),
+    (ShapeTool::Kind(ShapeKind::Documents), "Più documenti", None),
+    (ShapeTool::Kind(ShapeKind::Display), "Display", None),
+    (ShapeTool::Kind(ShapeKind::InternalStorage), "Memoria interna", None),
+    (ShapeTool::Kind(ShapeKind::Junction), "Giunzione", None),
+    (ShapeTool::Kind(ShapeKind::Cloud), "Nuvola", None),
 ];
 
 /// The paths a connector can take, as FigJam offers them.
@@ -156,7 +164,23 @@ pub fn shape_icon(ui: &Ui, tool: ShapeTool, c: Pos2, size: f32, color: Color32) 
             return;
         }
         // The newer shapes draw their own outline, scaled into the icon.
-        ShapeTool::Kind(k @ (ShapeKind::Pill | ShapeKind::Process | ShapeKind::Document | ShapeKind::Cylinder | ShapeKind::Speech | ShapeKind::Chevron | ShapeKind::Trapezoid)) => {
+        ShapeTool::Kind(
+            k @ (ShapeKind::Pill
+            | ShapeKind::Process
+            | ShapeKind::Document
+            | ShapeKind::Cylinder
+            | ShapeKind::Speech
+            | ShapeKind::Chevron
+            | ShapeKind::Trapezoid
+            | ShapeKind::ManualInput
+            | ShapeKind::Delay
+            | ShapeKind::OffPage
+            | ShapeKind::Documents
+            | ShapeKind::Display
+            | ShapeKind::InternalStorage
+            | ShapeKind::Junction
+            | ShapeKind::Cloud),
+        ) => {
             let (w, h) = if matches!(k, ShapeKind::Cylinder) { (16.0, 19.0) } else { (20.0, 15.0) };
             let o = p(12.0 - w as f32 / 2.0, 12.0 - h as f32 / 2.0);
             let at = |q: &[f64]| q.chunks_exact(2).map(|v| o + vec2(v[0] as f32 * s, v[1] as f32 * s)).collect::<Vec<_>>();
@@ -741,7 +765,7 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
     };
     // The tallest thing in the tray sets its height; everything else is centred on it.
     let h = match tool {
-        Tool::Shape => 88.0,
+        Tool::Shape => 124.0,
         Tool::Stamp => 96.0,
         _ => ui::ctl(TRAY_H),
     };
@@ -815,7 +839,7 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                                     if r.clicked() {
                                         p.last_shape = *k;
                                     }
-                                    if i % 7 == 6 {
+                                    if i % 8 == 7 {
                                         ui.end_row();
                                     }
                                 }

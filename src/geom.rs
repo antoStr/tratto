@@ -247,7 +247,45 @@ pub fn shape_polygon(kind: ShapeKind, w: f64, h: f64, custom: Option<&[f32]>) ->
         }
         Chevron => vec![0.0, 0.0, w * 0.75, 0.0, w, h / 2.0, w * 0.75, h, 0.0, h, w * 0.25, h / 2.0],
         Trapezoid => vec![w * 0.2, 0.0, w * 0.8, 0.0, w, h, 0.0, h],
-        Process => vec![0.0, 0.0, w, 0.0, w, h, 0.0, h],
+        Process | InternalStorage => vec![0.0, 0.0, w, 0.0, w, h, 0.0, h],
+        ManualInput => vec![0.0, h * 0.25, w, 0.0, w, h, 0.0, h],
+        Delay => {
+            let r = (w / 2.0).min(h / 2.0);
+            let mut p = vec![0.0, 0.0];
+            p.extend(arc(w - r, h / 2.0, r, h / 2.0, -FRAC_PI_2, FRAC_PI_2, 16));
+            p.extend([0.0, h]);
+            p
+        }
+        OffPage => vec![0.0, 0.0, w, 0.0, w, h * 0.62, w / 2.0, h, 0.0, h * 0.62],
+        Documents => {
+            // The front page; the two behind are drawn as its details.
+            let (x1, y0) = (w * 0.86, h * 0.14);
+            let a = (h - y0) * 0.08;
+            let mut p = vec![0.0, y0, x1, y0];
+            p.extend((0..=16).flat_map(|i| {
+                let t = i as f64 / 16.0;
+                [x1 * (1.0 - t), h - a + a * (std::f64::consts::TAU * t).sin()]
+            }));
+            p
+        }
+        Display => {
+            let rx = w * 0.18;
+            let mut p = vec![w * 0.15, 0.0];
+            p.extend(arc(w - rx, h / 2.0, rx, h / 2.0, -FRAC_PI_2, FRAC_PI_2, 16));
+            p.extend([w * 0.15, h, 0.0, h / 2.0]);
+            p
+        }
+        Junction => arc(w / 2.0, h / 2.0, w / 2.0, h / 2.0, 0.0, 2.0 * PI, 48),
+        Cloud => (0..120)
+            .flat_map(|i| {
+                // An ellipse with seven soft bumps round it, a little flatter at the bottom.
+                let a = i as f64 / 120.0 * 2.0 * PI;
+                let bump = 0.84 + 0.16 * (a * 3.5).sin().abs().sqrt();
+                let (s, c) = a.sin_cos();
+                let flat = if s > 0.0 { 1.0 - 0.12 * s } else { 1.0 };
+                [w / 2.0 + c * w / 2.0 * bump, h / 2.0 + s * h / 2.0 * bump * flat]
+            })
+            .collect(),
         Rect | Ellipse => return None,
     })
 }
@@ -270,6 +308,18 @@ pub fn shape_details(kind: ShapeKind, w: f64, h: f64) -> Vec<Vec<f64>> {
         ShapeKind::Process => {
             let d = (w * 0.1).min(h * 0.4);
             vec![vec![d, 0.0, d, h], vec![w - d, 0.0, w - d, h]]
+        }
+        ShapeKind::InternalStorage => {
+            let (dx, dy) = ((w * 0.15).min(h * 0.4), (h * 0.18).min(w * 0.4));
+            vec![vec![dx, 0.0, dx, h], vec![0.0, dy, w, dy]]
+        }
+        ShapeKind::Documents => vec![
+            vec![w * 0.07, h * 0.14, w * 0.07, h * 0.07, w * 0.93, h * 0.07, w * 0.93, h * 0.8, w * 0.86, h * 0.8],
+            vec![w * 0.14, h * 0.07, w * 0.14, 0.0, w, 0.0, w, h * 0.73, w * 0.93, h * 0.73],
+        ],
+        ShapeKind::Junction => {
+            let k = std::f64::consts::FRAC_1_SQRT_2 / 2.0;
+            vec![vec![w * (0.5 - k), h * (0.5 - k), w * (0.5 + k), h * (0.5 + k)], vec![w * (0.5 + k), h * (0.5 - k), w * (0.5 - k), h * (0.5 + k)]]
         }
         _ => Vec::new(),
     }
