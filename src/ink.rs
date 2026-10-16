@@ -1,243 +1,89 @@
-//! Freehand strokes: outline (a port of perfect-freehand 1.2), smoothing, pressure,
-//! ink-to-shape recognition and the ruler.
+//! Freehand strokes: their shape, smoothing, pressure, ink-to-shape recognition and the ruler.
 
 use crate::geom::{Pt, dist_to_segment, pt};
+use crate::prims::Path;
 
-type V = [f64; 2];
-
-const FIXED_PI: f64 = std::f64::consts::PI + 1e-4;
-
-fn add(a: V, b: V) -> V {
-    [a[0] + b[0], a[1] + b[1]]
-}
-fn sub(a: V, b: V) -> V {
-    [a[0] - b[0], a[1] - b[1]]
-}
-fn mul(a: V, k: f64) -> V {
-    [a[0] * k, a[1] * k]
-}
-fn per(a: V) -> V {
-    [a[1], -a[0]]
-}
-fn dot(a: V, b: V) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
-}
-fn len(a: V) -> f64 {
-    a[0].hypot(a[1])
-}
-fn uni(a: V) -> V {
-    let l = len(a);
-    [a[0] / l, a[1] / l]
-}
-fn dist2(a: V, b: V) -> f64 {
-    let (dx, dy) = (a[0] - b[0], a[1] - b[1]);
-    dx * dx + dy * dy
-}
-fn lrp(a: V, b: V, t: f64) -> V {
-    add(a, mul(sub(b, a), t))
-}
-fn rot_around(a: V, c: V, r: f64) -> V {
-    let (s, co) = r.sin_cos();
-    let (x, y) = (a[0] - c[0], a[1] - c[1]);
-    [x * co - y * s + c[0], x * s + y * co + c[1]]
-}
-
-struct StrokePoint {
-    point: V,
-    pressure: f64,
-    vector: V,
-    running_length: f64,
-}
-
-struct Options {
-    size: f64,
-    thinning: f64,
-    smoothing: f64,
-    streamline: f64,
-    last: bool,
-}
-
-fn stroke_points(input: &[[f64; 3]], o: &Options) -> Vec<StrokePoint> {
-    if input.is_empty() {
-        return Vec::new();
-    }
-    let t = 0.15 + (1.0 - o.streamline) * 0.85;
-    let mut pts: Vec<[f64; 3]> = input.to_vec();
-    // Interpolated points lose their pressure (it becomes the default), as in the original.
-    if pts.len() == 2 {
-        let last = pts[1];
-        pts.truncate(1);
-        for i in 1..5 {
-            let p = lrp([pts[0][0], pts[0][1]], [last[0], last[1]], i as f64 / 4.0);
-            pts.push([p[0], p[1], f64::NAN]);
-        }
-    }
-    if pts.len() == 1 {
-        pts.push([pts[0][0] + 1.0, pts[0][1] + 1.0, pts[0][2]]);
-    }
-    let valid = |p: f64| p >= 0.0;
-    let mut out = vec![StrokePoint { point: [pts[0][0], pts[0][1]], pressure: if valid(pts[0][2]) { pts[0][2] } else { 0.25 }, vector: [1.0, 1.0], running_length: 0.0 }];
-    let mut reached = false;
-    let mut running = 0.0;
-    let max = pts.len() - 1;
-    for (i, p) in pts.iter().enumerate().skip(1) {
-        let prev = out.last().unwrap().point;
-        let point = if o.last && i == max { [p[0], p[1]] } else { lrp(prev, [p[0], p[1]], t) };
-        if point == prev {
-            continue;
-        }
-        let distance = len(sub(point, prev));
-        running += distance;
-        if i < max && !reached {
-            if running < o.size * 0.15 {
-                continue;
-            }
-            reached = true;
-        }
-        out.push(StrokePoint { point, pressure: if valid(p[2]) { p[2] } else { 0.5 }, vector: uni(sub(prev, point)), running_length: running });
-    }
-    out[0].vector = out.get(1).map(|p| p.vector).unwrap_or([0.0, 0.0]);
-    out
-}
-
-fn outline_points(points: &[StrokePoint], o: &Options) -> Vec<V> {
-    let size = o.size;
-    if points.is_empty() || size <= 0.0 {
-        return Vec::new();
-    }
-    let n = points.len();
-    let total = points[n - 1].running_length;
-    let min_distance = (size * o.smoothing).powi(2);
-    let radius_of = |pressure: f64| size * (0.5 - o.thinning * (0.5 - pressure));
-    let mut left: Vec<V> = Vec::new();
-    let mut right: Vec<V> = Vec::new();
-    let mut radius = radius_of(points[n - 1].pressure);
-    let mut first_radius: Option<f64> = None;
-    let mut prev_vector = points[0].vector;
-    let mut pl = points[0].point;
-    let mut pr = pl;
-    let mut prev_sharp = false;
-    for (i, sp) in points.iter().enumerate() {
-        let is_last = i == n - 1;
-        if !is_last && total - sp.running_length < 3.0 {
-            continue;
-        }
-        radius = if o.thinning != 0.0 { radius_of(sp.pressure) } else { size / 2.0 };
-        if first_radius.is_none() {
-            first_radius = Some(radius);
-        }
-        radius = radius.max(0.01);
-        let next_vector = if is_last { sp.vector } else { points[i + 1].vector };
-        let next_dpr = if is_last { 1.0 } else { dot(sp.vector, next_vector) };
-        let prev_dpr = dot(sp.vector, prev_vector);
-        let sharp = prev_dpr < 0.0 && !prev_sharp;
-        let next_sharp = next_dpr < 0.0;
-        if sharp || next_sharp {
-            let e = mul(per(prev_vector), radius);
-            let mut t = 0.0;
-            while t <= 1.0 {
-                let tl = rot_around(sub(sp.point, e), sp.point, FIXED_PI * t);
-                left.push(tl);
-                let tr = rot_around(add(sp.point, e), sp.point, -FIXED_PI * t);
-                right.push(tr);
-                pl = tl;
-                pr = tr;
-                t += 0.07692307692307693;
-            }
-            if next_sharp {
-                prev_sharp = true;
-            }
-            continue;
-        }
-        prev_sharp = false;
-        if is_last {
-            let e = mul(per(sp.vector), radius);
-            left.push(sub(sp.point, e));
-            right.push(add(sp.point, e));
-            continue;
-        }
-        let e = mul(per(lrp(next_vector, sp.vector, next_dpr)), radius);
-        let tl = sub(sp.point, e);
-        if i <= 1 || dist2(pl, tl) > min_distance {
-            left.push(tl);
-            pl = tl;
-        }
-        let tr = add(sp.point, e);
-        if i <= 1 || dist2(pr, tr) > min_distance {
-            right.push(tr);
-            pr = tr;
-        }
-        prev_vector = sp.vector;
-    }
-    let first = points[0].point;
-    let last = if n > 1 { points[n - 1].point } else { add(points[0].point, [1.0, 1.0]) };
-    if n == 1 {
-        // A dot.
-        let r = first_radius.unwrap_or(radius);
-        let start = add(first, mul(uni(per(sub(first, add(first, [1.0, 1.0])))), -r));
-        let mut out = Vec::new();
-        let step = 1.0 / 13.0;
-        let mut t = step;
-        while t <= 1.0 {
-            out.push(rot_around(start, first, FIXED_PI * 2.0 * t));
-            t += step;
-        }
-        return out;
-    }
-    let mut start_cap = Vec::new();
-    if let Some(&r0) = right.first() {
-        let step = 1.0 / 13.0;
-        let mut t = step;
-        while t <= 1.0 {
-            start_cap.push(rot_around(r0, first, FIXED_PI * t));
-            t += step;
-        }
-    }
-    let direction = per(mul(points[n - 1].vector, -1.0));
-    let mut end_cap = Vec::new();
-    let start = add(last, mul(direction, radius));
-    let step = 1.0 / 29.0;
-    let mut t = step;
-    while t < 1.0 {
-        end_cap.push(rot_around(start, last, FIXED_PI * 3.0 * t));
-        t += step;
-    }
-    right.reverse();
-    left.extend(end_cap);
-    left.extend(right);
-    left.extend(start_cap);
-    left
-}
-
-/// perfect-freehand's default pen size, the scale its constants were tuned for.
-const PEN_UNIT: f64 = 16.0;
-
-/// Outline polygon of a stroke. `pts` is flat [x, y, pressure, …]; pressure < 0 means the
-/// device had no pressure and the line keeps an even width.
+/// A stroke's shape. `pts` is flat [x, y, pressure, …]; pressure < 0 means the device had no
+/// pressure and the line keeps an even width.
 ///
-/// perfect-freehand has constants in absolute units that assume screen pixels; strokes are in
-/// board units, tiny when drawn zoomed in. So the outline is computed with the pen scaled to a
-/// fixed size, then scaled back.
-pub fn stroke_outline(pts: &[f32], size: f64, highlighter: bool) -> Vec<Pt> {
+/// Round dabs of the pen at its points and the bands joining them, all filled together
+/// (non-zero): their union, which can never fold over itself. A single outline round the
+/// stroke (perfect-freehand's) did, in the tight turns of thick pens and highlighters, and
+/// left hairs and notches like a dry brush.
+pub fn stroke_path(pts: &[f32], size: f64, highlighter: bool) -> Path {
+    let mut path = Path::default();
     if size <= 0.0 || !size.is_finite() || pts.len() < 3 {
-        return Vec::new();
+        return path;
     }
-    let k = PEN_UNIT / size;
-    let mut real = false;
-    let input: Vec<[f64; 3]> = pts
-        .chunks_exact(3)
-        .map(|p| {
-            if p[2] >= 0.0 {
-                real = true;
-            }
-            [p[0] as f64 * k, p[1] as f64 * k, if p[2] < 0.0 { 0.5 } else { p[2] as f64 }]
-        })
-        .collect();
-    // Never derive width from speed: slow movements would swell into round blobs. Outline points
-    // every eighth of the width, and only a sliver of the start skipped: perfect-freehand's half
-    // width and whole width made thick pens and highlighters lumpy, like a dry brush.
-    let o = Options { size: PEN_UNIT, thinning: if highlighter || !real { 0.0 } else { 0.42 }, smoothing: 0.12, streamline: if highlighter { 0.3 } else { 0.18 }, last: true };
-    outline_points(&stroke_points(&input, &o), &o).into_iter().map(|[x, y]| pt(x / k, y / k)).collect()
+    let real = pts.chunks_exact(3).any(|p| p[2] >= 0.0);
+    let thinning = if highlighter || !real { 0.0 } else { 0.42 };
+    let radius = |p: f32| size * (0.5 - thinning * (0.5 - if p < 0.0 { 0.5 } else { p.clamp(0.0, 1.0) as f64 }));
+    // Mouse and pen jitter smoothed out; the last point stays where the pen was lifted.
+    let t = if highlighter { 0.75 } else { 0.85 };
+    let n = pts.len() / 3;
+    let mut c: Vec<[f64; 3]> = Vec::with_capacity(n);
+    for (i, p) in pts.chunks_exact(3).enumerate() {
+        let q = [p[0] as f64, p[1] as f64, radius(p[2])];
+        if !q.iter().all(|v| v.is_finite()) {
+            continue;
+        }
+        c.push(match c.last() {
+            Some(a) if i + 1 < n => [a[0] + (q[0] - a[0]) * t, a[1] + (q[1] - a[1]) * t, a[2] + (q[2] - a[2]) * t],
+            _ => q,
+        });
+    }
+    let c = simplify3(&c, size * 0.02);
+    for &[x, y, r] in &c {
+        circle(&mut path, x, y, r);
+    }
+    for w in c.windows(2) {
+        let ([x0, y0, r0], [x1, y1, r1]) = (w[0], w[1]);
+        let d = (x1 - x0).hypot(y1 - y0);
+        let s = (r0 - r1) / d;
+        // One dab inside the other: nothing to join.
+        if !(s.abs() < 1.0) {
+            continue;
+        }
+        // The two lines touching both dabs, and the band between them (turning the same way
+        // as the dabs, or the union would have holes).
+        let (ux, uy) = ((x1 - x0) / d, (y1 - y0) / d);
+        let k = (1.0 - s * s).sqrt();
+        let (ax, ay) = (-uy * k + ux * s, ux * k + uy * s);
+        let (bx, by) = (uy * k + ux * s, -ux * k + uy * s);
+        path.add_polygon(&[x0 + r0 * bx, y0 + r0 * by, x1 + r1 * bx, y1 + r1 * by, x1 + r1 * ax, y1 + r1 * ay, x0 + r0 * ax, y0 + r0 * ay]);
+    }
+    path
+}
+
+/// A circle of cubic arcs, turning as `Path::ellipse` does.
+fn circle(p: &mut Path, x: f64, y: f64, r: f64) {
+    p.cmds.extend(Path::ellipse(x as f32, y as f32, r as f32, r as f32).cmds);
+}
+
+/// Douglas–Peucker on (x, y, radius): the points a stroke needs, within `eps`.
+fn simplify3(pts: &[[f64; 3]], eps: f64) -> Vec<[f64; 3]> {
+    if pts.len() < 3 {
+        return pts.to_vec();
+    }
+    let far = |a: [f64; 3], b: [f64; 3], p: [f64; 3]| {
+        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+        let l2 = ab.iter().map(|v| v * v).sum::<f64>();
+        let t = if l2 > 0.0 { (ap.iter().zip(&ab).map(|(x, y)| x * y).sum::<f64>() / l2).clamp(0.0, 1.0) } else { 0.0 };
+        ap.iter().zip(&ab).map(|(x, y)| (x - y * t).powi(2)).sum::<f64>()
+    };
+    let mut keep = vec![false; pts.len()];
+    keep[0] = true;
+    keep[pts.len() - 1] = true;
+    let mut todo = vec![(0, pts.len() - 1)];
+    while let Some((a, b)) = todo.pop() {
+        let (i, d) = (a + 1..b).map(|i| (i, far(pts[a], pts[b], pts[i]))).fold((a, 0.0), |m, x| if x.1 > m.1 { x } else { m });
+        if d > eps * eps {
+            keep[i] = true;
+            todo.extend([(a, i), (i, b)]);
+        }
+    }
+    pts.iter().zip(keep).filter(|x| x.1).map(|x| *x.0).collect()
 }
 
 /// The "1€ filter" (Casiez et al.): heavy smoothing when the pen moves slowly, where tremor is
@@ -766,44 +612,83 @@ mod tests {
         assert_eq!(kind(recognize(&flat(&scribble), 1.0)), "none");
     }
 
+    /// The points a path passes through (ends of lines and curves), for comparisons.
+    fn ends(p: &Path) -> Vec<(f64, f64)> {
+        p.cmds
+            .iter()
+            .filter_map(|c| match *c {
+                crate::prims::Cmd::Move(x, y) | crate::prims::Cmd::Line(x, y) | crate::prims::Cmd::Quad(_, _, x, y) | crate::prims::Cmd::Cubic(_, _, _, _, x, y) => Some((x as f64, y as f64)),
+                crate::prims::Cmd::Close => None,
+            })
+            .collect()
+    }
+
     #[test]
     fn a_stroke_written_zoomed_in_looks_the_same_on_screen_as_at_100() {
         let stroke = |zoom: f64| {
             let pts: Vec<f32> = (0..=20).flat_map(|i| [(i as f64 * 2.0 / zoom) as f32, (((i as f64 / 20.0) * std::f64::consts::PI).sin() * 10.0 / zoom) as f32, -1.0]).collect();
-            stroke_outline(&pts, 4.0 / zoom, false).into_iter().map(|p| (p.x * zoom, p.y * zoom)).collect::<Vec<_>>()
+            ends(&stroke_path(&pts, 4.0 / zoom, false)).into_iter().map(|p| (p.0 * zoom, p.1 * zoom)).collect::<Vec<_>>()
         };
         let base = stroke(1.0);
-        assert!(base.len() > 20);
+        assert!(base.len() > 8);
         for zoom in [4.0, 16.0, 32.0] {
             let out = stroke(zoom);
             assert_eq!(out.len(), base.len(), "zoom {zoom}");
             for (a, b) in out.iter().zip(&base) {
                 // f32 storage of the scaled-down input limits the match.
-                assert!((a.0 - b.0).hypot(a.1 - b.1) < 1e-3, "zoom {zoom}");
+                assert!((a.0 - b.0).hypot(a.1 - b.1) < 2e-3, "zoom {zoom}");
             }
         }
         // A tap is a dot the size of the pen, not a dash.
-        let dot = stroke_outline(&[10.0, 10.0, -1.0], 4.0 / 32.0, false);
+        let dot = ends(&stroke_path(&[10.0, 10.0, -1.0], 4.0 / 32.0, false));
         assert!(!dot.is_empty());
-        assert!(dot.iter().map(|p| (p.x - 10.0).hypot(p.y - 10.0)).fold(0.0, f64::max) * 32.0 < 3.0);
+        assert!(dot.iter().map(|p| (p.0 - 10.0).hypot(p.1 - 10.0)).fold(0.0, f64::max) * 32.0 < 3.0);
         let small: Vec<f32> = flat(&circle(100.0, 100.0, 80.0)).iter().enumerate().map(|(i, &v)| if i % 3 == 2 { v } else { v / 16.0 }).collect();
         assert_eq!(kind(recognize(&small, 1.0 / 16.0)), "ellipse");
     }
 
     #[test]
-    fn a_thick_stroke_keeps_a_fine_outline_from_its_very_start() {
-        // A tight curve drawn with a 64 px pen: the sides of the outline must follow it closely,
-        // not cut across in long straight steps (the "dry brush" look), from the first point on.
-        let pts: Vec<f32> = (0..=90).flat_map(|i| {
-            let a = i as f64 / 90.0 * std::f64::consts::PI;
-            [(100.0 + a.cos() * 60.0) as f32, (100.0 + a.sin() * 60.0) as f32, -1.0]
-        }).collect();
-        let outline = stroke_outline(&pts, 64.0, false);
-        let step = outline.windows(2).map(|w| (w[1].x - w[0].x).hypot(w[1].y - w[0].y)).fold(0.0, f64::max);
-        assert!(step < 64.0 * 0.4, "outline points up to {step:.1} px apart");
-        // The first sample is still inside the stroke's start, with the round cap around it.
-        let near = outline.iter().map(|p| (p.x - 160.0).hypot(p.y - 100.0)).fold(f64::INFINITY, f64::min);
-        assert!(near < 33.0, "start cap {near:.1} px away");
+    fn a_thick_stroke_is_one_clean_band_even_drawn_with_a_shaky_mouse() {
+        // A tight wave drawn with a mouse (positions rounded to screen pixels, zoomed out) with a
+        // 96 px highlighter: every pixel on the stroke's centre line is inside, every pixel
+        // farther than its half width is outside: no notches, holes or hairs.
+        let z = 0.56;
+        let mut pts = Vec::new();
+        let mut t: f64 = 0.0;
+        while t < 1.0 {
+            let (sx, sy) = (60.0 + t * 520.0 + 40.0 * (t * 19.0).sin(), 160.0 + 70.0 * (t * 9.0).sin() + 30.0 * (t * 23.0).cos());
+            pts.extend([(sx.round() / z) as f32, (sy.round() / z) as f32, -1.0]);
+            t += 0.0012 + 0.0016 * (t * 97.0).sin().abs();
+        }
+        let thin = thin_points(&pts, 0.4 / z);
+        let mesh = crate::paint::fill_mesh(&stroke_path(&thin, 96.0, true), egui::Color32::WHITE);
+        let inside = |x: f64, y: f64| {
+            mesh.indices.chunks_exact(3).any(|t| {
+                let [a, b, c] = [t[0], t[1], t[2]].map(|i| mesh.vertices[i as usize].pos);
+                let s = |p: egui::Pos2, q: egui::Pos2| (q.x - p.x) as f64 * (y - p.y as f64) - (q.y - p.y) as f64 * (x - p.x as f64);
+                let (d1, d2, d3) = (s(a, b), s(b, c), s(c, a));
+                !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0))
+            })
+        };
+        let line: Vec<Pt> = thin.chunks_exact(3).map(|p| pt(p[0] as f64, p[1] as f64)).collect();
+        let away = |x: f64, y: f64| line.windows(2).map(|w| dist_to_segment(x, y, w[0].x, w[0].y, w[1].x, w[1].y)).fold(f64::INFINITY, f64::min);
+        let (mut holes, mut hairs) = (0, 0);
+        let mut y = 100.0;
+        while y < 520.0 {
+            let mut x = 40.0;
+            while x < 1140.0 {
+                let d = away(x, y);
+                if d < 40.0 && !inside(x, y) {
+                    holes += 1;
+                }
+                if d > 52.0 && d < 110.0 && inside(x, y) {
+                    hairs += 1;
+                }
+                x += 5.0;
+            }
+            y += 5.0;
+        }
+        assert_eq!((holes, hairs), (0, 0));
     }
 
     #[test]
@@ -819,5 +704,51 @@ mod tests {
         let on = ruler_snapper(&ruler, 450.0, 320.0, 2.0).unwrap();
         assert_eq!(on.apply(500.0, 330.0).y, 344.0);
         assert!(ruler_snapper(&Ruler { visible: false, ..ruler }, 400.0, 248.0, 2.0).is_none());
+    }
+}
+
+#[cfg(test)]
+mod big_stroke_picture {
+    /// `TRATTO_SHOT=x.png cargo test big_strokes_picture -- --ignored`: thick strokes drawn
+    /// with a mouse (pixel-rounded positions, zoomed out), to look at their edges.
+    #[test]
+    #[ignore]
+    fn big_strokes_picture() {
+        let z = 0.56;
+        let mut pts = Vec::new();
+        let mut t: f64 = 0.0;
+        while t < 1.0 {
+            // A loop-the-loop wave, sampled like a mouse: screen pixels, uneven steps.
+            let (sx, sy) = (60.0 + t * 520.0 + 40.0 * (t * 19.0).sin(), 160.0 + 70.0 * (t * 9.0).sin() + 30.0 * (t * 23.0).cos());
+            pts.extend([(sx.round() / z) as f32, (sy.round() / z) as f32, -1.0]);
+            t += 0.0012 + 0.0016 * ((t * 97.0).sin().abs());
+        }
+        let thin = super::thin_points(&pts, 0.4 / z);
+        let mut pm = tiny_skia::Pixmap::new(1200, 700).unwrap();
+        pm.fill(tiny_skia::Color::WHITE);
+        // And a pen with pressure, zoomed in four times, on the right.
+        let pen: Vec<f32> = (0..=200).flat_map(|i| {
+            let t = i as f64 / 200.0;
+            [(t * 120.0) as f32, (20.0 * (t * 9.0).sin()) as f32, (0.15 + 0.8 * (t * 3.1).sin().abs()) as f32]
+        }).collect();
+        for (dy, size, hl) in [(0.0f32, 64.0, false), (380.0, 96.0, true), (-1.0, 6.0, false)] {
+            let path = if dy < 0.0 { super::stroke_path(&pen, size, hl).mapped(|x, y| ((x * 4.0 + 680.0) / z as f32, (y * 4.0 + 300.0) / z as f32)) } else { super::stroke_path(&thin, size, hl) };
+            let dy = dy.max(0.0);
+            let mut pb = tiny_skia::PathBuilder::new();
+            for c in &path.cmds {
+                match *c {
+                    crate::prims::Cmd::Move(x, y) => pb.move_to(x, y),
+                    crate::prims::Cmd::Line(x, y) => pb.line_to(x, y),
+                    crate::prims::Cmd::Quad(a, b, x, y) => pb.quad_to(a, b, x, y),
+                    crate::prims::Cmd::Cubic(a, b, c, d, x, y) => pb.cubic_to(a, b, c, d, x, y),
+                    crate::prims::Cmd::Close => pb.close(),
+                }
+            }
+            let mut paint = tiny_skia::Paint::default();
+            paint.set_color_rgba8(if hl { 240 } else { 30 }, if hl { 200 } else { 30 }, if hl { 40 } else { 30 }, if hl { 115 } else { 255 });
+            let tr = tiny_skia::Transform::from_scale(z as f32, z as f32).post_translate(0.0, dy);
+            pm.fill_path(&pb.finish().unwrap(), &paint, tiny_skia::FillRule::Winding, tr, None);
+        }
+        pm.save_png(std::env::var("TRATTO_SHOT").unwrap()).unwrap();
     }
 }

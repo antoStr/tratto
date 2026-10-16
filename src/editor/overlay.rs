@@ -6,7 +6,7 @@ use egui::epaint::TextShape;
 use egui::{Color32, FontId, Painter, Pos2, Shape, Stroke, Vec2, pos2, vec2};
 
 use super::*;
-use crate::ink::{RULER_HEIGHT, RULER_LENGTH, stroke_outline};
+use crate::ink::{RULER_HEIGHT, RULER_LENGTH, stroke_path};
 use crate::paint::fill_mesh;
 use crate::prims::Path;
 
@@ -50,17 +50,11 @@ impl Editor {
         }
         let (x0, y0) = (pts[0], pts[1]);
         let rel: Vec<f32> = pts.chunks_exact(3).flat_map(|p| [(p[0] - x0) as f32, (p[1] - y0) as f32, p[2] as f32]).collect();
-        let outline: Vec<crate::geom::Pt> = stroke_outline(&rel, size, hl)
-            .into_iter()
-            .map(|q| {
-                let s = self.sp(q.x + x0, q.y + y0);
-                pt(s.x as f64, s.y as f64)
-            })
-            .collect();
+        let path = stroke_path(&rel, size, hl).mapped(|x, y| self.sp(x as f64 + x0, y as f64 + y0).into());
         // As the stroke will be drawn: the default ink light on a dark board.
         let color = if color == DARK && is_dark(&self.board.meta().background) { crate::prims::LIGHT_INK } else { color };
         let a = if hl { 0.45 } else { 1.0 } * opacity.clamp(0.05, 1.0) as f32;
-        out.push(Shape::mesh(fill_mesh(&Path::smooth_outline(&outline), alpha(color, a * color.a() as f32 / 255.0))));
+        out.push(Shape::mesh(fill_mesh(&path, alpha(color, a * color.a() as f32 / 255.0))));
     }
 
     fn laser_shape(&self, out: &mut Vec<Shape>, flat: &[f64], color: Color32) {

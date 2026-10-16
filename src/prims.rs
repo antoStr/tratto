@@ -4,7 +4,7 @@
 use egui::Color32;
 
 use crate::geom::{MIN_SIZE, shape_polygon};
-use crate::ink::stroke_outline;
+use crate::ink::stroke_path;
 use crate::model::{Align, DARK, El, FontKind, Head, Kind, Line, Route, Shape, ShapeKind, color_or, is_dark};
 use crate::text::{self, LINE_HEIGHT, Placed, STICKY_PAD, place_lines};
 
@@ -30,14 +30,30 @@ impl Path {
     }
     /// The same path moved by (dx, dy).
     pub fn translated(&self, dx: f32, dy: f32) -> Path {
+        self.mapped(|x, y| (x + dx, y + dy))
+    }
+    /// The same path with every point moved by `f` (a move, or a move and a scale).
+    pub fn mapped(&self, f: impl Fn(f32, f32) -> (f32, f32)) -> Path {
         let cmds = self
             .cmds
             .iter()
             .map(|c| match *c {
-                Cmd::Move(x, y) => Cmd::Move(x + dx, y + dy),
-                Cmd::Line(x, y) => Cmd::Line(x + dx, y + dy),
-                Cmd::Quad(a, b, x, y) => Cmd::Quad(a + dx, b + dy, x + dx, y + dy),
-                Cmd::Cubic(a, b, c2, d, x, y) => Cmd::Cubic(a + dx, b + dy, c2 + dx, d + dy, x + dx, y + dy),
+                Cmd::Move(x, y) => {
+                    let (x, y) = f(x, y);
+                    Cmd::Move(x, y)
+                }
+                Cmd::Line(x, y) => {
+                    let (x, y) = f(x, y);
+                    Cmd::Line(x, y)
+                }
+                Cmd::Quad(a, b, x, y) => {
+                    let ((a, b), (x, y)) = (f(a, b), f(x, y));
+                    Cmd::Quad(a, b, x, y)
+                }
+                Cmd::Cubic(a, b, c2, d, x, y) => {
+                    let ((a, b), (c2, d), (x, y)) = (f(a, b), f(c2, d), f(x, y));
+                    Cmd::Cubic(a, b, c2, d, x, y)
+                }
                 Cmd::Close => Cmd::Close,
             })
             .collect();
@@ -118,23 +134,6 @@ impl Path {
         p.cubic_to(cx - kx, cy + ry, cx - rx, cy + ky, cx - rx, cy);
         p.cubic_to(cx - rx, cy - ky, cx - kx, cy - ry, cx, cy - ry);
         p.cubic_to(cx + kx, cy - ry, cx + rx, cy - ky, cx + rx, cy);
-        p.close();
-        p
-    }
-
-    /// Closed outline through the midpoints of a polygon, with its points as controls: how
-    /// stroke outlines are drawn smoothly.
-    pub fn smooth_outline(pts: &[crate::geom::Pt]) -> Path {
-        let mut p = Path::default();
-        let n = pts.len();
-        if n == 0 {
-            return p;
-        }
-        p.move_to(pts[0].x as f32, pts[0].y as f32);
-        for i in 0..n {
-            let (a, b) = (pts[i], pts[(i + 1) % n]);
-            p.quad_to(a.x as f32, a.y as f32, ((a.x + b.x) / 2.0) as f32, ((a.y + b.y) / 2.0) as f32);
-        }
         p.close();
         p
     }
@@ -546,8 +545,7 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
                 let pts: Vec<f64> = points.chunks_exact(3).flat_map(|p| [p[0] as f64, p[1] as f64]).collect();
                 out.push(Prim::Stroke { path: Path::polyline(&pts), width: (if env.hairline { px } else { i.size }) as f32, color, round: false, dash: None });
             } else {
-                let outline = stroke_outline(points, i.size.max(MIN_SIZE), hl);
-                out.push(Prim::Fill { path: Path::smooth_outline(&outline), color });
+                out.push(Prim::Fill { path: stroke_path(points, i.size.max(MIN_SIZE), hl), color });
             }
         }
         Kind::Shape(s) => {

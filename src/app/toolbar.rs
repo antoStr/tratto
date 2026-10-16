@@ -966,10 +966,10 @@ fn pen_slot(ui: &mut Ui, ed: &mut Editor, i: usize, t: &Theme, top: bool) {
             [4.0 + s * 40.0, 16.0 + (s * std::f32::consts::TAU).sin() * 6.0, 0.35 + (s * std::f32::consts::PI).sin() * 0.55]
         })
         .collect();
-    let outline: Vec<crate::geom::Pt> = crate::ink::stroke_outline(&pts, (pen.size * 1.2).min(12.0), false).into_iter().map(|q| crate::geom::pt(q.x + rect.min.x as f64, q.y + rect.min.y as f64)).collect();
+    let path = crate::ink::stroke_path(&pts, (pen.size * 1.2).min(12.0), false).translated(rect.min.x, rect.min.y);
     let color = crate::model::color_or(&pen.color, crate::model::DARK);
     let color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), (pen.opacity.clamp(0.1, 1.0) * 255.0) as u8);
-    ui.painter().add(crate::paint::fill_mesh(&crate::prims::Path::smooth_outline(&outline), color));
+    ui.painter().add(crate::paint::fill_mesh(&path, color));
     let label = format!("Penna {}", i + 1);
     let resp = ui::tip(resp, if active { "Colore della penna" } else { &label }, Some(&(i + 1).to_string()));
     if resp.clicked() && !active {
