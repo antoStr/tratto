@@ -734,6 +734,13 @@ mod picture {
                 return;
             }
             let b = screen.as_mut().unwrap();
+            // The share dialog: its form first, then (with a local share) the live link and people.
+            if scene == "share" {
+                b.ui.share = true;
+                if frame == 20 {
+                    b.share = Some(crate::share::Share::start(b.store().clone(), &b.id, &b.title, b.editor.board.doc.clone(), crate::share::Access::Edit, false, None, std::sync::Arc::new(|| {})).unwrap());
+                }
+            }
             // Scrolled down far from the dot: the minimap must keep the view marker inside.
             if scene == "dot" && frame == 20 {
                 let c = b.editor.cam;

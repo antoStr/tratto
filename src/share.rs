@@ -89,6 +89,8 @@ struct Inner {
     host_state: Value,
     /// Failed guest logins per IP: 20 tries per 10 minutes.
     fails: HashMap<String, (u32, Instant)>,
+    /// The tunnel's address while Tratto checks it can be reached from the internet.
+    confirming: Option<String>,
 }
 
 #[derive(Clone)]
@@ -186,6 +188,7 @@ impl Share {
             next_id: 1,
             host_state: Value::Null,
             fails: HashMap::new(),
+            confirming: None,
         };
         let shared = Arc::new(Shared { inner: Mutex::new(inner), senders: senders.clone(), doc: doc.clone(), store, notify });
         // Every change to the document goes to everyone but the guest it came from.
@@ -213,6 +216,13 @@ impl Share {
             let _ = axum::serve(listener, app.into_make_service()).with_graceful_shutdown(async move {
                 let _ = rx.await;
             }).await;
+        });
+        // The app for the guests is compressed while the tunnel opens, not when the first one arrives.
+        std::thread::spawn(|| {
+            let mut h = HeaderMap::new();
+            h.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
+            let _ = asset("pkg/tratto_bg.wasm", &h);
+            let _ = asset("pkg/tratto.js", &h);
         });
         let tunnel_slot: Arc<Mutex<Option<std::process::Child>>> = Default::default();
         match tunnel {
@@ -382,12 +392,12 @@ fn open_tunnel(shared: Arc<Shared>, bin: PathBuf, port: u16, slot: Arc<Mutex<Opt
     {
         let (shared, slot) = (shared.clone(), slot.clone());
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_secs(45));
+            std::thread::sleep(Duration::from_secs(60));
             if lock(&shared.inner).status == Status::Starting {
                 if let Some(mut c) = lock(&slot).take() {
                     let _ = c.kill();
                 }
-                lock(&shared.inner).status = Status::Error("Cloudflare non risponde da 45 secondi. Controlla la connessione a internet.".into());
+                lock(&shared.inner).status = Status::Error("Cloudflare non risponde da un minuto. Controlla la connessione a internet e riprova.".into());
                 (shared.notify)();
             }
         });
@@ -413,11 +423,11 @@ fn open_tunnel(shared: Arc<Shared>, bin: PathBuf, port: u16, slot: Arc<Mutex<Opt
                 && let Some(u) = &url
             {
                 let mut i = lock(&shared.inner);
-                if i.status == Status::Starting {
-                    i.status = Status::Live;
-                    i.url = Some(u.clone());
+                if i.status == Status::Starting && i.confirming.is_none() {
+                    i.confirming = Some(u.clone());
                     drop(i);
                     (shared.notify)();
+                    confirm_reachable(shared.clone(), u.clone());
                 }
             }
         }
@@ -433,10 +443,53 @@ fn open_tunnel(shared: Arc<Shared>, bin: PathBuf, port: u16, slot: Arc<Mutex<Opt
     });
 }
 
+/// The link is shown once it works for whoever opens it. A new trycloudflare.com address takes
+/// a few seconds to exist on the internet after the tunnel is up; a guest who opened it before
+/// would get "site not found". So: first the name, asked to Cloudflare's own resolver over HTTPS
+/// (asking this PC's resolver too early would make it remember "no such name"), then the page
+/// itself through the tunnel. After 35 s the link is shown anyway.
+fn confirm_reachable(shared: Arc<Shared>, url: String) {
+    std::thread::spawn(move || {
+        let host = url.trim_start_matches("https://").to_string();
+        let start = Instant::now();
+        let get = |u: String, json: bool| {
+            let mut req = ehttp::Request::get(u);
+            req.timeout = Some(Duration::from_secs(5));
+            if json {
+                req.headers.insert("accept", "application/dns-json");
+            }
+            ehttp::fetch_blocking(&req).ok().filter(|r| r.ok)
+        };
+        let still = || lock(&shared.inner).confirming.as_deref() == Some(url.as_str());
+        while start.elapsed() < Duration::from_secs(25) && still() {
+            let found = get(format!("https://cloudflare-dns.com/dns-query?name={host}&type=A"), true).and_then(|r| serde_json::from_slice::<Value>(&r.bytes).ok()).is_some_and(|v| v["Answer"].as_array().is_some_and(|a| !a.is_empty()));
+            if found {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(700));
+        }
+        while start.elapsed() < Duration::from_secs(35) && still() {
+            if get(format!("{url}/api/ping"), false).is_some_and(|r| r.bytes == b"tratto") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(700));
+        }
+        let mut i = lock(&shared.inner);
+        if i.status == Status::Starting && i.confirming.as_deref() == Some(url.as_str()) {
+            i.status = Status::Live;
+            i.url = Some(url);
+            i.confirming = None;
+            drop(i);
+            (shared.notify)();
+        }
+    });
+}
+
 /* ---------------- the server ---------------- */
 
 fn router(shared: Arc<Shared>) -> Router {
     Router::new()
+        .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "tratto") }))
         .route("/api/guest/session", get(session))
         .route("/api/guest/join", post(join))
         .route("/api/guest/ticket", get(ticket))
@@ -483,6 +536,11 @@ fn asset(path: &str, h: &HeaderMap) -> Response {
         "icon.svg" => (crate::assets::LOGO, "image/svg+xml"),
         _ => return (StatusCode::NOT_FOUND, Json(json!({ "error": "Risorsa non trovata" }))).into_response(),
     };
+    // A guest who reloads the page keeps the app it already has.
+    let etag = format!("\"{}-{}\"", env!("CARGO_PKG_VERSION"), body.len());
+    if h.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) == Some(etag.as_str()) {
+        return (StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response();
+    }
     // Big files go compressed: the app shrinks to about a third, a faster start for guests.
     let gzip = h.get(header::ACCEPT_ENCODING).and_then(|v| v.to_str().ok()).is_some_and(|v| v.contains("gzip"));
     if gzip && body.len() > 64 * 1024 {
@@ -500,9 +558,9 @@ fn asset(path: &str, h: &HeaderMap) -> Response {
                 e.finish().unwrap_or_default().into()
             })
             .clone();
-        return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-cache"), (header::CONTENT_ENCODING, "gzip"), (header::VARY, "accept-encoding")], packed).into_response();
+        return ([(header::CONTENT_TYPE, mime.to_string()), (header::CACHE_CONTROL, "no-cache".into()), (header::CONTENT_ENCODING, "gzip".into()), (header::VARY, "accept-encoding".into()), (header::ETAG, etag)], packed).into_response();
     }
-    ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-cache")], body).into_response()
+    ([(header::CONTENT_TYPE, mime.to_string()), (header::CACHE_CONTROL, "no-cache".into()), (header::ETAG, etag)], body).into_response()
 }
 
 fn err(status: StatusCode, msg: &str) -> Response {
@@ -832,9 +890,10 @@ pub fn dialog(ui: &mut egui::Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
         }
         Some(v) => match &v.status {
             Status::Starting => {
+                let almost = b.share.as_ref().is_some_and(|s| lock(&s.shared.inner).confirming.is_some());
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(RichText::new("Apro un collegamento sicuro…").color(t.text));
+                    ui.label(RichText::new(if almost { "Il link è quasi pronto: controllo che si apra da internet…" } else { "Apro un collegamento sicuro…" }).color(t.text));
                 });
                 ui.ctx().request_repaint_after(Duration::from_millis(250));
                 secure_note(ui);
