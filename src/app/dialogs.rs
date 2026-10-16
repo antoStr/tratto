@@ -88,6 +88,18 @@ pub fn dialog_opt(ctx: &egui::Context, id: &str, title: &str, width: f32, open: 
 /// A setting: its name (and a line about it) on the left, the control on the right.
 fn row(ui: &mut egui::Ui, label: &str, hint: Option<&str>, control: impl FnOnce(&mut egui::Ui)) {
     let t = ui::theme(ui.ctx());
+    // On a phone the name goes above its control, which then has the whole width.
+    if ui::narrow(ui.ctx()) {
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.label(RichText::new(label).font(ui::medium(ui::px(11.0))).color(t.text));
+            if let Some(h) = hint {
+                ui.label(RichText::new(h).size(ui::px(10.0)).color(t.text2));
+            }
+            ui::wrap_row(ui, 32.0, control);
+        });
+        return;
+    }
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.set_width(176.0);
@@ -148,6 +160,32 @@ pub fn settings(ctx: &egui::Context, open: &mut bool, p: &mut Prefs, host: bool)
         ];
         let tabs: &[(SettingsTab, &str, &str)] = if host { all } else { &all[..all.len() - 1] };
         let h = SETTINGS_H.min((ui.ctx().content_rect().height() - 160.0).max(280.0));
+        // A phone: the sections as chips above, the chosen one below with the whole width.
+        if ui::narrow(ui.ctx()) {
+            let h = (ui.ctx().content_rect().height() - 220.0).max(240.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                for (v, icon, label) in tabs {
+                    let on = *v == tab;
+                    let g = ui.painter().layout_no_wrap(label.to_string(), if on { ui::medium(ui::px(11.0)) } else { egui::FontId::proportional(ui::px(11.0)) }, t.text);
+                    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 40.0, 36.0), Sense::click());
+                    ui.painter().rect_filled(r, 18.0, if on { t.selected } else { t.bg2 });
+                    ui::icon(ui, icon, pos2(r.min.x + 16.0, r.center().y), 14.0, if on { t.text } else { t.icon2 });
+                    ui.painter().galley(pos2(r.min.x + 28.0, r.center().y - g.size().y / 2.0), g, t.text);
+                    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, *label));
+                    ui::focus_ring(ui, &resp, r);
+                    if resp.clicked() {
+                        tab = *v;
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            egui::ScrollArea::vertical().id_salt(("settings-scroll", tab)).auto_shrink([false, true]).max_height(h).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 12.0;
+                settings_section(ui, tab, p, host);
+            });
+            return;
+        }
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             // Sections.
@@ -274,6 +312,7 @@ fn settings_section(ui: &mut egui::Ui, tab: SettingsTab, p: &mut Prefs, host: bo
             });
             ui::switch(ui, &mut p.timer_banner, "Timer anche grande in alto sulla lavagna (oltre che sul suo pulsante)");
             ui::switch(ui, &mut p.timer_sound, "Un suono quando il tempo del timer finisce");
+            ui::switch(ui, &mut p.sticky_arrows, "Il + accanto a una nota la collega con una freccia alla nuova (di base solo per le forme dei diagrammi)");
             ui.add_space(4.0);
             ui::heading(ui, "Pannelli");
             ui::switch(ui, &mut p.left_panel, "Livelli e modelli, a sinistra");

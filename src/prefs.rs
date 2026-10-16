@@ -181,6 +181,9 @@ pub struct Prefs {
     pub music_muted: bool,
     /// A chime when the timer runs out.
     pub timer_sound: bool,
+    /// The "+" beside a note also draws an arrow to the new one (as for shapes); off: just a
+    /// note beside it, as in FigJam.
+    pub sticky_arrows: bool,
     /// Which default layout these preferences were last brought to (see `from_json`); missing in
     /// what older versions saved, so 0 there.
     #[serde(default)]
@@ -299,6 +302,7 @@ impl Default for Prefs {
             music_volume: 0.6,
             music_muted: false,
             timer_sound: true,
+            sticky_arrows: false,
             layout: LAYOUT,
         }
     }

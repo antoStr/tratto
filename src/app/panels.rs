@@ -1481,7 +1481,7 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
     let k = ui::motion::appear(ctx, Id::new("focus-pill-anim"), true);
     let lift = ui::motion::travel(ctx, k) * 6.0;
     let mut action = None;
-    egui::Area::new(Id::new("focus-pill")).fixed_pos(stage.min + vec2(12.0, 12.0 + lift)).order(egui::Order::Foreground).show(ctx, |ui| {
+    let pill = egui::Area::new(Id::new("focus-pill")).fixed_pos(stage.min + vec2(12.0, 12.0 + lift)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
         ui::float_frame(&t).inner_margin(egui::Margin::symmetric(if is_mobile { 6 } else { 8 }, 6)).show(ui, |ui| {
             ui::row(ui, 24.0, |ui| {
@@ -1495,7 +1495,7 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
                     guest_buttons(ui, b, dialogs);
                 }
                 let focus = b.editor.prefs.focus;
-                if ui::icon_button(ui, "panel-left-open", if focus { "Mostra i pannelli" } else { "Mostra il pannello dei livelli" }, focus.then_some("Ctrl+\\"), vec2(24.0, 24.0), 16.0, false, false).clicked() {
+                if ui::icon_button(ui, "panel-left-open", if focus { "Mostra i pannelli" } else { "Mostra il pannello dei livelli" }, focus.then_some("Ctrl+\\"), vec2(ui::hit(ui.ctx(), 24.0), ui::hit(ui.ctx(), 24.0)), 16.0, false, false).clicked() {
                     if focus {
                         b.editor.toggle_focus();
                     } else if b.editor.prefs.left_panel {
@@ -1508,6 +1508,7 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
             });
         });
     });
+    ctx.data_mut(|d| d.insert_temp(Id::new("left-pill-rect"), pill.response.rect));
     action
 }
 
@@ -1515,7 +1516,7 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
 /// the way to the settings.
 fn main_menu(ui: &mut Ui, b: &mut BoardScreen, dialogs: &mut Dialogs) -> Option<Action> {
     let t = ui::theme(ui.ctx());
-    let (r, resp) = ui.allocate_exact_size(vec2(38.0, 24.0), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(vec2(38.0, ui::hit(ui.ctx(), 24.0)), Sense::click());
     ui::hover_fill(ui, resp.id, r, resp.hovered(), ui::RADIUS as f32, t.hover);
     ui::icons::logo(ui, Rect::from_center_size(r.center() - vec2(6.0, 0.0), vec2(18.0, 18.0)));
     icon(ui, "chevron-down", r.center() + vec2(12.0, 0.0), 10.0, t.icon2);
@@ -1602,7 +1603,7 @@ pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
     let x = ui::motion::spring(ctx, Id::new("right-pill-x"), x, 0.3, 0.9);
     let k = ui::motion::appear(ctx, Id::new("right-pill-anim"), true);
     let lift = ui::motion::travel(ctx, k) * 6.0;
-    egui::Area::new(Id::new("right-pill")).pivot(egui::Align2::RIGHT_TOP).fixed_pos(pos2(x, stage.min.y + 12.0 + lift)).order(egui::Order::Foreground).show(ctx, |ui| {
+    let pill = egui::Area::new(Id::new("right-pill")).pivot(egui::Align2::RIGHT_TOP).fixed_pos(pos2(x, stage.min.y + 12.0 + lift)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
         ui::float_frame(&t).inner_margin(egui::Margin::symmetric(if is_mobile { 6 } else { 8 }, 6)).show(ui, |ui| {
             ui::row(ui, 28.0, |ui| {
@@ -1634,6 +1635,7 @@ pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
             });
         });
     });
+    ctx.data_mut(|d| d.insert_temp(Id::new("right-pill-rect"), pill.response.rect));
 }
 
 /// While a cell is written in: its colour, and rows and columns added or taken away around it,

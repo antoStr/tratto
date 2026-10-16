@@ -184,7 +184,7 @@ pub fn timer_button(ui: &mut egui::Ui, ed: &mut Editor) {
             let font = ui::medium(ui::px(12.0));
             let text = clock(tm.remaining());
             let g = ui.painter().layout_no_wrap(text.clone(), font, Color32::PLACEHOLDER);
-            let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 34.0 + if music.is_some() { 14.0 } else { 0.0 }, 24.0), egui::Sense::click());
+            let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 34.0 + if music.is_some() { 14.0 } else { 0.0 }, ui::hit(ui.ctx(), 24.0)), egui::Sense::click());
             let dx = shake(ui.ctx());
             let r = rect.translate(vec2(dx, 0.0));
             let bg = if tm.done() { t.danger.gamma_multiply(0.12) } else { t.selected };
@@ -200,7 +200,8 @@ pub fn timer_button(ui: &mut egui::Ui, ed: &mut Editor) {
             ui::tip(resp, "Timer e musica", None)
         }
         None => {
-            let r = ui::icon_button(ui, if music.is_some() { "" } else { "timer" }, "Timer e musica", None, vec2(24.0, 24.0), 16.0, music.is_some(), false);
+            let s = ui::hit(ui.ctx(), 24.0);
+            let r = ui::icon_button(ui, if music.is_some() { "" } else { "timer" }, "Timer e musica", None, vec2(s, s), 16.0, music.is_some(), false);
             if music.is_some() {
                 eq_bars(ui, r.rect.center(), 11.0, t.brand);
             }
@@ -480,7 +481,8 @@ fn emoji(ui: &egui::Ui, ed: &mut Editor, e: &str, rect: Rect) {
 /// the middle of the view.
 pub fn emote_button(ui: &mut egui::Ui, ed: &mut Editor) {
     let t = ui::theme(ui.ctx());
-    let (r, resp) = ui.allocate_exact_size(vec2(24.0, 24.0), egui::Sense::click());
+    let s = ui::hit(ui.ctx(), 24.0);
+    let (r, resp) = ui.allocate_exact_size(vec2(s, s), egui::Sense::click());
     ui::hover_fill(ui, resp.id, r, resp.hovered(), ui::RADIUS as f32, t.hover);
     emoji(ui, ed, "❤️", Rect::from_center_size(r.center(), vec2(17.0, 17.0)));
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Emote"));
@@ -517,7 +519,7 @@ pub fn vote_button(ui: &mut egui::Ui, ed: &mut Editor) {
     }
     let t = ui::theme(ui.ctx());
     let voting = ed.board.voting();
-    let r = ui::icon_button(ui, "vote", "Votazione", None, vec2(24.0, 24.0), 16.0, voting.is_some(), false);
+    let r = ui::icon_button(ui, "vote", "Votazione", None, vec2(ui::hit(ui.ctx(), 24.0), ui::hit(ui.ctx(), 24.0)), 16.0, voting.is_some(), false);
     egui::Popup::from_toggle_button_response(&r).frame(ui::float_frame(&t).inner_margin(egui::Margin::same(12))).align(egui::RectAlign::BOTTOM_END).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.set_width(240.0);
         ui::heading(ui, "Votazione");
@@ -544,7 +546,7 @@ fn spotlight_of(s: &Value) -> Option<f64> {
 pub fn spotlight_button(ui: &mut egui::Ui, ed: &mut Editor) {
     let on = ed.presence.local.get("spotlight").and_then(|v| v.as_f64()).is_some();
     let label = if on { "Smetti di presentare" } else { "Presenta: tutti seguono la tua vista" };
-    if ui::icon_button(ui, "presentation", label, None, vec2(24.0, 24.0), 16.0, on, false).clicked() {
+    if ui::icon_button(ui, "presentation", label, None, vec2(ui::hit(ui.ctx(), 24.0), ui::hit(ui.ctx(), 24.0)), 16.0, on, false).clicked() {
         ed.presence.set("spotlight", if on { Value::Null } else { json!(now()) });
     }
 }
@@ -616,10 +618,37 @@ pub fn top_bars(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     }
     let is_mobile = stage.width() < 640.0;
     let travel = ui::motion::travel(ctx, k);
-    let base_y = if is_mobile { stage.min.y + 54.0 } else { stage.min.y + 32.0 };
+    let mut base_y = if is_mobile { stage.min.y + 54.0 } else { stage.min.y + 32.0 };
+    // Clear of the minimap when it sits at the top: in the room on its left, or below it when
+    // that room is too narrow.
+    let mut cx = stage.center().x;
+    let mut room = stage.width() - 24.0;
+    let size = ctx.data(|d| d.get_temp::<egui::Vec2>(Id::new("live-top-size"))).unwrap_or(vec2(320.0, 40.0));
+    if let Some(m) = ctx.data(|d| d.get_temp::<Rect>(Id::new("minimap-rect")))
+        && m.min.y < base_y + size.y
+        && m.max.x > cx - size.x / 2.0
+    {
+        let left = m.min.x - 12.0 - (stage.min.x + 12.0);
+        if left >= size.x + 8.0 {
+            cx = stage.min.x + 12.0 + left / 2.0;
+            room = left;
+        } else {
+            base_y = m.max.y + 10.0;
+        }
+    }
+    // Anything else at the top it would still touch (the pills, the minimap): below it.
+    for k in ["left-pill-rect", "right-pill-rect", "minimap-rect"] {
+        if let Some(o) = ctx.data(|d| d.get_temp::<Rect>(Id::new(k))) {
+            let r = Rect::from_min_size(pos2(cx - size.x / 2.0, base_y), size);
+            if r.intersects(o.expand(6.0)) {
+                base_y = o.max.y + 10.0;
+            }
+        }
+    }
     let y = base_y - travel * 16.0;
-    egui::Area::new(Id::new("live-top")).pivot(egui::Align2::CENTER_TOP).fixed_pos(pos2(stage.center().x, y)).order(egui::Order::Foreground).show(ctx, |ui| {
+    let resp = egui::Area::new(Id::new("live-top")).pivot(egui::Align2::CENTER_TOP).fixed_pos(pos2(cx, y)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
+        let _ = room;
         ui.vertical_centered(|ui| {
             if timer_floating {
                 pill(ui, &t, |ui| {
@@ -633,8 +662,8 @@ pub fn top_bars(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
                     ui.add_space(18.0);
                     if !ended {
                         let used: u32 = ed.board.tally(Some(&ed.voter)).values().sum();
-                        let text = if ed.read_only { "Votazione: solo chi può modificare vota".to_string() } else { format!("Votazione: ti restano {} voti su {per}. Clicca per votare, Maiusc+clic per togliere", per.saturating_sub(used)) };
-                        ui.label(RichText::new(text).color(t.text));
+                        let text = if ed.read_only { "Votazione: vota chi può modificare".to_string() } else { format!("Votazione · ti restano {} voti su {per}", per.saturating_sub(used)) };
+                        ui.label(RichText::new(text).color(t.text)).on_hover_text("Clicca su note, forme o immagini per votarle; Maiusc+clic per togliere un voto.");
                         if !ed.read_only && ui::button(ui, "Termina", Btn::Secondary, None, false, true).clicked() {
                             ed.board.end_voting();
                         }
@@ -686,6 +715,7 @@ pub fn top_bars(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
             }
         });
     });
+    ctx.data_mut(|d| d.insert_temp(Id::new("live-top-size"), resp.response.rect.size()));
     ctx.data_mut(|d| d.insert_temp(fid, f));
 }
 

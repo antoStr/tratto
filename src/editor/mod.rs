@@ -1432,7 +1432,10 @@ impl Editor {
     /// decision. The copy is ready to be written in.
     pub fn add_beside(&mut self, el: &El, side: Handle) {
         let z = self.cam.z;
-        let gap = (80.0 / z).max(el.w.min(el.h) * 0.5);
+        // Notes, as in FigJam: a new note right beside, no arrow (unless chosen in the settings);
+        // shapes are diagrams: further away, joined by an arrow.
+        let arrow = el.sticky().is_none() || self.prefs.sticky_arrows;
+        let gap = if arrow { (80.0 / z).max(el.w.min(el.h) * 0.5) } else { el.w.min(el.h) * 0.1 };
         let c = center(el);
         let (dx, dy) = match side {
             Handle::AddN => (0.0, -1.0),
@@ -1458,12 +1461,16 @@ impl Editor {
             }
         }
         let copy = self.sibling(el, x, y);
-        let mut base = self.connector(c, Some(el.id.clone()), true);
-        base.line_mut().unwrap().to = Some(copy.id.clone());
-        let line = route_connector(&base, |id| if id == copy.id { Some(&copy) } else { self.board.get(id).map(|e| &**e) }).unwrap_or(base);
         self.board.stop_capturing();
         let id = copy.id.clone();
-        self.board.put([copy, line]);
+        if arrow {
+            let mut base = self.connector(c, Some(el.id.clone()), true);
+            base.line_mut().unwrap().to = Some(copy.id.clone());
+            let line = route_connector(&base, |id| if id == copy.id { Some(&copy) } else { self.board.get(id).map(|e| &**e) }).unwrap_or(base);
+            self.board.put([copy, line]);
+        } else {
+            self.board.put([copy]);
+        }
         self.set_tool_keep(Tool::Select);
         self.selection = vec![id.clone()];
         self.editing = Some(id.clone());
@@ -2431,6 +2438,25 @@ mod tests {
     fn editor() -> Editor {
         let board = Board::new(yrs::Doc::new(), Arc::new(|| {}));
         Editor::new(board, "b".into(), Painter::new(crate::paint::Images::new(None)), Prefs::default(), "v".into())
+    }
+
+    #[test]
+    fn the_plus_beside_a_note_adds_a_note_and_beside_a_shape_an_arrow_too() {
+        let mut ed = editor();
+        let mut note = El::new(Kind::Sticky(Sticky { text: "a".into(), ..Default::default() }));
+        (note.id, note.w, note.h) = ("n".into(), 200.0, 200.0);
+        ed.board.put([note.clone(), node("s", 0.0, 600.0)]);
+        let lines = |ed: &mut Editor| ed.board.all().iter().filter(|e| e.is_line()).count();
+        ed.add_beside(&note, Handle::AddE);
+        assert_eq!(lines(&mut ed), 0, "as in FigJam: just another note");
+        let new = ed.board.get(&ed.selection[0]).unwrap().clone();
+        assert!(new.sticky().is_some() && new.x > 200.0 && new.x < 260.0, "right beside it: {}", new.x);
+        let shape = ed.board.get("s").unwrap().clone();
+        ed.add_beside(&shape, Handle::AddE);
+        assert_eq!(lines(&mut ed), 1, "a diagram node comes with its arrow");
+        ed.prefs.sticky_arrows = true;
+        ed.add_beside(&note, Handle::AddS);
+        assert_eq!(lines(&mut ed), 2, "arrows for notes too, when chosen");
     }
 
     #[test]

@@ -641,6 +641,12 @@ impl BoardScreen {
             super::context_bar::context_bar(&ctx, rect, &mut self.editor);
             super::toolbar::toolbar(&ctx, rect, &mut self.editor, &mut self.ui);
             let is_mobile = stage.width() < 600.0;
+            // Where the minimap is this frame, for what has to keep clear of it (none: not shown).
+            ctx.data_mut(|d| {
+                for k in ["minimap-rect", "left-pill-rect", "right-pill-rect"] {
+                    d.remove::<Rect>(Id::new(k));
+                }
+            });
             if !self.editor.prefs.focus && !is_mobile {
                 super::toolbar::view_controls(&ctx, rect, &mut self.editor);
                 if self.editor.prefs.minimap {

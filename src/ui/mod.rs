@@ -191,6 +191,11 @@ pub fn text_scale() -> f32 {
     f32::from_bits(TEXT_SCALE.load(std::sync::atomic::Ordering::Relaxed))
 }
 
+/// A phone, or a window as narrow as one: layouts stack and controls grow for fingers.
+pub fn narrow(ctx: &egui::Context) -> bool {
+    ctx.content_rect().width() < 640.0
+}
+
 /// An interface text size, as large as the settings ask.
 pub fn px(size: f32) -> f32 {
     (size * text_scale() * 2.0).round() / 2.0
@@ -426,7 +431,13 @@ pub fn blend(a: Color32, b: Color32, k: f32) -> Color32 {
 
 /// A small panel icon button (24×24, icon 16).
 pub fn small_icon_button(ui: &mut Ui, name: &str, label: &str, on: bool) -> Response {
-    icon_button(ui, name, label, None, vec2(24.0, 24.0), 16.0, on, false)
+    let s = hit(ui.ctx(), 24.0);
+    icon_button(ui, name, label, None, vec2(s, s), 16.0, on, false)
+}
+
+/// The size of something to touch: on a phone at least 32 points, for a finger.
+pub fn hit(ctx: &egui::Context, size: f32) -> f32 {
+    if narrow(ctx) { size.max(32.0) } else { size }
 }
 
 /// Mutually exclusive options in a grey track; the raised thumb slides to the chosen one.
@@ -434,7 +445,9 @@ pub fn segmented<T: PartialEq + Clone>(ui: &mut Ui, value: &mut T, options: &[(T
     let t = theme(ui.ctx());
     let s = sizes(ui.ctx());
     let ctx = ui.ctx().clone();
-    let h = ctl(24.0);
+    // Never wider than the room there is (a phone).
+    let width = width.min(ui.available_width().max(120.0));
+    let h = if narrow(&ctx) { ctl(32.0) } else { ctl(24.0) };
     let (rect, _) = ui.allocate_exact_size(vec2(width, h), Sense::hover());
     let key: Vec<&str> = options.iter().map(|o| o.1).collect();
     let base = ui.id().with(("seg", key));
@@ -1035,7 +1048,7 @@ pub fn menu_item(ui: &mut Ui, icon_name: Option<&str>, label: &str, kbd: Option<
     let want = menu_item_width(ui, label, kbd).max(140.0);
     // While the menu measures itself it asks only for its own width.
     let w = if ui.is_sizing_pass() { want } else { want.max(ui.available_width()) };
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, ctl(24.0)), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, if narrow(ui.ctx()) { ctl(36.0) } else { ctl(24.0) }), Sense::click());
     let hovered = resp.hovered() || resp.has_focus();
     if hovered {
         ui.painter().rect_filled(rect, RADIUS, if danger { hex(0xC8331A) } else { t.brand_fill });

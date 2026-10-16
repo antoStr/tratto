@@ -404,6 +404,16 @@ mod picture {
         if std::env::var_os("TRATTO_CLEAN").is_some() {
             (prefs.left_panel, prefs.right_panel, prefs.minimap) = (false, false, false);
         }
+        // TRATTO_CROWDED=1: everything open at once (panels, minimap, timer banner, voting,
+        // presenting), to see that nothing covers anything else.
+        let crowded = std::env::var_os("TRATTO_CROWDED").is_some();
+        if crowded {
+            (prefs.left_panel, prefs.right_panel, prefs.minimap, prefs.timer_banner) = (true, true, true, true);
+        }
+        // TRATTO_UI=1.5 TRATTO_TEXT=1.36: the interface at its largest.
+        if let Some(z) = std::env::var("TRATTO_UI").ok().and_then(|v| v.parse().ok()) {
+            prefs.ui_scale = z;
+        }
         let mut harness = egui_kittest::Harness::builder().with_size(size).with_pixels_per_point(ppp()).wgpu().build_ui(move |ui| {
             let ctx = ui.ctx().clone();
             if screen.is_none() {
@@ -413,6 +423,20 @@ mod picture {
                 b.editor.selection = vec![b.editor.board.all().iter().find(|e| e.shape().is_some()).unwrap().id.clone()];
                 b.editor.tool = if std::env::var_os("TRATTO_SELECT").is_some() { crate::editor::Tool::Select } else { crate::editor::Tool::Pen };
                 b.editor.prefs.focus = std::env::var_os("TRATTO_FOCUS").is_some();
+                if crowded {
+                    let now = crate::platform::shared_now();
+                    b.editor.board.transact_plain(|txn, m| {
+                        use yrs::Map;
+                        m.timer.insert(txn, "total", 300_000.0);
+                        m.timer.insert(txn, "left", 300_000.0);
+                        m.timer.insert(txn, "end", now + 200_000.0);
+                    });
+                    b.editor.board.start_voting(3);
+                    b.editor.presence.set("spotlight", serde_json::json!(now));
+                }
+                if prefs.ui_scale != 1.0 {
+                    ctx.set_zoom_factor(prefs.ui_scale);
+                }
                 screen = Some(b);
                 return;
             }
