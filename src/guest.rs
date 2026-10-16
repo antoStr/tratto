@@ -68,6 +68,17 @@ pub fn color_for(token: &str) -> &'static str {
 /// Starts the app on the page's canvas.
 pub fn start() {
     let canvas = window().document().and_then(|d| d.get_element_by_id("tratto")).and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok()).expect("canvas");
+    // A finger comes as a pointer and as a touch, and eframe takes both: every tap would count
+    // twice (a counter going up by two, a vote taken back at once). Only the touch goes on.
+    let only_touch = Closure::<dyn FnMut(web_sys::Event)>::new(|e: web_sys::Event| {
+        if js_sys::Reflect::get(&e, &"pointerType".into()).ok().and_then(|v| v.as_string()).as_deref() == Some("touch") {
+            e.stop_propagation();
+        }
+    });
+    for name in ["pointerdown", "pointerup"] {
+        let _ = window().add_event_listener_with_callback_and_bool(name, only_touch.as_ref().unchecked_ref(), true);
+    }
+    only_touch.forget();
     wasm_bindgen_futures::spawn_local(async move {
         let started = eframe::WebRunner::new().start(canvas, eframe::WebOptions::default(), Box::new(|cc| Ok(Box::new(GuestApp::new(cc))))).await;
         if let Some(el) = window().document().and_then(|d| d.get_element_by_id("loading")) {

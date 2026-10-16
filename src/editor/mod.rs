@@ -173,6 +173,8 @@ pub enum Request {
     Shortcuts,
     /// Open a web address (http or https only), in the browser.
     OpenLink(String),
+    /// A short message for the person (a toast).
+    Notice(String),
 }
 
 pub(crate) struct Draw {
@@ -1696,7 +1698,7 @@ impl Editor {
                 top -= dy;
             }
         }
-        let lock = shift || els.iter().any(|e| matches!(e.kind, Kind::Image { .. } | Kind::Stamp { .. })) || (els.len() == 1 && els[0].text().is_some() && h.corner());
+        let lock = shift || els.iter().any(|e| matches!(e.kind, Kind::Image { .. } | Kind::Stamp { .. })) || (els.len() == 1 && (els[0].text().is_some() || els[0].code().is_some()) && h.corner());
         let min = 1.0 / self.cam.z;
         let mut w = (right - left).max(min);
         let mut hh = (bottom - top).max(min);
@@ -1735,6 +1737,9 @@ impl Editor {
                 let mut next = El { rotation: el.rotation, ..scale_element(&base, f, to) };
                 if el.text().is_some() {
                     next = resize_text(el, next, h);
+                }
+                if el.code().is_some() {
+                    next = resize_code(el, next, h, to);
                 }
                 next
             } else {
@@ -2425,6 +2430,31 @@ fn resize_text(orig: &El, mut next: El, h: Handle) -> El {
     orig.clone()
 }
 
+/// A code block from a corner grows or shrinks whole, letters too; from a side it only gets
+/// wider or narrower. Its height always fits its lines, from the side that stays put.
+fn resize_code(orig: &El, mut next: El, h: Handle, to: BBox) -> El {
+    let Kind::Code(o) = &orig.kind else { return next };
+    if !h.corner() && h != Handle::E && h != Handle::W {
+        return orig.clone();
+    }
+    if let Kind::Code(c) = &mut next.kind {
+        if h.corner() {
+            let k = (to.w / orig.w.max(0.01)).clamp(MIN_SIZE / o.font_size.max(MIN_SIZE), 400.0 / o.font_size.max(MIN_SIZE));
+            c.font_size = o.font_size * k;
+            c.radius = o.radius.map(|r| r * k);
+            next.w = orig.w * k;
+        } else {
+            next.w = to.w.max(c.font_size * 10.0);
+        }
+    }
+    crate::code::fit(&mut next);
+    if orig.rotation == 0.0 {
+        next.x = if h.w() { to.right() - next.w } else { to.x };
+        next.y = if h.n() { orig.y + orig.h - next.h } else { orig.y };
+    }
+    next
+}
+
 /// The pin of a comment, in board units: it keeps its size on screen whatever the zoom.
 pub fn pin_box(el: &El, z: f64) -> BBox {
     let s = crate::prims::COMMENT_PIN / z;
@@ -2438,6 +2468,33 @@ mod tests {
     fn editor() -> Editor {
         let board = Board::new(yrs::Doc::new(), Arc::new(|| {}));
         Editor::new(board, "b".into(), Painter::new(crate::paint::Images::new(None)), Prefs::default(), "v".into())
+    }
+
+    #[test]
+    fn a_code_block_grows_whole_from_a_corner_and_only_wider_from_a_side() {
+        let mut ed = editor();
+        let mut el = El::new(Kind::Code(Code { code: "fn main() {\n    println!(\"ciao\");\n}".into(), language: "rust".into(), light: false, font_size: 14.0, radius: None }));
+        (el.id, el.x, el.y, el.w) = ("c".into(), 100.0, 100.0, 400.0);
+        crate::code::fit(&mut el);
+        let h0 = el.h;
+        let drag = |ed: &mut Editor, handle: Handle, from: Pt, to: Pt| {
+            let orig = ed.board.get("c").unwrap();
+            let frame = BBox { x: orig.x, y: orig.y, w: orig.w, h: orig.h };
+            ed.gesture = Some(Gesture::Resize { handle, start: from, orig: vec![(**orig).clone()], frame, rotation: 0.0 });
+            ed.resize_to(to, false, false);
+            ed.preview.get("c").map(|e| (**e).clone()).unwrap()
+        };
+        ed.board.put([el]);
+        // The bottom-right corner dragged to twice the size: everything twice as big, the top
+        // left corner where it was.
+        let big = drag(&mut ed, Handle::Se, pt(500.0, 100.0 + h0), pt(900.0, 100.0 + h0 * 2.0));
+        assert_eq!((big.x, big.y), (100.0, 100.0));
+        assert!((big.w - 800.0).abs() < 1e-6 && (big.code().unwrap().font_size - 28.0).abs() < 1e-6);
+        assert!((big.h - h0 * 2.0).abs() < 2.0, "{} vs {}", big.h, h0 * 2.0);
+        // The right side: only wider, the same letters, the top where it was.
+        let wide = drag(&mut ed, Handle::E, pt(500.0, 120.0), pt(700.0, 160.0));
+        assert_eq!((wide.x, wide.y, wide.code().unwrap().font_size), (100.0, 100.0, 14.0));
+        assert!((wide.w - 600.0).abs() < 1e-6);
     }
 
     #[test]

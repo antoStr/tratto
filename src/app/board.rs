@@ -44,6 +44,8 @@ pub struct BoardUi {
     /// Text being typed into the element `editing` (kept here while the box is open).
     pub text: String,
     pub text_for: Option<String>,
+    /// That text as the board last had it: when the board's changes, someone else typed there.
+    pub text_seen: String,
     pub scroll_to: Option<String>,
     /// In a narrow window, a panel opened from its pill anyway.
     pub peek_left: bool,
@@ -77,6 +79,7 @@ impl Default for BoardUi {
             minimap: Default::default(),
             text: String::new(),
             text_for: None,
+            text_seen: String::new(),
             scroll_to: None,
             peek_left: false,
             peek_right: false,
@@ -683,6 +686,13 @@ impl BoardScreen {
         }
         super::live::top_bars(&ctx, rect, &mut self.editor);
         super::live::sound(&ctx, &self.editor);
+        // The others see what this person has selected, and where they are typing.
+        let ed = &mut self.editor;
+        let sel: Vec<&String> = ed.selection.iter().take(200).collect();
+        let sel = serde_json::json!(sel);
+        ed.presence.set("sel", sel);
+        let typing = ed.editing.as_ref().map(|id| serde_json::json!({ "id": id, "cell": ed.editing_cell.map(|(r, c)| [r, c]) }));
+        ed.presence.set("editing", typing.unwrap_or_default());
         super::toolbar::insert_drag(&ctx, stage, &mut self.editor);
         if zen {
             super::panels::zen_pill(&ctx, rect, &mut self.editor);
@@ -707,6 +717,7 @@ impl BoardScreen {
                         ctx.open_url(egui::OpenUrl::new_tab(url));
                     }
                 }
+                Request::Notice(text) => toasts.info(text),
             }
         }
         // Files dropped on the window: pictures go on the board where they land.
@@ -762,23 +773,35 @@ impl BoardScreen {
             ed.editing_cell = Some((r.min(tb.rows.len() - 1), c.min(tb.cols.len() - 1)));
         }
         let key = format!("{id}/{:?}", ed.editing_cell);
+        let written = written_text(&el, ed.editing_cell);
         if self.ui.text_for.as_deref() != Some(key.as_str()) {
+            // Someone else is already typing right here: one at a time, or each would undo the other.
+            let cell = ed.editing_cell.map(|(r, c)| serde_json::json!([r, c])).unwrap_or_default();
+            if let Some(who) = ed.presence.peers.iter().find(|(_, s)| s["editing"]["id"].as_str() == Some(id.as_str()) && s["editing"]["cell"] == cell).map(|(_, s)| crate::editor::peer_name(s)) {
+                ed.editing = None;
+                ed.editing_cell = None;
+                self.ui.text_for = None;
+                ed.requests.push(crate::editor::Request::Notice(format!("{who} sta scrivendo qui: aspetta che finisca.")));
+                return;
+            }
             self.ui.text_for = Some(key);
-            self.ui.text = match &el.kind {
-                Kind::Text(x) => x.text.clone(),
-                Kind::Sticky(s) => s.text.clone(),
-                Kind::Shape(s) => s.text.clone().unwrap_or_default(),
-                Kind::Section { .. } => el.name.clone().unwrap_or_default(),
-                Kind::Code(c) => c.code.clone(),
-                Kind::Line(l) => l.label.clone().unwrap_or_default(),
-                Kind::Table(tb) => {
-                    let (r, c) = ed.editing_cell.unwrap_or((0, 0));
-                    tb.cells[r][c].text.clone()
-                }
-                _ => String::new(),
-            };
+            self.ui.text = written.clone();
+            self.ui.text_seen = written;
             ed.board.stop_capturing();
             ctx.memory_mut(|m| m.request_focus(Id::new("board-text")));
+        } else if written != self.ui.text_seen {
+            // Someone else typed here meanwhile (both started at once): their text, with the
+            // cursor kept by the same letters.
+            let id = Id::new("board-text");
+            if let Some(mut state) = egui::text_edit::TextEditState::load(ctx, id) {
+                if let Some(r) = state.cursor.char_range() {
+                    let at = |c: egui::text::CCursor| egui::text::CCursor::new(crate::text::shift_cursor(&self.ui.text, &written, c.index.0));
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(at(r.secondary), at(r.primary))));
+                }
+                state.store(ctx, id);
+            }
+            self.ui.text = written.clone();
+            self.ui.text_seen = written;
         }
         let z = ed.cam.z as f32;
         let p = ed.to_screen(el.x, el.y) + stage.min.to_vec2();
@@ -930,6 +953,9 @@ impl BoardScreen {
         if changed {
             let text = self.ui.text.clone();
             self.editor.set_text(&id, text);
+            if let Some(el) = self.editor.board.get(&id) {
+                self.ui.text_seen = written_text(&el, self.editor.editing_cell);
+            }
         }
         if let Some(back) = tab {
             self.editor.next_cell(back);
@@ -1022,4 +1048,21 @@ fn panel_card(ctx: &egui::Context, id: &str, rect: Rect, k: f32, side: f32, t: &
         child.set_clip_rect(Rect::from_min_max(inner.min, inner.max - vec2(0.0, 6.0)));
         add(&mut child);
     });
+}
+
+/// The text of `el` the board-text box edits (a table's: of the cell being edited).
+fn written_text(el: &crate::model::El, cell: Option<(usize, usize)>) -> String {
+    match &el.kind {
+        Kind::Text(x) => x.text.clone(),
+        Kind::Sticky(s) => s.text.clone(),
+        Kind::Shape(s) => s.text.clone().unwrap_or_default(),
+        Kind::Section { .. } => el.name.clone().unwrap_or_default(),
+        Kind::Code(c) => c.code.clone(),
+        Kind::Line(l) => l.label.clone().unwrap_or_default(),
+        Kind::Table(tb) => {
+            let (r, c) = cell.unwrap_or((0, 0));
+            tb.cells.get(r).and_then(|row| row.get(c)).map(|c| c.text.clone()).unwrap_or_default()
+        }
+        _ => String::new(),
+    }
 }

@@ -54,7 +54,14 @@ impl Editor {
     /// Handles this frame's input. `hovered`: the pointer is over the board rather than over a
     /// panel; `keys`: no text field or menu has the keyboard.
     pub fn handle_input(&mut self, ctx: &egui::Context, hovered: bool, keys: bool, double_click: Option<Pos2>) {
-        let events = ctx.input(|i| i.events.clone());
+        let mut events = ctx.input(|i| i.events.clone());
+        // In a browser a finger's press comes just before its touch: the touch first, so the
+        // press knows it is a finger or a pen (as with the desktop app), not a mouse.
+        for i in 1..events.len() {
+            if matches!(events[i], Event::Touch { phase: TouchPhase::Start, .. }) && matches!(events[i - 1], Event::PointerButton { pressed: true, .. }) {
+                events.swap(i - 1, i);
+            }
+        }
         let t = now();
         // Every move of a frame arrives at once: each gets its own moment between the last frame
         // and this one, so the smoothing filter sees the real pace of the pen.
@@ -88,6 +95,12 @@ impl Editor {
                             continue;
                         }
                         self.release(up);
+                    }
+                    // Pressed again without letting go: the same press told twice (a pen in a
+                    // browser comes as a pointer and as a touch). Once is enough.
+                    if pressed && self.input.down && button == PointerButton::Primary {
+                        self.input.touch_began = None;
+                        continue;
                     }
                     if pressed {
                         let (kind, pointer, force) = match self.input.touch_began.take() {

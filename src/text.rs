@@ -257,6 +257,22 @@ pub fn toggle_list(text: &str, numbered: bool) -> String {
         .join("\n")
 }
 
+/// Where a cursor at char `at` of `old` belongs once someone else changed the text to `new`:
+/// it stays by the same letters (text typed before it pushes it on).
+pub fn shift_cursor(old: &str, new: &str, at: usize) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (old.chars().collect(), new.chars().collect());
+    let pre = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let max_suf = a.len().min(b.len()) - pre;
+    let suf = a.iter().rev().zip(b.iter().rev()).take(max_suf).take_while(|(x, y)| x == y).count();
+    if at <= pre {
+        at
+    } else if at >= a.len() - suf {
+        (at + b.len()).saturating_sub(a.len()).min(b.len())
+    } else {
+        b.len() - suf
+    }
+}
+
 /// After Enter at char `at` (just past the new line): a list carries on with the next marker,
 /// or ends when the item left behind was empty. Returns the new text and where the cursor goes.
 pub fn continue_list(text: &str, at: usize) -> Option<(String, usize)> {
@@ -487,6 +503,20 @@ pub fn glyph_path(face: usize, glyph: u16) -> Rc<Path> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_cursor_stays_by_its_letters_while_someone_else_types() {
+        use super::shift_cursor;
+        // Typing at "Ciao a tutt|", someone adds at the end: the cursor stays.
+        assert_eq!(shift_cursor("Ciao a tutt", "Ciao a tuttokok", 11), 11);
+        // …or before it: it moves on with its letters.
+        assert_eq!(shift_cursor("Ciao a tutti", "Ehi! Ciao a tutti", 12), 17);
+        assert_eq!(shift_cursor("Ciao a tutti", "Ciao tutti", 12), 10);
+        // Inside a stretch the other changed: at its end.
+        assert_eq!(shift_cursor("abcdef", "abXYZef", 3), 5);
+        assert_eq!(shift_cursor("", "àèì", 0), 0);
+        assert_eq!(shift_cursor("àèì", "", 3), 0);
+    }
+
     #[test]
     fn lists_toggle_and_carry_on() {
         use super::{continue_list, toggle_list};

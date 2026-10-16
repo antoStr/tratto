@@ -98,6 +98,16 @@ impl Editor {
                     }
                 }
             }
+            // Where they are typing: their name over it, so nobody else starts writing there.
+            if let Some(el) = s["editing"]["id"].as_str().and_then(|id| self.current(id)) {
+                self.outline_el(&mut out, &el, color, 2.0);
+                let top = corners(&el, 0.0).iter().map(|p| self.sp(p.x, p.y)).fold(pos2(f32::INFINITY, f32::INFINITY), |a, p| pos2(a.x.min(p.x), a.y.min(p.y)));
+                let on = if is_dark(&hex(color)) { Color32::WHITE } else { DARK };
+                let g = painter.layout_no_wrap(format!("{} sta scrivendo…", peer_name(s)), medium(11.0), on);
+                let r = egui::Rect::from_min_size(top - vec2(0.0, g.size().y + 8.0), g.size() + vec2(12.0, 4.0));
+                out.push(Shape::rect_filled(r, 4, color));
+                out.push(Shape::galley(r.min + vec2(6.0, 2.0), g, on));
+            }
             let live = &s["live"];
             if let (Some(pts), Some(size)) = (live["pts"].as_array(), live["size"].as_f64()) {
                 let pts: Vec<f64> = pts.iter().take(3000).filter_map(|v| v.as_f64()).collect();
