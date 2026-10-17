@@ -608,6 +608,10 @@ mod picture {
                     Ok("table") => b.editor.set_tool(crate::editor::Tool::Table),
                     _ => {}
                 }
+                // TRATTO_SHAPES=1: the shapes panel open.
+                if std::env::var_os("TRATTO_SHAPES").is_some() {
+                    ctx.data_mut(|d| d.insert_temp(egui::Id::new("shapes-panel"), true));
+                }
                 // TRATTO_COMMENT=1: a new comment open, being written.
                 if std::env::var_os("TRATTO_COMMENT").is_some() {
                     let mut c = crate::model::El::new(crate::model::Kind::Comment { thread: Vec::new() });
@@ -807,6 +811,12 @@ mod picture {
     /// A widget dragged from the "+" lands where it is let go, not in the middle.
     #[test]
     fn a_widget_dragged_onto_the_board_lands_under_the_pointer() {
+        dragged_lands(super::toolbar::Payload::Checklist, |e| e.widget().is_some());
+        // A note torn off the pad, likewise; it opens ready to write in.
+        dragged_lands(super::toolbar::Payload::Sticky, |e| e.sticky().is_some());
+    }
+
+    fn dragged_lands(what: super::toolbar::Payload, is: fn(&crate::model::El) -> bool) {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let id = store.create("Trascina", None).unwrap();
         let mut screen: Option<board::BoardScreen> = None;
@@ -823,15 +833,17 @@ mod picture {
             }
             let b = screen.as_mut().unwrap();
             b.ui(ui, &mut toasts, &mut dialogs);
-            let w = b.editor.board.all().iter().find(|e| e.widget().is_some()).cloned();
+            let w = b.editor.board.all().iter().find(|e| is(e)).cloned();
             *seen.borrow_mut() = w.map(|e| b.editor.to_screen(e.x + e.w / 2.0, e.y + e.h / 2.0) + b.editor.origin.to_vec2());
         });
         harness.run_steps(5);
-        let from = egui::pos2(700.0, 860.0);
+        // From the "+" at the end of the toolbar, where its card opens.
+        let bar = harness.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("toolbar-rect"))).unwrap();
+        let from = egui::pos2(bar.max.x - 26.0, bar.center().y);
         harness.input_mut().events.push(egui::Event::PointerMoved(from));
         harness.input_mut().events.push(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
         harness.step();
-        super::toolbar::start_drag(&harness.ctx, super::toolbar::Payload::Checklist, "Lista", "list-checks");
+        super::toolbar::start_drag(&harness.ctx, what, "Lista", "list-checks");
         let to = egui::pos2(600.0, 350.0);
         for k in 1..=10 {
             harness.input_mut().events.push(egui::Event::PointerMoved(from + (to - from) * (k as f32 / 10.0)));
@@ -839,7 +851,7 @@ mod picture {
         }
         harness.input_mut().events.push(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
         harness.run_steps(3);
-        let at = out.borrow().expect("a checklist on the board");
+        let at = out.borrow().expect("it is on the board");
         assert!(at.distance(to) < 2.0, "centred where it was let go: {at:?}");
     }
 

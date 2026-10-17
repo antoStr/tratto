@@ -689,6 +689,9 @@ impl BoardScreen {
                 super::panels::right_pill(&ctx, rect, self);
             }
         }
+        if !zen {
+            super::toolbar::shapes_panel(&ctx, rect, &mut self.editor);
+        }
         super::live::top_bars(&ctx, rect, &mut self.editor);
         super::live::sound(&ctx, &self.editor);
         // The others see what this person has selected, and where they are typing.

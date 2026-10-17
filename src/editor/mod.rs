@@ -1649,10 +1649,14 @@ impl Editor {
         self.editing = Some(id);
     }
 
-    /// A shape of `kind` in the shape style, centred on `p` at its usual size, selected.
-    pub fn place_shape(&mut self, kind: ShapeKind, p: Pt) {
+    /// A shape in the shape style, centred on `p` at its usual size, selected.
+    pub fn place_shape(&mut self, tool: ShapeTool, p: Pt) {
         let s = self.world_size(120.0);
-        let shape = Shape { shape: kind, fill: self.prefs.shape_style.fill.clone(), stroke: self.prefs.shape_style.stroke.clone(), stroke_width: self.world_size(self.prefs.shape_style.stroke_width), ..Default::default() };
+        let (kind, radius) = match tool {
+            ShapeTool::Kind(k) => (k, 0.0),
+            ShapeTool::RoundRect => (ShapeKind::Rect, self.world_size(16.0)),
+        };
+        let shape = Shape { shape: kind, fill: self.prefs.shape_style.fill.clone(), stroke: self.prefs.shape_style.stroke.clone(), stroke_width: self.world_size(self.prefs.shape_style.stroke_width), radius, ..Default::default() };
         let mut el = self.base(El::new(Kind::Shape(shape)));
         (el.x, el.y, el.w, el.h) = (p.x - s / 2.0, p.y - s / 2.0, s, s);
         self.board.stop_capturing();

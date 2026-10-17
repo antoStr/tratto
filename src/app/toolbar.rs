@@ -58,6 +58,50 @@ pub const SHAPES: [(ShapeTool, &str, Option<&str>); 29] = [
 ];
 
 /// The paths a connector can take, as FigJam offers them.
+/// The shapes in the shape tool's row, as in FigJam's; the others are in the shapes panel.
+const QUICK_SHAPES: [ShapeTool; 8] = [
+    ShapeTool::Kind(ShapeKind::Rect),
+    ShapeTool::Kind(ShapeKind::Ellipse),
+    ShapeTool::Kind(ShapeKind::Diamond),
+    ShapeTool::Kind(ShapeKind::Triangle),
+    ShapeTool::Kind(ShapeKind::TriangleDown),
+    ShapeTool::Kind(ShapeKind::Pill),
+    ShapeTool::Kind(ShapeKind::Cylinder),
+    ShapeTool::RoundRect,
+];
+
+/// A connector drawn small: elbow, curved or straight with its head; `None`: a plain line.
+fn connector_icon(ui: &Ui, route: Option<crate::model::Route>, c: Pos2, color: Color32) {
+    use crate::model::Route;
+    let p = ui.painter();
+    let st = Stroke::new(1.4, color);
+    let head = |tip: Pos2, dir: egui::Vec2| {
+        let d = dir.normalized();
+        let n = vec2(-d.y, d.x);
+        p.line_segment([tip, tip - d * 4.5 + n * 3.5], st);
+        p.line_segment([tip, tip - d * 4.5 - n * 3.5], st);
+    };
+    match route {
+        Some(Route::Elbow) => {
+            let pts = vec![c + vec2(-7.0, 8.0), c + vec2(-1.0, 8.0), c + vec2(-1.0, -7.0), c + vec2(7.0, -7.0)];
+            p.add(egui::Shape::line(pts, st));
+            head(c + vec2(7.0, -7.0), vec2(1.0, 0.0));
+        }
+        Some(Route::Curved) => {
+            let (a, b) = (c + vec2(-7.0, 8.0), c + vec2(7.0, -7.0));
+            p.add(egui::Shape::CubicBezier(egui::epaint::CubicBezierShape::from_points_stroke([a, a + vec2(9.0, 0.0), b + vec2(-9.0, 0.0), b], false, Color32::TRANSPARENT, st)));
+            head(b, vec2(1.0, 0.0));
+        }
+        Some(Route::Straight) => {
+            p.line_segment([c + vec2(-7.0, 7.0), c + vec2(7.0, -7.0)], st);
+            head(c + vec2(7.0, -7.0), vec2(1.0, -1.0));
+        }
+        None => {
+            p.line_segment([c + vec2(-7.0, 7.0), c + vec2(7.0, -7.0)], st);
+        }
+    }
+}
+
 pub const ROUTES: [(crate::model::Route, &str, &str); 3] = [
     (crate::model::Route::Straight, "route-straight", "Dritta"),
     (crate::model::Route::Elbow, "route-elbow", "A gomito"),
@@ -245,7 +289,7 @@ pub enum Payload {
     /// A note torn off the pad, in the colour of the pad.
     Sticky,
     /// A shape from the shapes panel.
-    Shape(crate::model::ShapeKind),
+    Shape(ShapeTool),
     Code,
     Poll,
     Checklist,
@@ -514,7 +558,6 @@ fn pick(ed: &mut Editor, tool: Tool) {
 
 /// One button of the toolbar, by its id (see `prefs::TOOLBAR_ITEMS`).
 fn toolbar_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme, id: &str, top: bool) {
-    let ctx = ui.ctx().clone();
     let simple = |ui: &mut Ui, ed: &mut Editor, tool: Tool, name: &str, label: &str, kbd: Option<&str>| {
         let (tint, solid) = tool_look(ed, tool);
         if icon_button(ui, name, label, kbd, vec2(btn(), btn()), icon_px(), tint, solid).clicked() {
@@ -683,6 +726,197 @@ fn note_shape(p: &egui::Painter, c: Pos2, s: f32, a: f32, color: Color32, edge: 
     let (h, f) = (s / 2.0, s * 0.2);
     p.add(egui::Shape::convex_polygon(vec![r(-h, -h), r(h, -h), r(h, h - f), r(h - f, h), r(-h, h)], color, Stroke::new(1.0, edge)));
     p.add(egui::Shape::convex_polygon(vec![r(h, h - f), r(h - f, h), r(h - f, h - f)], ui::mix(color, 0.84, Color32::BLACK), Stroke::NONE));
+}
+
+/// What the shapes panel lists, by group: FigJam's basic shapes, the flowchart's, the systems'.
+const SHAPE_GROUPS: [(&str, &[ShapeTool]); 3] = [
+    (
+        "Base",
+        &[
+            ShapeTool::Kind(ShapeKind::Rect),
+            ShapeTool::Kind(ShapeKind::Ellipse),
+            ShapeTool::Kind(ShapeKind::Diamond),
+            ShapeTool::Kind(ShapeKind::Triangle),
+            ShapeTool::Kind(ShapeKind::TriangleDown),
+            ShapeTool::RoundRect,
+            ShapeTool::Kind(ShapeKind::Pentagon),
+            ShapeTool::Kind(ShapeKind::Hexagon),
+            ShapeTool::Kind(ShapeKind::Octagon),
+            ShapeTool::Kind(ShapeKind::Plus),
+            ShapeTool::Kind(ShapeKind::ArrowLeft),
+            ShapeTool::Kind(ShapeKind::ArrowRight),
+            ShapeTool::Kind(ShapeKind::Chevron),
+            ShapeTool::Kind(ShapeKind::Star),
+            ShapeTool::Kind(ShapeKind::Speech),
+            ShapeTool::Kind(ShapeKind::Trapezoid),
+        ],
+    ),
+    (
+        "Diagrammi di flusso",
+        &[
+            ShapeTool::Kind(ShapeKind::Pill),
+            ShapeTool::Kind(ShapeKind::Process),
+            ShapeTool::Kind(ShapeKind::Diamond),
+            ShapeTool::Kind(ShapeKind::Parallelogram),
+            ShapeTool::Kind(ShapeKind::Document),
+            ShapeTool::Kind(ShapeKind::Documents),
+            ShapeTool::Kind(ShapeKind::ManualInput),
+            ShapeTool::Kind(ShapeKind::Delay),
+            ShapeTool::Kind(ShapeKind::OffPage),
+            ShapeTool::Kind(ShapeKind::Display),
+            ShapeTool::Kind(ShapeKind::InternalStorage),
+            ShapeTool::Kind(ShapeKind::Junction),
+        ],
+    ),
+    (
+        "Schemi informatici",
+        &[
+            ShapeTool::Kind(ShapeKind::Cylinder),
+            ShapeTool::Kind(ShapeKind::Cloud),
+            ShapeTool::Kind(ShapeKind::Display),
+            ShapeTool::Kind(ShapeKind::Documents),
+            ShapeTool::Kind(ShapeKind::InternalStorage),
+            ShapeTool::Kind(ShapeKind::Process),
+        ],
+    ),
+];
+
+/// FigJam's shapes panel ("Altre forme" in the shapes row): every shape, by group, with a search
+/// box; a click picks the shape for the shape tool, a drag puts it on the board.
+pub fn shapes_panel(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
+    let open_id = Id::new("shapes-panel");
+    let open = ctx.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false) && !ed.read_only;
+    let k = ui::motion::presence(ctx, open_id.with("anim"), open);
+    if k <= 0.001 {
+        return;
+    }
+    let t = ui::theme(ctx);
+    let narrow = ui::narrow(ctx);
+    let w = if narrow { stage.width() - 16.0 } else { 300.0 };
+    let at = if narrow { pos2(stage.min.x + 8.0, stage.min.y + 8.0) } else { pos2(stage.min.x + 12.0, stage.min.y + 68.0) };
+    // Down to the toolbar and its options, never over them.
+    let floor = ctx.data(|d| d.get_temp::<Rect>(Id::new("bottom-bars"))).filter(|b| b.center().y > stage.center().y).map_or(stage.max.y - 12.0, |b| b.min.y - 10.0);
+    let h = (floor - at.y).min(680.0).max(160.0);
+    let mut close = false;
+    let query_id = open_id.with("query");
+    let mut query = ctx.data(|d| d.get_temp::<String>(query_id)).unwrap_or_default();
+    let folded_id = open_id.with("folded");
+    let mut folded: Vec<String> = ctx.data(|d| d.get_temp::<Vec<String>>(folded_id)).unwrap_or_default();
+    let mut want: Option<Tool> = None;
+    egui::Area::new(open_id).fixed_pos(at + vec2(-12.0 * (1.0 - k), 0.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+        ui.set_opacity(k.clamp(0.0, 1.0));
+        ui.set_max_size(vec2(w, h));
+        ui::float_frame(&t).corner_radius(14).inner_margin(egui::Margin::ZERO).show(ui, |ui| {
+            ui.set_width(w);
+            ui.set_height(h);
+            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+            egui::Frame::new().inner_margin(egui::Margin { left: 16, right: 10, top: 12, bottom: 10 }).show(ui, |ui| {
+                ui::row(ui, 28.0, |ui| {
+                    ui.label(RichText::new("Forme").font(ui::medium(ui::px(13.0))).color(t.text));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui::small_icon_button(ui, "x", "Chiudi", false).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(0.0);
+                    ui.set_width(w - 26.0);
+                    ui::text_field(ui, &mut query, "Cerca forme", 40);
+                });
+            });
+            let (r, _) = ui.allocate_exact_size(vec2(w, 1.0), Sense::hover());
+            ui.painter().hline(r.x_range(), r.center().y, Stroke::new(1.0, t.border));
+            let q = query.trim().to_lowercase();
+            let name = |s: ShapeTool| SHAPES.iter().find(|x| x.0 == s).map_or("Forma", |x| x.1);
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                // The connectors first, then the shapes, group by group.
+                let connectors: [(Option<crate::model::Route>, &str); 4] = [(Some(crate::model::Route::Elbow), "Connettore a gomito"), (Some(crate::model::Route::Curved), "Connettore curvo"), (Some(crate::model::Route::Straight), "Freccia"), (None, "Linea")];
+                let mut groups: Vec<(&str, Vec<(String, Cell)>)> = vec![("Connettori", connectors.iter().filter(|c| q.is_empty() || c.1.to_lowercase().contains(&q)).map(|c| (c.1.to_string(), Cell::Connector(c.0))).collect())];
+                for (title, list) in SHAPE_GROUPS {
+                    groups.push((title, list.iter().filter(|s| q.is_empty() || name(**s).to_lowercase().contains(&q)).map(|s| (name(*s).to_string(), Cell::Shape(*s))).collect()));
+                }
+                let cols = ((w - 24.0) / 64.0).floor().max(3.0) as usize;
+                let cell = vec2((w - 24.0) / cols as f32, 56.0);
+                for (title, cells) in groups.into_iter().filter(|g| !g.1.is_empty()) {
+                    let is_folded = q.is_empty() && folded.iter().any(|f| f == title);
+                    let (hr, hresp) = ui.allocate_exact_size(vec2(w, 40.0), Sense::click());
+                    ui::hover_fill(ui, hresp.id, hr.shrink2(vec2(6.0, 2.0)), hresp.hovered(), 6.0, t.hover);
+                    ui.painter().text(pos2(hr.min.x + 16.0, hr.center().y), egui::Align2::LEFT_CENTER, title, ui::medium(ui::px(12.0)), t.text);
+                    icon(ui, if is_folded { "chevron-down" } else { "chevron-up" }, pos2(hr.max.x - 22.0, hr.center().y), 14.0, t.icon2);
+                    if hresp.clicked() {
+                        if is_folded {
+                            folded.retain(|f| f != title);
+                        } else {
+                            folded.push(title.to_string());
+                        }
+                    }
+                    if is_folded {
+                        continue;
+                    }
+                    for row in cells.chunks(cols) {
+                        let (rr, _) = ui.allocate_exact_size(vec2(w, cell.y), Sense::hover());
+                        for (i, (label, c)) in row.iter().enumerate() {
+                            let r = Rect::from_min_size(pos2(rr.min.x + 12.0 + i as f32 * cell.x, rr.min.y), cell).shrink(2.0);
+                            let resp = ui.interact(r, Id::new(("shape-cell", title, i, label.as_str())), Sense::click_and_drag());
+                            let on = match c {
+                                Cell::Shape(s) => ed.tool == Tool::Shape && ed.prefs.last_shape == *s,
+                                Cell::Connector(Some(route)) => ed.tool == Tool::Arrow && ed.prefs.route == *route,
+                                Cell::Connector(None) => ed.tool == Tool::Line,
+                            };
+                            let hv = ui::motion::hover(ctx, resp.id.with("h"), resp.hovered());
+                            if on || hv > 0.0 {
+                                ui.painter().rect_filled(r, 8.0, if on { t.selected } else { t.hover.gamma_multiply(hv) });
+                            }
+                            match c {
+                                Cell::Shape(s) => shape_icon(ui, *s, r.center(), 26.0, t.icon),
+                                Cell::Connector(route) => connector_icon(ui, *route, r.center(), t.icon),
+                            }
+                            if resp.drag_started()
+                                && let Cell::Shape(s) = c
+                            {
+                                start_drag(ctx, Payload::Shape(*s), label, "shapes");
+                            } else if resp.clicked() {
+                                match c {
+                                    Cell::Shape(s) => {
+                                        ed.prefs.last_shape = *s;
+                                        want = Some(Tool::Shape);
+                                    }
+                                    Cell::Connector(Some(route)) => {
+                                        ed.prefs.route = *route;
+                                        want = Some(Tool::Arrow);
+                                    }
+                                    Cell::Connector(None) => want = Some(Tool::Line),
+                                }
+                            }
+                            ui::tip(resp, label, None);
+                        }
+                    }
+                    ui.add_space(6.0);
+                }
+                ui.add_space(8.0);
+            });
+        });
+    });
+    if let Some(tool) = want {
+        ed.set_tool(tool);
+        ed.prefs.tray = true;
+    }
+    if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        ctx.data_mut(|d| d.insert_temp(open_id, false));
+    }
+    ctx.data_mut(|d| {
+        d.insert_temp(query_id, query);
+        d.insert_temp(folded_id, folded);
+    });
+}
+
+/// A cell of the shapes panel.
+enum Cell {
+    Shape(ShapeTool),
+    Connector(Option<crate::model::Route>),
 }
 
 /// The soft shadow of a note held up: a few widening, fainter copies of its outline.
@@ -1009,24 +1243,18 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
     // the row wraps, each line is as tall as what it holds.
     let h = match tool {
         _ if narrow => ui::ctl(TRAY_H),
-        Tool::Shape => 124.0,
         Tool::Stamp => 96.0,
         Tool::Table => 76.0,
         _ => ui::ctl(TRAY_H),
     };
+    // A connector or a shape picked in the row: that tool in hand (after the row is drawn).
+    let mut want: Option<Tool> = None;
     let dock = ctx.data(|d| d.get_temp::<f32>(Id::new("toolbar-dock"))).unwrap_or(1.0).clamp(0.0, 1.0);
     let shown = egui::Area::new(Id::new(("tray", format!("{tool:?}")))).pivot(pivot).fixed_pos(at).constrain_to(ctx.content_rect().shrink(8.0)).interactable(dock > 0.5).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0) * dock);
         // An area lays out in last frame's size: give the row the width it may take.
         ui.set_max_width(max_tray_w);
         ui::float_frame(t).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
-            // On a phone the shapes go above the rest: in the wrapping row their tall grid
-            // would make every line below it as tall.
-            if narrow && tool == Tool::Shape {
-                ui.add_space(4.0);
-                shape_grid(ui, &mut ed.prefs, t);
-                ui.add_space(2.0);
-            }
             {
                 ui::wrap_row(ui, h, |ui| {
                 ui.spacing_mut().item_spacing = vec2(6.0, if narrow { 4.0 } else { 0.0 });
@@ -1082,32 +1310,48 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                         }
                     }
                     Tool::Shape | Tool::Line | Tool::Arrow => {
+                        // FigJam's row: the colour, the connectors, the shapes used most, and
+                        // the rest in the shapes panel.
                         if tool == Tool::Shape {
-                            if !narrow {
-                                shape_grid(ui, p, t);
-                                sep_h(ui, t, h);
-                            }
                             color_pop(ui, "Riempimento", &mut p.shape_style.fill, true, false, top, t);
+                        } else {
+                            color_pop(ui, "Colore", &mut p.shape_style.stroke, false, true, top, t);
                         }
-                        if tool != Tool::Shape {
-                            ui.spacing_mut().item_spacing.x = 2.0;
-                            for (r, name, label) in ROUTES {
-                                if icon_button(ui, name, label, None, vec2(28.0, 28.0), 16.0, p.route == r, false).clicked() {
-                                    p.route = r;
-                                }
-                            }
-                            if tool == Tool::Arrow {
-                                sep_h(ui, t, h);
-                                if let Some(h) = end_picker(ui, Some(Some(p.arrow_head)), false, 28.0, t) {
-                                    p.arrow_head = h.unwrap_or_default();
-                                }
-                            }
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            sep_h(ui, t, h);
-                        }
-                        color_pop(ui, "Contorno", &mut p.shape_style.stroke, false, true, top, t);
                         sep_h(ui, t, h);
-                        slide(ui, "Spessore", &mut p.shape_style.stroke_width, 0.5, 32.0, 0.5, true, PX, sw(196.0));
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for (route, label) in [(crate::model::Route::Elbow, "Connettore a gomito"), (crate::model::Route::Curved, "Connettore curvo"), (crate::model::Route::Straight, "Freccia")] {
+                            let on = tool == Tool::Arrow && p.route == route;
+                            let r = icon_button(ui, "", label, Some("X"), vec2(30.0, 30.0), 16.0, false, on);
+                            connector_icon(ui, Some(route), r.rect.center(), if on { Color32::WHITE } else { t.icon });
+                            if r.clicked() {
+                                p.route = route;
+                                want = Some(Tool::Arrow);
+                            }
+                        }
+                        let on = tool == Tool::Line;
+                        let r = icon_button(ui, "", "Linea", Some("L"), vec2(30.0, 30.0), 16.0, false, on);
+                        connector_icon(ui, None, r.rect.center(), if on { Color32::WHITE } else { t.icon });
+                        if r.clicked() {
+                            want = Some(Tool::Line);
+                        }
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        sep_h(ui, t, h);
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for k in QUICK_SHAPES {
+                            let on = tool == Tool::Shape && p.last_shape == k;
+                            let label = SHAPES.iter().find(|s| s.0 == k).map_or("Forma", |s| s.1);
+                            let r = icon_button(ui, "", label, None, vec2(30.0, 30.0), 16.0, false, on);
+                            shape_icon(ui, k, r.rect.center(), 18.0, if on { Color32::WHITE } else { t.icon });
+                            if r.clicked() {
+                                p.last_shape = k;
+                                want = Some(Tool::Shape);
+                            }
+                        }
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        sep_h(ui, t, h);
+                        if ui::button(ui, "Altre forme", ui::Kind::Secondary, None, false, true).clicked() {
+                            ui.ctx().data_mut(|d| d.insert_temp(Id::new("shapes-panel"), true));
+                        }
                     }
                     Tool::Text => {
                         font_picker(ui, &mut p.text.font, sw(168.0), t);
@@ -1152,6 +1396,10 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
     if close {
         ed.prefs.tray = false;
     }
+    if let Some(tool) = want {
+        ed.set_tool(tool);
+        ed.prefs.tray = true;
+    }
     // Its natural width, measured whenever it is laid out in full on one row; when it wraps in
     // full, it is known to be too wide.
     if !narrow {
@@ -1190,21 +1438,6 @@ fn table_size_picker(ui: &mut Ui, size: &mut [u8; 2], t: &Theme) {
     });
 }
 
-/// Every shape, eight to a row: the one picked is what the shape tool draws.
-fn shape_grid(ui: &mut Ui, p: &mut crate::prefs::Prefs, t: &Theme) {
-    egui::Grid::new("shape-grid").spacing(vec2(2.0, 2.0)).min_row_height(28.0).show(ui, |ui| {
-        for (i, (k, label, kbd)) in SHAPES.iter().enumerate() {
-            let r = icon_button(ui, "", label, *kbd, vec2(28.0, 28.0), 16.0, p.last_shape == *k, false);
-            shape_icon(ui, *k, r.rect.center(), 16.0, t.icon);
-            if r.clicked() {
-                p.last_shape = *k;
-            }
-            if i % 8 == 7 {
-                ui.end_row();
-            }
-        }
-    });
-}
 
 /// Colours of the laser pointer.
 pub const LASER_COLORS: [&str; 6] = ["#FF3B30", "#FF9500", "#34C759", "#0D99FF", "#AF52DE", "#FF2D92"];
