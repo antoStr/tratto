@@ -1598,6 +1598,41 @@ pub fn view_controls(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     let x = ui::motion::spring(ctx, Id::new("view-controls-x"), target.x, 0.3, 0.9);
     let y = ui::motion::spring(ctx, Id::new("view-controls-y"), target.y, 0.3, 0.9);
     let resp = egui::Area::new(Id::new("view-controls")).pivot(egui::Align2::RIGHT_BOTTOM).fixed_pos(pos2(x, y)).order(egui::Order::Foreground).show(ctx, |ui| {
+        if !ed.prefs.zoom_full {
+            // FigJam's: a round-ended pill with − and +; the percentage on hover, the rest of the
+            // zoom (fit, 100%, the minimap) in the menu of a right click or a long press.
+            ui::float_frame(&t).corner_radius(18).inner_margin(egui::Margin::same(2)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                    let pct = format!("{}%", (ed.cam.z * 100.0).round());
+                    let pill = |ui: &mut Ui, name: &str, round: egui::CornerRadius| {
+                        let (r, resp) = ui.allocate_exact_size(vec2(38.0, 32.0), Sense::click());
+                        let h = ui::motion::hover(ui.ctx(), resp.id.with("h"), resp.hovered());
+                        let d = ui::motion::hover(ui.ctx(), resp.id.with("d"), resp.is_pointer_button_down_on());
+                        if h > 0.0 {
+                            ui.painter().rect_filled(r, round, ui::blend(t.hover.gamma_multiply(h), t.press, d));
+                        }
+                        icon(ui, name, r.center(), 16.0, t.icon);
+                        resp
+                    };
+                    let minus = pill(ui, "minus", egui::CornerRadius { nw: 16, sw: 16, ne: 0, se: 0 });
+                    let (line, _) = ui.allocate_exact_size(vec2(1.0, 32.0), Sense::hover());
+                    ui.painter().vline(line.center().x, line.y_range().shrink(7.0), Stroke::new(1.0, t.border));
+                    let plus = pill(ui, "plus", egui::CornerRadius { nw: 0, sw: 0, ne: 16, se: 16 });
+                    let minus = ui::tip(minus, &format!("Riduci · {pct}"), Some("Ctrl+−"));
+                    let plus = ui::tip(plus, &format!("Ingrandisci · {pct}"), Some("Ctrl++"));
+                    if minus.clicked() {
+                        ed.zoom_by(0.8);
+                    }
+                    if plus.clicked() {
+                        ed.zoom_by(1.25);
+                    }
+                    let both = minus.union(plus);
+                    egui::Popup::context_menu(&both).frame(ui::menu_frame(&t)).show(|ui| zoom_items(ui, ed));
+                });
+            });
+            return;
+        }
         ui::float_frame(&t).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.spacing_mut().item_spacing = vec2(0.0, 2.0);

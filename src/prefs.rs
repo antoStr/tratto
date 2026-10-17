@@ -186,6 +186,9 @@ pub struct Prefs {
     pub sticky_arrows: bool,
     /// The others' rulers shown on the board (off: only your own).
     pub peer_rulers: bool,
+    /// The zoom controls: FigJam's "− +" (the percentage and the minimap in its menu), or
+    /// the full column with them in view.
+    pub zoom_full: bool,
     /// New notes, code and widgets come with a shadow, this dark (0–1) and this soft (blur).
     pub shadows: bool,
     pub shadow_opacity: f64,
@@ -323,6 +326,7 @@ impl Default for Prefs {
             timer_sound: true,
             sticky_arrows: false,
             peer_rulers: false,
+            zoom_full: false,
             shadows: true,
             shadow_opacity: 0.14,
             shadow_blur: 10.0,

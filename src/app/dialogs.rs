@@ -310,6 +310,9 @@ fn settings_section(ui: &mut egui::Ui, tab: SettingsTab, p: &mut Prefs, host: bo
             row(ui, "Barra degli strumenti", None, |ui| {
                 ui::segmented(ui, &mut p.toolbar_pos, &[(ToolbarPos::Bottom, "In basso"), (ToolbarPos::Top, "In alto")], 200.0);
             });
+            row(ui, "Controlli dello zoom", None, |ui| {
+                ui::segmented(ui, &mut p.zoom_full, &[(false, "− +"), (true, "Con percentuale e minimappa")], 270.0);
+            });
             row(ui, "Dimensione della barra", None, |ui| {
                 let mut v = (p.toolbar_size * 100.0).round() as i32;
                 if ui::segmented(ui, &mut v, &[(85, "Compatta"), (100, "Normale"), (120, "Grande")], 270.0) {
