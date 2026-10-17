@@ -526,11 +526,112 @@ pub fn vote_button(ui: &mut egui::Ui, ed: &mut Editor) {
         ui::segmented(ui, &mut per, &[(1, "1"), (3, "3"), (5, "5"), (10, "10")], 216.0);
         ui.data_mut(|d| d.insert_temp(id, per));
         if ui::button(ui, if voting.is_some() { "Ricomincia la votazione" } else { "Inizia la votazione" }, Btn::Primary, None, false, true).clicked() {
-            ed.board.start_voting(per);
+            let me = ed.voter.clone();
+            ed.board.start_voting(per, &me);
+            ui.ctx().data_mut(|d| d.remove::<bool>(Id::new("vote-results-hidden")));
             ed.set_tool(Tool::Select);
             egui::Popup::close_all(ui.ctx());
         }
     });
+}
+
+/// Whether this person runs the vote: the host, or whoever started it.
+fn can_run_vote(ctx: &egui::Context, ed: &Editor) -> bool {
+    let host = ctx.data(|d| d.get_temp::<bool>(Id::new("board-host"))).unwrap_or(false);
+    !ed.read_only && (host || ed.board.voting_by().as_deref() == Some(ed.voter.as_str()))
+}
+
+/// The results of a vote once it has ended, on the right: votes and voters, the ranking with
+/// a bar each (a click goes to the thing voted), and for whoever runs it a new vote or the vote
+/// taken off the board for everyone. Each person can close it for themselves.
+pub fn vote_results(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
+    let hidden_id = Id::new("vote-results-hidden");
+    let ended = ed.board.voting().map(|v| v.1);
+    if ended != Some(true) {
+        ctx.data_mut(|d| d.remove::<bool>(hidden_id));
+    }
+    let show = ended == Some(true) && !ctx.data(|d| d.get_temp::<bool>(hidden_id)).unwrap_or(false);
+    let k = ui::motion::presence(ctx, Id::new("vote-results"), show);
+    if k <= 0.001 || ended.is_none() {
+        return;
+    }
+    let t = ui::theme(ctx);
+    let runs = can_run_vote(ctx, ed);
+    let per = ed.board.voting().map_or(3, |v| v.0);
+    let mut results: Vec<(String, u32)> = ed.board.tally(None).into_iter().filter(|(id, _)| ed.board.get(id).is_some()).collect();
+    results.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let total: u32 = results.iter().map(|r| r.1).sum();
+    let voters = ed.board.voter_count();
+    let top = results.first().map_or(1, |r| r.1).max(1);
+    let narrow = ui::narrow(ctx);
+    let w = if narrow { stage.width() - 16.0 } else { 300.0 };
+    let at = pos2(stage.max.x - w - if narrow { 8.0 } else { 12.0 }, stage.min.y + if narrow { 8.0 } else { 68.0 });
+    let mut close = false;
+    egui::Area::new(Id::new("vote-results")).fixed_pos(at + vec2(12.0 * (1.0 - k), 0.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+        ui.set_opacity(k.clamp(0.0, 1.0));
+        ui::float_frame(&t).corner_radius(14).inner_margin(egui::Margin::same(16)).show(ui, |ui| {
+            ui.set_width(w - 32.0);
+            ui.spacing_mut().item_spacing.y = 6.0;
+            ui::row(ui, 24.0, |ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(20.0, 20.0), egui::Sense::hover());
+                icon(ui, "vote", r.center(), 16.0, t.icon);
+                ui.label(RichText::new("Risultati").font(ui::medium(ui::px(13.0))).color(t.text));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui::small_icon_button(ui, "x", "Chiudi", false).clicked() {
+                        close = true;
+                    }
+                });
+            });
+            ui.label(RichText::new(format!("{total} {} · {voters} {}", if total == 1 { "voto" } else { "voti" }, if voters == 1 { "persona" } else { "persone" })).size(ui::px(12.0)).color(t.text2));
+            ui.add_space(6.0);
+            if results.is_empty() {
+                ui.label(RichText::new("Nessun voto").color(t.text2));
+            }
+            egui::ScrollArea::vertical().max_height((stage.height() - 260.0).clamp(160.0, 420.0)).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                for (i, (id, n)) in results.iter().enumerate().take(30) {
+                    let Some(el) = ed.board.get(id).cloned() else { continue };
+                    let (row, resp) = ui.allocate_exact_size(vec2(w - 32.0, 46.0), egui::Sense::click());
+                    ui::hover_fill(ui, resp.id, row, resp.hovered(), 8.0, t.hover);
+                    // The first three get a medal; the others their place.
+                    let c = pos2(row.min.x + 16.0, row.center().y);
+                    let medal = [Color32::from_rgb(0xF5, 0xB7, 0x00), Color32::from_rgb(0xA9, 0xB4, 0xC0), Color32::from_rgb(0xD0, 0x87, 0x4C)].get(i).copied();
+                    ui.painter().circle_filled(c, 11.0, medal.unwrap_or(t.bg2));
+                    ui.painter().text(c, egui::Align2::CENTER_CENTER, (i + 1).to_string(), ui::medium(ui::px(11.0)), if medal.is_some() { Color32::WHITE } else { t.text2 });
+                    let x = row.min.x + 36.0;
+                    icon(ui, super::panels::type_icon(&el), pos2(x + 7.0, row.min.y + 15.0), 14.0, t.icon2);
+                    let label: String = super::panels::element_label(&el).chars().take(40).collect();
+                    let room = row.max.x - x - 56.0;
+                    let g = ui.painter().layout(label, egui::FontId::proportional(ui::px(12.0)), t.text, room);
+                    let first = g.rows.first().map(|r| r.text()).unwrap_or_default();
+                    ui.painter().text(pos2(x + 20.0, row.min.y + 15.0), egui::Align2::LEFT_CENTER, if g.rows.len() > 1 { format!("{}…", first.trim_end()) } else { first }, egui::FontId::proportional(ui::px(12.0)), t.text);
+                    ui.painter().text(pos2(row.max.x - 8.0, row.min.y + 15.0), egui::Align2::RIGHT_CENTER, n.to_string(), ui::medium(ui::px(12.0)), t.text);
+                    let bar = Rect::from_min_size(pos2(x, row.min.y + 29.0), vec2(row.max.x - 8.0 - x, 6.0));
+                    ui.painter().rect_filled(bar, 3.0, t.bg2);
+                    let kk = ui::motion::spring(ctx, Id::new(("vote-bar", id.as_str())), *n as f32 / top as f32, 0.25, 0.9).clamp(0.0, 1.0);
+                    ui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * kk, bar.height())), 3.0, if i == 0 { t.brand } else { t.brand.gamma_multiply(0.55) });
+                    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        ed.reveal(std::slice::from_ref(id));
+                    }
+                }
+            });
+            if runs {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui::button(ui, "Nuova votazione", Btn::Secondary, Some("rotate-ccw"), false, true).clicked() {
+                        let me = ed.voter.clone();
+                        ed.board.start_voting(per, &me);
+                    }
+                    if ui::button(ui, "Chiudi per tutti", Btn::Ghost, None, false, true).clicked() {
+                        ed.board.clear_voting();
+                    }
+                });
+            }
+        });
+    });
+    if close {
+        ctx.data_mut(|d| d.insert_temp(hidden_id, true));
+    }
 }
 
 /* ---------------- presenting ---------------- */
@@ -642,27 +743,19 @@ pub fn top_bars(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
                 pill(ui, &t, |ui| {
                     icon(ui, "vote", ui.cursor().min + vec2(7.0, 12.0), 14.0, t.icon);
                     ui.add_space(18.0);
+                    let runs = can_run_vote(ctx, ed);
                     if !ended {
                         let used: u32 = ed.board.tally(Some(&ed.voter)).values().sum();
                         let text = if ed.read_only { "Votazione".to_string() } else { format!("Votazione · ti restano {} voti su {per}", per.saturating_sub(used)) };
                         ui.label(RichText::new(text).color(t.text)).on_hover_text("Clic per votare · Maiusc+clic per togliere");
-                        if !ed.read_only && ui::button(ui, "Termina", Btn::Secondary, None, false, true).clicked() {
+                        if runs && ui::button(ui, "Termina", Btn::Secondary, None, false, true).clicked() {
                             ed.board.end_voting();
+                            ctx.data_mut(|d| d.remove::<bool>(Id::new("vote-results-hidden")));
                         }
                     } else {
-                        let mut results: Vec<(String, u32)> = ed.board.tally(None).into_iter().collect();
-                        results.sort_by(|a, b| b.1.cmp(&a.1));
-                        ui.label(RichText::new(if results.is_empty() { "Nessun voto." } else { "Più votati:" }).color(t.text));
-                        for (id, n) in results.into_iter().take(3) {
-                            if let Some(el) = ed.board.get(&id).cloned() {
-                                let label: String = super::panels::element_label(&el).chars().take(18).collect();
-                                if ui::button(ui, &format!("{label} · {n}"), Btn::Ghost, None, false, true).clicked() {
-                                    ed.reveal(&[id]);
-                                }
-                            }
-                        }
-                        if !ed.read_only && ui::button(ui, "Chiudi", Btn::Secondary, None, false, true).clicked() {
-                            ed.board.clear_voting();
+                        ui.label(RichText::new("Votazione terminata").color(t.text));
+                        if ctx.data(|d| d.get_temp::<bool>(Id::new("vote-results-hidden"))).unwrap_or(false) && ui::button(ui, "Risultati", Btn::Secondary, None, false, true).clicked() {
+                            ctx.data_mut(|d| d.remove::<bool>(Id::new("vote-results-hidden")));
                         }
                     }
                 });

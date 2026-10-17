@@ -486,11 +486,28 @@ impl Board {
         Some((per.min(50.0) as u32, ended))
     }
 
-    pub fn start_voting(&mut self, per: u32) {
+    /// A new vote, `per` votes each, run by `by` (who may end it, with the host).
+    pub fn start_voting(&mut self, per: u32, by: &str) {
         self.transact_plain(|txn, b| {
             b.votes.clear(txn);
             b.votes.insert(txn, "per", per as f64);
+            b.votes.insert(txn, "by", by);
         });
+    }
+
+    /// Who started the vote.
+    pub fn voting_by(&self) -> Option<String> {
+        let txn = self.doc.transact();
+        self.votes.get(&txn, "by").and_then(|v| out_json(&v)).and_then(|v| v.as_str().map(str::to_string))
+    }
+
+    /// How many people have voted.
+    pub fn voter_count(&self) -> usize {
+        let txn = self.doc.transact();
+        let mut who: Vec<String> = self.votes.iter(&txn).filter_map(|(k, _)| k.strip_prefix("v:").and_then(|r| r.split_once(':')).map(|(w, _)| w.to_string())).collect();
+        who.sort();
+        who.dedup();
+        who.len()
     }
 
     pub fn end_voting(&mut self) {
@@ -714,7 +731,7 @@ mod tests {
     fn boards_travel_as_yjs_updates() {
         let mut a = board();
         a.put([r("a", 0.0)]);
-        a.start_voting(3);
+        a.start_voting(3, "a");
         let state = encode_state(&a.doc);
         let mut b = board();
         apply_update(&b.doc, &state, REMOTE).unwrap();

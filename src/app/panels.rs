@@ -100,7 +100,7 @@ pub fn element_label(el: &El) -> String {
     }
 }
 
-fn type_icon(el: &El) -> &'static str {
+pub(crate) fn type_icon(el: &El) -> &'static str {
     match &el.kind {
         Kind::Ink(_) => "pen-line",
         Kind::Highlighter(_) => "highlighter",

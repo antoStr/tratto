@@ -593,7 +593,7 @@ mod picture {
                         m.timer.insert(txn, "left", 300_000.0);
                         m.timer.insert(txn, "end", now + 200_000.0);
                     });
-                    b.editor.board.start_voting(3);
+                    b.editor.board.start_voting(3, "test");
                     b.editor.presence.set("spotlight", serde_json::json!(now));
                 }
                 if prefs.ui_scale != 1.0 {
@@ -607,6 +607,17 @@ mod picture {
                     Ok("eraser") => b.editor.set_tool(crate::editor::Tool::Eraser),
                     Ok("table") => b.editor.set_tool(crate::editor::Tool::Table),
                     _ => {}
+                }
+                // TRATTO_VOTES=1: a vote just ended, with a few votes cast.
+                if std::env::var_os("TRATTO_VOTES").is_some() {
+                    let ids: Vec<String> = b.editor.board.all().iter().filter(|e| e.shape().is_some()).map(|e| e.id.clone()).collect();
+                    b.editor.board.start_voting(3, &b.editor.voter.clone());
+                    for (who, picks) in [("a", [0, 0, 1]), ("b", [0, 2, 3]), ("c", [1, 0, 4])] {
+                        for i in picks {
+                            b.editor.board.cast_vote(who, &ids[i % ids.len()], 1);
+                        }
+                    }
+                    b.editor.board.end_voting();
                 }
                 // TRATTO_SHAPES=1: the shapes panel open.
                 if std::env::var_os("TRATTO_SHAPES").is_some() {

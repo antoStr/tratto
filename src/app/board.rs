@@ -692,6 +692,8 @@ impl BoardScreen {
         if !zen {
             super::toolbar::shapes_panel(&ctx, rect, &mut self.editor);
         }
+        ctx.data_mut(|d| d.insert_temp(Id::new("board-host"), self.host));
+        super::live::vote_results(&ctx, rect, &mut self.editor);
         super::live::top_bars(&ctx, rect, &mut self.editor);
         super::live::sound(&ctx, &self.editor);
         // The others see what this person has selected, and where they are typing.

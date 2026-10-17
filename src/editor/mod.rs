@@ -2665,7 +2665,7 @@ mod tests {
         sticky.h = 100.0;
 
         ed.board.put([table.clone(), sticky.clone()]);
-        ed.board.start_voting(3);
+        ed.board.start_voting(3, "v");
 
         assert!(!super::votable(&table), "tables are not votable items");
         assert!(super::votable(&sticky), "stickies are votable");
