@@ -462,6 +462,14 @@ mod picture {
                     Ok("eraser") => b.editor.set_tool(crate::editor::Tool::Eraser),
                     _ => {}
                 }
+                // TRATTO_COMMENT=1: a new comment open, being written.
+                if std::env::var_os("TRATTO_COMMENT").is_some() {
+                    let mut c = crate::model::El::new(crate::model::Kind::Comment { thread: Vec::new() });
+                    (c.x, c.y) = (0.0, 0.0);
+                    let cid = c.id.clone();
+                    b.editor.board.put([c]);
+                    b.editor.comment = Some(cid);
+                }
                 if std::env::var("TRATTO_PICK").is_ok_and(|v| v == "code") {
                     b.editor.insert_code(None);
                     b.editor.stop_editing();

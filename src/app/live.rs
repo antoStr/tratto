@@ -738,7 +738,8 @@ pub fn comment_thread(ctx: &egui::Context, ed: &mut Editor, st: &mut BoardUi) {
     let open_id = Id::new("comment-open");
     // Stored as Option<String> (no comment open is remembered too), read back as the same type.
     let was: Option<String> = ctx.data(|d| d.get_temp::<Option<String>>(open_id)).flatten();
-    if was != ed.comment {
+    let fresh = was != ed.comment;
+    if fresh {
         // Closing a new comment without writing anything takes the pin away again.
         if let Some(old) = &was
             && ed.board.get(old).is_some_and(|e| matches!(&e.kind, Kind::Comment { thread } if thread.is_empty()))
@@ -761,7 +762,7 @@ pub fn comment_thread(ctx: &egui::Context, ed: &mut Editor, st: &mut BoardUi) {
     let mut close = false;
     let k = ui::motion::appear(ctx, Id::new("comment-thread-anim"), true);
     let lift = ui::motion::travel(ctx, k) * 8.0;
-    egui::Area::new(Id::new("comment-thread")).fixed_pos(at + vec2(0.0, lift)).order(egui::Order::Foreground).show(ctx, |ui| {
+    let shown = egui::Area::new(Id::new("comment-thread")).fixed_pos(at + vec2(0.0, lift)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
         // Room to grow as replies come (an area lays out in last frame's size).
         ui.set_max_size(ctx.content_rect().size());
@@ -822,7 +823,9 @@ pub fn comment_thread(ctx: &egui::Context, ed: &mut Editor, st: &mut BoardUi) {
             }
         });
     });
-    if close {
+    // A press anywhere else (the board, a menu, a panel) closes it, like a menu.
+    let away = ctx.input(|i| i.pointer.any_pressed() && i.pointer.press_origin().is_some_and(|p| !shown.response.rect.contains(p)));
+    if close || (away && !fresh) {
         ed.comment = None;
         ui::motion::reset(ctx, Id::new("comment-thread-anim"));
     }
