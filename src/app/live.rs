@@ -190,21 +190,21 @@ pub fn timer_button(ui: &mut egui::Ui, ed: &mut Editor) {
     let text = tm.map_or_else(|| clock(draft), |tm| clock(tm.remaining()));
     let font = egui::FontId::new(ui::px(12.5), egui::FontFamily::Name(if tm.is_some() { "ui-medium" } else { "sans-italic" }.into()));
     let g = ui.painter().layout_no_wrap(text.clone(), font, Color32::PLACEHOLDER);
-    let h = ui::hit(ui.ctx(), 26.0);
+    let h = ui::hit(ui.ctx(), ui::ctl(24.0));
     let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 40.0, h), egui::Sense::click());
     let dx = shake(ui.ctx());
     let r = rect.translate(vec2(dx, 0.0));
     let hv = ui::motion::hover(ui.ctx(), resp.id, resp.hovered());
     let done = tm.is_some_and(|tm| tm.done());
     let fill = if done { t.danger.gamma_multiply(0.12) } else { ui::blend(t.bg, t.hover, hv) };
-    ui.painter().rect(r, 8.0, fill, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
-    let disc = pos2(r.min.x + 15.0, r.center().y);
-    record_icon(ui, disc, 8.0, music.map(|m| m.0), &t);
+    ui.painter().rect(r, ui::RADIUS as f32, fill, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+    let disc = pos2(r.min.x + 14.0, r.center().y);
+    record_icon(ui, disc, 7.5, music.map(|m| m.0), &t);
     let color = match tm {
         Some(tm) => time_look(ui.ctx(), &tm, &t),
         None => t.text3,
     };
-    ui.painter().galley(pos2(r.min.x + 28.0, r.center().y - g.size().y / 2.0), g, color);
+    ui.painter().galley(pos2(r.min.x + 27.0, r.center().y - g.size().y / 2.0), g, color);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Timer: {text}")));
     ui::focus_ring(ui, &resp, rect);
     let resp = ui::tip(resp, "Timer, musica e votazione", None);

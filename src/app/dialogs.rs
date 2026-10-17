@@ -162,7 +162,7 @@ pub fn settings(ctx: &egui::Context, open: &mut bool, p: &mut Prefs, host: bool)
         let h = SETTINGS_H.min((ui.ctx().content_rect().height() - 160.0).max(280.0));
         // A phone: the sections as chips above, the chosen one below with the whole width.
         if ui::narrow(ui.ctx()) {
-            let h = (ui.ctx().content_rect().height() - 220.0).max(240.0);
+            let h = (ui.ctx().content_rect().height() - 190.0).max(120.0);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                 for (v, icon, label) in tabs {
@@ -566,16 +566,18 @@ fn toolbar_settings(ui: &mut egui::Ui, p: &mut Prefs) {
             }
             _ => i,
         };
-        let y = ui::motion::spring(ui.ctx(), drag_id.with(("y", id.as_str())), list.min.y + slot as f32 * row_h, 0.28, 0.92);
+        let dy = ui::motion::spring(ui.ctx(), drag_id.with(("y", id.as_str())), slot as f32 * row_h, 0.28, 0.92);
+        let y = list.min.y + dy;
         let held = drag.is_some_and(|(from, _)| from == i);
         let row = if held {
             let top = pointer_y.map_or(y, |py| (py - drag.unwrap().1).clamp(list.min.y - row_h * 0.5, list.max.y - row_h * 0.5));
-            ui::motion::hold(ui.ctx(), drag_id.with(("y", id.as_str())), top);
+            ui::motion::hold(ui.ctx(), drag_id.with(("y", id.as_str())), top - list.min.y);
             Rect::from_min_size(pos2(list.min.x, top), vec2(list.width(), row_h))
         } else {
             Rect::from_min_size(pos2(list.min.x, y), vec2(list.width(), row_h))
         };
-        let resp = ui.interact(row, drag_id.with(("row", id.as_str())), Sense::click_and_drag());
+        let drag_zone = if ui::narrow(ui.ctx()) { Rect::from_min_size(row.min, vec2(56.0, row_h)) } else { row };
+        let resp = ui.interact(drag_zone, drag_id.with(("row", id.as_str())), Sense::click_and_drag());
         if resp.drag_started()
             && let Some(q) = resp.interact_pointer_pos()
         {
@@ -589,7 +591,8 @@ fn toolbar_settings(ui: &mut egui::Ui, p: &mut Prefs) {
         if resp.hovered() && !dragging {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
         }
-        let h = ui::motion::hover(ui.ctx(), resp.id.with("h"), resp.hovered() && !dragging);
+        let over = ui.rect_contains_pointer(row);
+        let h = ui::motion::hover(ui.ctx(), resp.id.with("h"), (resp.hovered() || over) && !dragging);
         draw_toolbar_row(ui, row, id, name, p.toolbar_hidden.contains(id), t.hover.gamma_multiply(h), &t);
         if dragging {
             continue;
@@ -598,25 +601,25 @@ fn toolbar_settings(ui: &mut egui::Ui, p: &mut Prefs) {
         let r = row.shrink2(vec2(0.0, 2.0));
         let hidden = p.toolbar_hidden.contains(id);
         let mut x = r.max.x - 4.0;
-        let mut button = |ui: &mut egui::Ui, name: &str, label: &str, on: bool| {
+        let mut row_ui = ui.new_child(egui::UiBuilder::new().max_rect(r).id_salt(("row-btn", id.as_str())));
+        let mut button = |name: &str, label: &str, on: bool| {
             let b = Rect::from_min_size(pos2(x - 24.0, r.center().y - 12.0), vec2(24.0, 24.0));
             x -= 26.0;
-            let resp = ui.put(b, |ui: &mut egui::Ui| ui::small_icon_button(ui, name, label, on));
+            let resp = row_ui.put(b, |ui: &mut egui::Ui| ui::small_icon_button(ui, name, label, on));
             resp.clicked()
         };
-        if button(ui, if hidden { "eye-off" } else { "eye" }, if hidden { "Mostra nella barra" } else { "Nascondi dalla barra" }, false) {
+        if button(if hidden { "eye-off" } else { "eye" }, if hidden { "Mostra nella barra" } else { "Nascondi dalla barra" }, false) {
             if hidden {
                 p.toolbar_hidden.retain(|x| x != id);
             } else {
                 p.toolbar_hidden.push(id.clone());
             }
         }
-        // The arrows show under the pointer only, so the list stays calm.
-        let over = ui.rect_contains_pointer(row);
-        if over && i + 1 < n && button(ui, "arrow-down", "Sposta più a destra", false) {
+        // The arrows show under the pointer (or on narrow screens) so the list stays calm.
+        if (over || ui::narrow(ui.ctx())) && i + 1 < n && button("arrow-down", "Sposta più a destra", false) {
             moved = Some((i, i + 2));
         }
-        if over && i > 0 && button(ui, "arrow-up", "Sposta più a sinistra", false) {
+        if (over || ui::narrow(ui.ctx())) && i > 0 && button("arrow-up", "Sposta più a sinistra", false) {
             moved = Some((i, i - 1));
         }
     }
@@ -694,18 +697,22 @@ fn toolbar_settings(ui: &mut egui::Ui, p: &mut Prefs) {
     }
     let nid = Id::new("toolbar-profile-name");
     let mut name: String = ui.data(|d| d.get_temp(nid)).unwrap_or_default();
-    ui::row(ui, 34.0, |ui| {
-        ui.allocate_ui(vec2(ui.available_width() - 150.0, 34.0), |ui| ui::text_field(ui, &mut name, "Nome del profilo", 30));
-        ui.add_space(6.0);
-        let ok = !name.trim().is_empty();
-        if ui::button(ui, "Salva profilo", Btn::Primary, Some("save"), true, ok).clicked() && ok {
-            let prof = crate::prefs::ToolbarProfile { name: name.trim().to_string(), order: crate::prefs::toolbar_items(&p.toolbar_order), hidden: p.toolbar_hidden.clone() };
-            match p.toolbar_profiles.iter_mut().find(|x| x.name == prof.name) {
-                Some(x) => *x = prof,
-                None => p.toolbar_profiles.push(prof),
+    ui::row(ui, ui::ctl(34.0), |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let ok = !name.trim().is_empty();
+            let save_clicked = ui::button(ui, "Salva profilo", Btn::Primary, Some("save"), true, ok).clicked();
+            ui.add_space(6.0);
+            let field = ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| ui::text_field(ui, &mut name, "Nome del profilo", 30)).inner;
+            let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if (save_clicked || enter) && !name.trim().is_empty() {
+                let prof = crate::prefs::ToolbarProfile { name: name.trim().to_string(), order: crate::prefs::toolbar_items(&p.toolbar_order), hidden: p.toolbar_hidden.clone() };
+                match p.toolbar_profiles.iter_mut().find(|x| x.name == prof.name) {
+                    Some(x) => *x = prof,
+                    None => p.toolbar_profiles.push(prof),
+                }
+                name.clear();
             }
-            name.clear();
-        }
+        });
     });
     ui.data_mut(|d| d.insert_temp(nid, name));
 }

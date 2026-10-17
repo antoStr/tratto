@@ -150,13 +150,11 @@ pub fn left(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, dialogs: &mut
                 });
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.set_min_height(ui.available_height());
                 ui.spacing_mut().item_spacing.x = 2.0;
                 if small_icon_button(ui, "panel-left-close", "Nascondi il pannello", false).clicked() {
-                    if b.ui.peek_left {
-                        b.ui.peek_left = false;
-                    } else {
-                        b.editor.prefs.left_panel = false;
-                    }
+                    b.ui.peek_left = false;
+                    b.editor.prefs.left_panel = false;
                 }
                 if !b.host {
                     guest_buttons(ui, b, dialogs);
@@ -675,6 +673,7 @@ pub fn right(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
             participants(ui, &mut b.editor);
             // As in FigJam: the timer (and music) beside Share.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.set_min_height(ui.available_height());
                 share_button(ui, b);
                 ui.add_space(4.0);
                 super::live::timer_button(ui, &mut b.editor);
@@ -689,12 +688,10 @@ pub fn right(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
             ui.add_space(4.0);
             ui.label(RichText::new("Design").font(ui::medium(ui::px(11.0))).color(t.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.set_min_height(ui.available_height());
                 if small_icon_button(ui, "panel-right-close", "Nascondi il pannello", false).clicked() {
-                    if b.ui.peek_right {
-                        b.ui.peek_right = false;
-                    } else {
-                        b.editor.prefs.right_panel = false;
-                    }
+                    b.ui.peek_right = false;
+                    b.editor.prefs.right_panel = false;
                 }
                 zoom_menu(ui, &mut b.editor, &t);
                 super::live::spotlight_button(ui, &mut b.editor);
@@ -718,7 +715,7 @@ pub fn right(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
 fn zoom_menu(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
     let label = format!("{}%", (ed.cam.z * 100.0).round());
     let g = ui.painter().layout_no_wrap(label.clone(), egui::FontId::proportional(ui::px(11.0)), t.text);
-    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 26.0, 24.0), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 26.0, ui::hit(ui.ctx(), ui::ctl(24.0))), Sense::click());
     ui::hover_fill(ui, resp.id, r, resp.hovered(), ui::RADIUS as f32, t.hover);
     ui.painter().galley(pos2(r.min.x + 6.0, r.center().y - g.size().y / 2.0), g, t.text);
     icon(ui, "chevron-down", pos2(r.max.x - 10.0, r.center().y), 12.0, t.icon2);
@@ -762,15 +759,28 @@ pub fn participants(ui: &mut Ui, ed: &mut Editor) {
 /// The little arrow by the avatars: who is here (a click follows them), presenting, emotes.
 fn people_menu(ui: &mut Ui, ed: &mut Editor) {
     let t = ui::theme(ui.ctx());
-    let (r, resp) = ui.allocate_exact_size(vec2(16.0, 24.0), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(vec2(16.0, ui::hit(ui.ctx(), ui::ctl(24.0))), Sense::click());
     ui::hover_fill(ui, resp.id, r, resp.hovered(), 4.0, t.hover);
     ui::icon(ui, "chevron-down", r.center(), 12.0, t.icon2);
     let resp = ui::tip(resp, "Persone, presentazione ed emote", None);
+    let edit_id = Id::new("people-menu-edit-profile");
     egui::Popup::from_toggle_button_response(&resp).frame(ui::menu_frame(&t)).align(egui::RectAlign::BOTTOM_END).gap(8.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.set_min_width(240.0);
         ui.spacing_mut().item_spacing.y = 0.0;
         let me = serde_json::Value::Object(ed.presence.local.clone());
-        let _ = ui::menu_item(ui, Some("user"), &format!("{} (tu)", peer_name(&me)), None, false);
+        let mut editing = ui.data(|d| d.get_temp::<bool>(edit_id)).unwrap_or(false);
+        if ui::menu_item(ui, Some("user"), &format!("{} (tu)", peer_name(&me)), None, editing).clicked() {
+            editing = !editing;
+            ui.data_mut(|d| d.insert_temp(edit_id, editing));
+        }
+        if editing {
+            egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
+                ui.set_width(220.0);
+                ui.spacing_mut().item_spacing.y = 6.0;
+                profile_fields(ui, ed);
+            });
+            ui::menu_sep(ui);
+        }
         let people: Vec<(u64, String)> = ed.presence.peers.iter().filter(|(_, s)| s["user"].is_object()).map(|(id, s)| (*id, peer_name(s))).collect();
         for (id, name) in people {
             let following = ed.following == Some(id);
@@ -809,25 +819,37 @@ fn people_menu(ui: &mut Ui, ed: &mut Editor) {
 /// Colours a person can pick for themselves.
 pub const PERSON_COLORS: [&str; 10] = ["#0D99FF", "#9747FF", "#F24822", "#14AE5C", "#FFA629", "#E84393", "#00B5CE", "#7B61FF", "#FF7262", "#1E1E1E"];
 
+fn profile_fields(ui: &mut Ui, ed: &mut Editor) {
+    ui::field_label(ui, "Nome");
+    ui::text_field(ui, &mut ed.prefs.name, "Come ti vedranno gli altri", 40);
+    ui::field_label(ui, "Il tuo colore");
+    let cur = ed.prefs.own_color().unwrap_or("").to_string();
+    if let Some(c) = ui::color_dots(ui, &PERSON_COLORS, &cur, "Il tuo colore") {
+        ed.prefs.color = c;
+    }
+    ui::field_label(ui, "Puntatore laser");
+    if let Some(c) = ui::color_dots(ui, &super::toolbar::LASER_COLORS, &ed.prefs.laser_color, "Colore del puntatore laser") {
+        ed.prefs.laser_color = c;
+    }
+}
+
 /// The profile, under your avatar: the name and colour the others see (cursor, selection,
 /// comments), and the laser's colour.
 fn profile_popup(ui: &Ui, resp: &egui::Response, ed: &mut Editor) {
     let t = ui::theme(ui.ctx());
-    egui::Popup::from_toggle_button_response(resp).frame(ui::float_frame(&t).inner_margin(egui::Margin::same(14))).align(egui::RectAlign::BOTTOM_START).gap(8.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-        ui.set_width(244.0);
-        ui.spacing_mut().item_spacing.y = 8.0;
-        ui::heading(ui, "Il tuo profilo");
-        ui::field_label(ui, "Nome");
-        ui::text_field(ui, &mut ed.prefs.name, "Come ti vedranno gli altri", 40);
-        ui::field_label(ui, "Il tuo colore");
-        let cur = ed.prefs.own_color().unwrap_or("").to_string();
-        if let Some(c) = ui::color_dots(ui, &PERSON_COLORS, &cur, "Il tuo colore") {
-            ed.prefs.color = c;
-        }
-        ui::field_label(ui, "Puntatore laser");
-        if let Some(c) = ui::color_dots(ui, &super::toolbar::LASER_COLORS, &ed.prefs.laser_color, "Colore del puntatore laser") {
-            ed.prefs.laser_color = c;
-        }
+    let align = if resp.rect.center().x > ui.ctx().content_rect().center().x { egui::RectAlign::BOTTOM_END } else { egui::RectAlign::BOTTOM_START };
+    egui::Popup::from_toggle_button_response(resp).frame(ui::float_frame(&t).inner_margin(egui::Margin::same(14))).align(align).gap(8.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        let max_h = (ui.ctx().content_rect().height() - 96.0).max(160.0);
+        ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
+            ui.set_width(244.0);
+            ui.spacing_mut().item_spacing.y = 8.0;
+            ui::heading(ui, "Il tuo profilo");
+            profile_fields(ui, ed);
+            ui.add_space(2.0);
+            if ui::full_button(ui, "Salva", Btn::Primary, Some("check")).clicked() {
+                egui::Popup::close_all(ui.ctx());
+            }
+        });
     });
 }
 
@@ -837,7 +859,8 @@ fn share_button(ui: &mut Ui, b: &mut BoardScreen) {
         let t = ui::theme(ui.ctx());
         let text = if b.editor.read_only { "Solo visione" } else { "Puoi modificare" };
         if ui::narrow(ui.ctx()) {
-            let (r, resp) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::hover());
+            let s = ui::hit(ui.ctx(), ui::ctl(24.0));
+            let (r, resp) = ui.allocate_exact_size(vec2(s, s), Sense::hover());
             icon(ui, if b.editor.read_only { "eye" } else { "pencil" }, r.center(), 15.0, t.icon2);
             resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
             ui::tip(resp, text, None);
@@ -1549,7 +1572,8 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
     let pill = egui::Area::new(Id::new("focus-pill")).fixed_pos(stage.min + vec2(12.0, 12.0 + lift)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
         ui::float_frame(&t).inner_margin(egui::Margin::symmetric(if is_mobile { 6 } else { 8 }, 6)).show(ui, |ui| {
-            ui::row(ui, 24.0, |ui| {
+            let row_h = ui::hit(ui.ctx(), ui::ctl(24.0));
+            ui::row(ui, row_h, |ui| {
                 ui.spacing_mut().item_spacing.x = if is_mobile { 4.0 } else { 6.0 };
                 action = main_menu(ui, b, dialogs);
                 if !is_mobile {
@@ -1562,7 +1586,7 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
                     guest_buttons(ui, b, dialogs);
                 }
                 let focus = b.editor.prefs.focus;
-                if ui::icon_button(ui, "panel-left-open", if focus { "Mostra i pannelli" } else { "Mostra il pannello dei livelli" }, focus.then_some("Ctrl+\\"), vec2(ui::hit(ui.ctx(), 24.0), ui::hit(ui.ctx(), 24.0)), 16.0, false, false).clicked() {
+                if ui::icon_button(ui, "panel-left-open", if focus { "Mostra i pannelli" } else { "Mostra il pannello dei livelli" }, focus.then_some("Ctrl+\\"), vec2(row_h, row_h), 16.0, false, false).clicked() {
                     if focus {
                         b.editor.toggle_focus();
                     } else {
@@ -1586,7 +1610,7 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
 /// the way to the settings.
 fn main_menu(ui: &mut Ui, b: &mut BoardScreen, dialogs: &mut Dialogs) -> Option<Action> {
     let t = ui::theme(ui.ctx());
-    let (r, resp) = ui.allocate_exact_size(vec2(38.0, ui::hit(ui.ctx(), 24.0)), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(vec2(38.0, ui::hit(ui.ctx(), ui::ctl(24.0))), Sense::click());
     ui::hover_fill(ui, resp.id, r, resp.hovered(), ui::RADIUS as f32, t.hover);
     ui::icons::logo(ui, Rect::from_center_size(r.center() - vec2(6.0, 0.0), vec2(18.0, 18.0)));
     icon(ui, "chevron-down", r.center() + vec2(12.0, 0.0), 10.0, t.icon2);
@@ -1683,7 +1707,8 @@ pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
     let pill = egui::Area::new(Id::new("right-pill")).pivot(egui::Align2::RIGHT_TOP).fixed_pos(pos2(x, stage.min.y + 12.0 + lift)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
         ui::float_frame(&t).inner_margin(egui::Margin::symmetric(if is_mobile { 6 } else { 8 }, 6)).show(ui, |ui| {
-            ui::row(ui, 28.0, |ui| {
+            let row_h = ui::hit(ui.ctx(), ui::ctl(24.0));
+            ui::row(ui, row_h, |ui| {
                 // FigJam's: the people (and their menu), the templates, the timer, Share.
                 if !is_mobile {
                     participants(ui, &mut b.editor);
@@ -1700,6 +1725,7 @@ pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
                         if !open {
                             ctx.data_mut(|d| d.insert_temp(back, shown));
                             b.editor.prefs.left_panel = true;
+                            b.ui.peek_left = true;
                             b.editor.prefs.focus = false;
                             b.editor.requests.push(crate::editor::Request::Templates);
                         } else if ctx.data(|d| d.get_temp::<bool>(back)).unwrap_or(false) {

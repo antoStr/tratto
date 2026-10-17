@@ -28,6 +28,8 @@ pub struct InputState {
     pending_up: Option<PendingUp>,
     /// Where the pointer is (screen), for the emote wheel.
     pub(crate) pointer_at: Option<Pos2>,
+    /// The sticky-note pad in the toolbar: dropping a sticky note back onto it deletes the note.
+    pub(crate) sticky_trash: Option<egui::Rect>,
 }
 
 struct PendingUp {
@@ -54,6 +56,7 @@ impl Editor {
     /// Handles this frame's input. `hovered`: the pointer is over the board rather than over a
     /// panel; `keys`: no text field or menu has the keyboard.
     pub fn handle_input(&mut self, ctx: &egui::Context, hovered: bool, keys: bool, double_click: Option<Pos2>) {
+        self.input.sticky_trash = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("sticky-stack-rect")));
         let mut events = ctx.input(|i| i.events.clone());
         // In a browser a finger's press comes just before its touch: the touch first, so the
         // press knows it is a finger or a pen (as with the desktop app), not a mouse.
@@ -555,7 +558,16 @@ impl Editor {
                 }
                 return;
             }
-            Tool::Sticky => return self.start_sticky(p),
+            Tool::Sticky => {
+                self.start_sticky(p);
+                if let Some(id) = self.editing.take() {
+                    self.start_move(p, s, false);
+                    if let Some(Gesture::Move { edit, .. }) = &mut self.gesture {
+                        *edit = Some((id, None));
+                    }
+                }
+                return;
+            }
             Tool::Table => return self.insert_table(Some(p)),
             Tool::Stamp => {
                 // Clicking a stamp picks it up instead of stacking another one on it; on anything
@@ -801,11 +813,17 @@ impl Editor {
             // Let the trail fade, then clear it for the others.
             Gesture::Laser => self.laser_clear = Some(now() + 950.0),
             Gesture::Move { moved, edit, .. } => {
+                let sel = self.selected();
+                let screen_pos = s + self.origin.to_vec2();
+                if moved && !sel.is_empty() && sel.iter().all(|e| e.sticky().is_some()) && self.input.sticky_trash.is_some_and(|r| r.expand2(egui::vec2(18.0, 56.0)).contains(screen_pos)) {
+                    self.finish_gesture();
+                    self.remove();
+                    return;
+                }
                 if !moved && let Some((id, cell)) = edit {
                     self.editing = Some(id);
                     self.editing_cell = cell;
                 }
-                let sel = self.selected();
                 if !moved && sel.len() == 1 && sel[0].is_comment() {
                     self.comment = Some(sel[0].id.clone());
                 }

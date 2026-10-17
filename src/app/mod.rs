@@ -280,7 +280,7 @@ impl eframe::App for App {
         }
     }
 
-    fn on_exit(&mut self) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         if let Screen::Board(b) = &mut self.screen {
             b.close();
         }

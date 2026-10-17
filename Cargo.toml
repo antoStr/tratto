@@ -1,6 +1,6 @@
 [package]
 name = "tratto"
-version = "2.5.2"
+version = "2.5.3"
 edition = "2024"
 description = "Lavagna infinita con penna e condivisione sicura"
 authors = ["antoStr <antostr.dev@gmail.com>"]
@@ -81,7 +81,7 @@ rfd = "0.17.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Our own fonts replace egui's, so its default ones are left out.
-eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "links", "wayland", "x11", "wgpu"] }
+eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "links", "wayland", "x11", "wgpu", "glow"] }
 # Its default features: windows and decorations on every Linux desktop (pulled in through eframe).
 winit = "0.30.13"
 arboard = "3.6.1"

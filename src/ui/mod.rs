@@ -1128,8 +1128,11 @@ pub fn menu_frame(t: &Theme) -> egui::Frame {
 /// rows when narrow. Returns the colour picked.
 pub fn color_dots(ui: &mut Ui, colors: &[&str], value: &str, custom_label: &str) -> Option<String> {
     let t = theme(ui.ctx());
+    let open_id = ui.id().with(("dots-custom", custom_label));
+    let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
     let mut picked = None;
     let chosen = colors.iter().any(|c| c.eq_ignore_ascii_case(value));
+    let current = crate::model::parse_color(value).filter(|_| !value.is_empty() && !chosen);
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(4.0, 6.0);
         for c in colors {
@@ -1147,10 +1150,10 @@ pub fn color_dots(ui: &mut Ui, colors: &[&str], value: &str, custom_label: &str)
             focus_ring(ui, &resp, r);
             if tip(resp, c, None).clicked() {
                 picked = Some(c.to_string());
+                open = false;
             }
         }
-        // The custom colour: a hue wheel, or the colour itself once chosen; it opens the picker.
-        let current = crate::model::parse_color(value).filter(|_| !value.is_empty() && !chosen);
+        // The custom colour: a hue wheel, or the colour itself once chosen; it opens the picker in place.
         let (r, resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
         let h = motion::hover(ui.ctx(), resp.id.with("h"), resp.hovered());
         match current {
@@ -1160,17 +1163,21 @@ pub fn color_dots(ui: &mut Ui, colors: &[&str], value: &str, custom_label: &str)
             }
             None => wheel(ui, r.center(), 10.0 + h),
         }
-        let resp = tip(resp, custom_label, None);
-        egui::Popup::from_toggle_button_response(&resp).frame(float_frame(&t).inner_margin(egui::Margin::same(12))).gap(8.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-            ui.set_width(220.0);
-            heading(ui, custom_label);
-            ui.add_space(2.0);
-            let mut c = current.unwrap_or(Color32::from_rgb(0x0D, 0x99, 0xFF));
-            if color_picker(ui, resp.id.with("picker"), &mut c, 220.0) {
-                picked = Some(crate::model::hex(c));
-            }
-        });
+        if open && current.is_none() {
+            ui.painter().circle_stroke(r.center(), 13.0, Stroke::new(1.5, t.border_strong));
+        }
+        focus_ring(ui, &resp, r);
+        if tip(resp, custom_label, None).clicked() {
+            open = !open;
+        }
     });
+    if open {
+        let mut c = current.or_else(|| crate::model::parse_color(value)).unwrap_or(Color32::from_rgb(0x0D, 0x99, 0xFF));
+        if color_picker(ui, open_id.with("picker"), &mut c, ui.available_width().clamp(160.0, 240.0)) {
+            picked = Some(crate::model::hex(c));
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(open_id, open));
     picked
 }
 
@@ -1191,7 +1198,9 @@ pub fn text_field(ui: &mut Ui, value: &mut String, hint: &str, limit: usize) -> 
     let (rect, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
     let well = ui.painter().add(egui::Shape::Noop);
     let inner_rect = rect.shrink2(vec2(10.0, 0.0));
+    let edit_id = ui.id().with(("text-field", hint));
     let edit = egui::TextEdit::singleline(value)
+        .id(edit_id)
         .hint_text(RichText::new(hint).color(t.text3))
         .char_limit(limit)
         .frame(egui::Frame::NONE)
@@ -1200,6 +1209,9 @@ pub fn text_field(ui: &mut Ui, value: &mut String, hint: &str, limit: usize) -> 
         .vertical_align(egui::Align::Center)
         .desired_width((w - 20.0).max(0.0));
     let resp = ui.put(inner_rect, edit);
+    if resp.gained_focus() {
+        resp.scroll_to_me(Some(egui::Align::Center));
+    }
     let hovered = ui.rect_contains_pointer(rect);
     let clicked_outside = ui.input(|i| i.pointer.primary_clicked())
         && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p) && !inner_rect.contains(p));

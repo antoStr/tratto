@@ -339,7 +339,9 @@ pub fn insert_drag(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     let (pos, down) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down()));
     let Some(pos) = pos else { return };
     // Over the board itself, not over a panel, a bar or a card floating on it.
-    let over_board = stage.contains(pos) && ctx.layer_id_at(pos).is_none_or(|l| l.order == egui::Order::Background);
+    let over_stack = ctx.data(|d| d.get_temp::<Rect>(Id::new("sticky-stack-rect"))).is_some_and(|r| r.expand2(vec2(18.0, 56.0)).contains(pos));
+    let over_bars = ctx.data(|d| d.get_temp::<Rect>(Id::new("bottom-bars"))).is_some_and(|r| r.expand(8.0).contains(pos));
+    let over_board = stage.contains(pos) && !over_stack && !over_bars && ctx.layer_id_at(pos).is_none_or(|l| l.order == egui::Order::Background);
     if !down {
         ctx.data_mut(|d| d.remove::<(Payload, String, &'static str)>(Id::new("insert-drag")));
         if over_board && !ed.read_only {
@@ -351,17 +353,18 @@ pub fn insert_drag(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     let k = ui::motion::appear(ctx, Id::new("insert-drag-card"), true);
     let lift = ui::motion::spring(ctx, Id::new("insert-drag-lift"), if over_board { 1.0 } else { 0.0 }, 0.25, 0.8);
     // A note torn off the pad: the note itself under the pointer, as big as it will be, swinging
-    // a little with the movement.
+    // a little with the movement; brought back over the pad or bar, it folds back in.
     if what == Payload::Sticky {
         let color = crate::model::color_or(&ed.prefs.sticky_color, Color32::from_rgb(0xFF, 0xE5, 0x8F));
         let vx = ctx.input(|i| i.pointer.velocity().x);
         // Held up, a little askew, swinging with the movement.
         let swing = ui::motion::spring(ctx, Id::new("sticky-swing"), -0.05 + (vx * 0.0006).clamp(-0.22, 0.22), 0.2, 0.7);
-        let size = (220.0 * (0.55 + 0.45 * k.clamp(0.0, 1.0))).min(220.0);
+        let l = lift.clamp(0.0, 1.0);
+        let size = ((42.0 + 178.0 * l) * (0.55 + 0.45 * k.clamp(0.0, 1.0))).min(220.0);
         let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("sticky-ghost")));
-        let c = pos2(pos.x, pos.y + size * 0.3);
-        note_shadow(&p, c + vec2(0.0, 10.0), size, swing);
-        note_shape(&p, c, size, swing, color, ui::mix(color, 0.8, Color32::BLACK).gamma_multiply(0.4));
+        let c = pos2(pos.x, pos.y + size * 0.3 * l);
+        note_shadow(&p, c + vec2(0.0, 10.0 * l), size, swing * l);
+        note_shape(&p, c, size, swing * l, color, ui::mix(color, 0.8, Color32::BLACK).gamma_multiply(0.4));
         ctx.set_cursor_icon(if over_board { egui::CursorIcon::Grabbing } else { egui::CursorIcon::NoDrop });
         ctx.request_repaint();
         return;
@@ -389,7 +392,13 @@ fn more_tools(ui: &mut Ui, ed: &mut Editor, t: &Theme, top: bool) {
     ui.painter().circle_filled(rect.center(), 15.0 * bar(), ui::blend(t.bg2, t.press, h));
     icon(ui, "plus", rect.center(), icon_px(), t.icon);
     let r = ui::tip(r, "Altri strumenti", None);
-    egui::Popup::menu(&r).frame(ui::float_frame(t).inner_margin(egui::Margin::same(8))).align(if top { egui::RectAlign::BOTTOM } else { egui::RectAlign::TOP }).gap(10.0).show(|ui| {
+    let align = match (ui::narrow(ui.ctx()), top) {
+        (true, true) => egui::RectAlign::BOTTOM_END,
+        (true, false) => egui::RectAlign::TOP_END,
+        (false, true) => egui::RectAlign::BOTTOM,
+        (false, false) => egui::RectAlign::TOP,
+    };
+    egui::Popup::menu(&r).frame(ui::float_frame(t).inner_margin(egui::Margin::same(8))).align(align).gap(10.0).show(|ui| {
         ui.label(egui::RichText::new("Aggiungi").font(ui::medium(ui::px(11.0))).color(t.text2));
         ui.add_space(4.0);
         let items: [(&str, &str, &str, Option<Payload>); 6] = [
@@ -400,9 +409,12 @@ fn more_tools(ui: &mut Ui, ed: &mut Editor, t: &Theme, top: bool) {
             ("image-plus", "Immagine", "Dal computer", None),
             ("layout-template", "Modelli", "Brainstorming, Kanban e altri", None),
         ];
+        let screen_w = ui.ctx().content_rect().width();
+        let single_col = screen_w < 480.0;
+        let tile_w = if single_col { (screen_w - 36.0).clamp(200.0, 320.0) } else { ui::ctl(224.0).min((screen_w - 38.0) * 0.5) };
         egui::Grid::new("more-tools").spacing(vec2(6.0, 6.0)).show(ui, |ui| {
             for (i, (icon_name, label, hint, payload)) in items.into_iter().enumerate() {
-                let resp = tile(ui, icon_name, label, hint, t, payload.is_some());
+                let resp = tile(ui, icon_name, label, hint, t, payload.is_some(), tile_w);
                 if let Some(p) = &payload
                     && resp.drag_started()
                 {
@@ -418,7 +430,7 @@ fn more_tools(ui: &mut Ui, ed: &mut Editor, t: &Theme, top: bool) {
                         }
                     }
                 }
-                if i % 2 == 1 {
+                if single_col || i % 2 == 1 {
                     ui.end_row();
                 }
             }
@@ -427,17 +439,21 @@ fn more_tools(ui: &mut Ui, ed: &mut Editor, t: &Theme, top: bool) {
 }
 
 /// A big tile of the "+" card: icon on a tinted square, name and a line about it.
-fn tile(ui: &mut Ui, name: &str, label: &str, hint: &str, t: &Theme, draggable: bool) -> egui::Response {
-    let (r, resp) = ui.allocate_exact_size(vec2(216.0, 48.0), if draggable { Sense::click_and_drag() } else { Sense::click() });
+fn tile(ui: &mut Ui, name: &str, label: &str, hint: &str, t: &Theme, draggable: bool, w: f32) -> egui::Response {
+    let h = ui::ctl(48.0).max(48.0);
+    let (r, resp) = ui.allocate_exact_size(vec2(w, h), if draggable { Sense::click_and_drag() } else { Sense::click() });
     let k = ui::motion::hover(ui.ctx(), resp.id, resp.hovered());
     let s = ui::motion::press(ui.ctx(), resp.id, resp.is_pointer_button_down_on());
     let r2 = Rect::from_center_size(r.center(), r.size() * s);
     ui.painter().rect_filled(r2, 10.0, t.hover.gamma_multiply(k));
-    let sq = Rect::from_min_size(r2.min + vec2(6.0, 6.0), vec2(36.0, 36.0));
+    let sq_s = (h - 12.0).clamp(32.0, 40.0);
+    let sq = Rect::from_min_size(pos2(r2.min.x + 6.0, r2.center().y - sq_s * 0.5), vec2(sq_s, sq_s));
     ui.painter().rect_filled(sq, 9.0, t.selected);
     icon(ui, name, sq.center(), 18.0, if t.dark { Color32::WHITE } else { ui::mix(t.brand, 0.75, Color32::BLACK) });
-    ui.painter().text(pos2(sq.max.x + 10.0, r2.center().y - 7.0), egui::Align2::LEFT_CENTER, label, ui::medium(ui::px(12.0)), t.text);
-    ui.painter().text(pos2(sq.max.x + 10.0, r2.center().y + 8.0), egui::Align2::LEFT_CENTER, hint, egui::FontId::proportional(ui::px(11.0)), t.text2);
+    let tp = ui.painter().with_clip_rect(r2.shrink2(vec2(6.0, 2.0)).intersect(ui.clip_rect()));
+    let dy = (h * 0.16).clamp(7.0, 10.0);
+    tp.text(pos2(sq.max.x + 10.0, r2.center().y - dy), egui::Align2::LEFT_CENTER, label, ui::medium(ui::px(12.0)), t.text);
+    tp.text(pos2(sq.max.x + 10.0, r2.center().y + dy), egui::Align2::LEFT_CENTER, hint, egui::FontId::proportional(ui::px(11.0)), t.text2);
     if draggable && resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
     }
@@ -898,6 +914,7 @@ fn note_shadow(p: &egui::Painter, c: Pos2, s: f32, _a: f32) {
 fn sticky_stack(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
     let ctx = ui.ctx().clone();
     let (rect, resp) = ui.allocate_exact_size(vec2(stack_w(), btn()), Sense::click_and_drag());
+    ctx.data_mut(|d| d.insert_temp(Id::new("sticky-stack-rect"), Rect::from_min_max(pos2(rect.min.x - 10.0, rect.min.y - 28.0), pos2(rect.max.x + 10.0, rect.max.y + 10.0))));
     let color = crate::model::color_or(&ed.prefs.sticky_color, Color32::from_rgb(0xFF, 0xE5, 0x8F));
     let (tint, solid) = tool_look(ed, Tool::Sticky);
     let sel = ui::motion::hover(&ctx, resp.id.with("sel"), tint || solid);
@@ -1222,6 +1239,7 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
     };
     // A connector or a shape picked in the row: that tool in hand (after the row is drawn).
     let mut want: Option<Tool> = None;
+    let mut insert_table = false;
     let dock = ctx.data(|d| d.get_temp::<f32>(Id::new("toolbar-dock"))).unwrap_or(1.0).clamp(0.0, 1.0);
     let shown = egui::Area::new(Id::new(("tray", format!("{tool:?}")))).pivot(pivot).fixed_pos(at).constrain_to(ctx.content_rect().shrink(8.0)).interactable(dock > 0.5).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0) * dock);
@@ -1364,7 +1382,11 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                             p.stamp = e;
                         }
                     }
-                    Tool::Table => table_size_picker(ui, &mut p.table_size, t),
+                    Tool::Table => {
+                        if table_size_picker(ui, &mut p.table_size, t) {
+                            insert_table = true;
+                        }
+                    }
                     Tool::Laser => {
                         ui.label(RichText::new("Colore del laser").color(t.text2));
                         if let Some(c) = ui::swatches(ui, &LASER_COLORS, &p.laser_color, false) {
@@ -1385,6 +1407,9 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
     if close {
         ed.prefs.tray = false;
     }
+    if insert_table && !ed.read_only {
+        ed.insert_table(None);
+    }
     if let Some(tool) = want {
         ed.set_tool(tool);
         ed.prefs.tray = true;
@@ -1400,7 +1425,7 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
 }
 
 /// The size of the next table: a grid of cells, those up to the pointer lit, as in Word.
-fn table_size_picker(ui: &mut Ui, size: &mut [u8; 2], t: &Theme) {
+fn table_size_picker(ui: &mut Ui, size: &mut [u8; 2], t: &Theme) -> bool {
     const COLS: usize = 8;
     const ROWS: usize = 5;
     const CELL: f32 = 12.0;
@@ -1415,16 +1440,19 @@ fn table_size_picker(ui: &mut Ui, size: &mut [u8; 2], t: &Theme) {
             ui.painter().rect(cell, 3.0, if on { t.brand.gamma_multiply(0.18) } else { t.bg2 }, Stroke::new(1.0, if on { t.brand } else { t.border }), egui::StrokeKind::Inside);
         }
     }
+    let mut picked = false;
     if resp.clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
         let (r, c) = cell_at(p);
         *size = [r, c];
+        picked = true;
     }
     ui.add_space(4.0);
-    ui.allocate_ui_with_layout(vec2(44.0, rect.height()), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+    ui.allocate_ui_with_layout(vec2(48.0, rect.height()), egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.label(RichText::new(format!("{} × {}", shown.0, shown.1)).font(ui::medium(ui::px(12.0))).color(t.text));
     });
+    picked
 }
 
 

@@ -45,16 +45,26 @@ impl Editor {
 
     /// A stroke (board coordinates, flat [x, y, pressure, …]) drawn on screen.
     fn stroke_shape(&self, out: &mut Vec<Shape>, pts: &[f64], size: f64, hl: bool, color: Color32, opacity: f64) {
+        if let Some(s) = Self::build_stroke_shape(self.cam, self.origin, is_dark(&self.board.meta().background), pts, size, hl, color, opacity) {
+            out.push(s);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_stroke_shape(cam: Camera, origin: Pos2, dark_bg: bool, pts: &[f64], size: f64, hl: bool, color: Color32, opacity: f64) -> Option<Shape> {
         if pts.len() < 3 {
-            return;
+            return None;
         }
         let (x0, y0) = (pts[0], pts[1]);
         let rel: Vec<f32> = pts.chunks_exact(3).flat_map(|p| [(p[0] - x0) as f32, (p[1] - y0) as f32, p[2] as f32]).collect();
-        let path = stroke_path(&rel, size, hl).mapped(|x, y| self.sp(x as f64 + x0, y as f64 + y0).into());
+        let path = stroke_path(&rel, size, hl).mapped(|x, y| {
+            let p = cam.to_screen(x as f64 + x0, y as f64 + y0);
+            (p.x as f32 + origin.x, p.y as f32 + origin.y)
+        });
         // As the stroke will be drawn: the default ink light on a dark board.
-        let color = if color == DARK && is_dark(&self.board.meta().background) { crate::prims::LIGHT_INK } else { color };
+        let color = if color == DARK && dark_bg { crate::prims::LIGHT_INK } else { color };
         let a = if hl { 0.45 } else { 1.0 } * opacity.clamp(0.05, 1.0) as f32;
-        out.push(Shape::mesh(fill_mesh(&path, alpha(color, a * color.a() as f32 / 255.0))));
+        Some(Shape::mesh(fill_mesh(&path, alpha(color, a * color.a() as f32 / 255.0))))
     }
 
     fn laser_shape(&self, out: &mut Vec<Shape>, flat: &[f64], color: Color32) {
@@ -216,11 +226,16 @@ impl Editor {
                     if matches!(h, Handle::Rot | Handle::P0 | Handle::P1) {
                         out.push(circle(p, 4.5 * k, Color32::WHITE, st));
                     } else if matches!(h, Handle::Nw | Handle::Ne | Handle::Se | Handle::Sw) {
-                        // FigJam's handles: white squares with round corners at the corners only;
+                        // FigJam's handles: white squares with round corners at the corners;
                         // the sides still resize, from the line itself.
                         let r = egui::Rect::from_center_size(pos2(p.x.round(), p.y.round()), vec2(10.0 * k, 10.0 * k));
                         out.push(Shape::rect_filled(r, 2.5, Color32::WHITE));
                         out.push(Shape::rect_stroke(r, 2.5, st, egui::StrokeKind::Middle));
+                    } else if sel.len() == 1 && sel[0].code().is_some() && matches!(h, Handle::N | Handle::S | Handle::E | Handle::W) {
+                        let sz = if matches!(h, Handle::N | Handle::S) { vec2(16.0 * k, 6.0 * k) } else { vec2(6.0 * k, 16.0 * k) };
+                        let r = egui::Rect::from_center_size(pos2(p.x.round(), p.y.round()), sz);
+                        out.push(Shape::rect_filled(r, 3.0 * k, Color32::WHITE));
+                        out.push(Shape::rect_stroke(r, 3.0 * k, st, egui::StrokeKind::Middle));
                     }
                 }
             }
@@ -259,19 +274,54 @@ impl Editor {
             }
         }
 
-        match &self.gesture {
+        let (cam, origin, dark_bg) = (self.cam, self.origin, is_dark(&self.board.meta().background));
+        match &mut self.gesture {
             Some(Gesture::Marquee { start, cur, .. }) => {
+                let (start, cur) = (*start, *cur);
                 let r = egui::Rect::from_two_pos(self.sp(start.x, start.y), self.sp(cur.x, cur.y));
                 out.push(Shape::rect_filled(r, 0.0, alpha(accent, 0.08)));
                 out.push(Shape::rect_stroke(r, 0.0, Stroke::new(1.0, accent), egui::StrokeKind::Inside));
             }
             Some(Gesture::Lasso { poly, .. }) if poly.len() > 4 => {
-                let mut pts: Vec<Pos2> = poly.chunks_exact(2).map(|q| self.sp(q[0], q[1])).collect();
+                let pts_world = poly.clone();
+                let mut pts: Vec<Pos2> = pts_world.chunks_exact(2).map(|q| self.sp(q[0], q[1])).collect();
                 out.push(Shape::mesh(fill_mesh(&Path::polygon(&pts.iter().flat_map(|p| [p.x as f64, p.y as f64]).collect::<Vec<_>>()), alpha(accent, 0.06))));
                 pts.push(pts[0]);
                 out.extend(Shape::dashed_line(&pts, Stroke::new(1.5, accent), 5.0, 4.0));
             }
-            Some(Gesture::Draw(d)) => self.stroke_shape(&mut out, &d.pts, d.size, d.hl, parse_color(&d.color).unwrap_or(DARK), d.opacity),
+            Some(Gesture::Draw(d)) => {
+                let color = parse_color(&d.color).unwrap_or(DARK);
+                let cam_key = ((cam.x * 100.0) as i64, (cam.y * 100.0) as i64, (cam.z * 10000.0) as i64, (origin.x * 10.0) as i64, (origin.y * 10.0) as i64);
+                if d.chunk_cam != cam_key {
+                    d.chunks.clear();
+                    d.chunk_pts = 0;
+                    d.chunk_cam = cam_key;
+                }
+                if !d.hl && d.opacity >= 0.995 {
+                    while d.pts.len() / 3 >= d.chunk_pts + 72 {
+                        let start = d.chunk_pts.saturating_sub(2);
+                        let end = d.chunk_pts + 56;
+                        if let Some(s) = Self::build_stroke_shape(cam, origin, dark_bg, &d.pts[start * 3..end * 3], d.size, d.hl, color, d.opacity) {
+                            d.chunks.push(s);
+                        }
+                        d.chunk_pts = end - 1;
+                    }
+                    out.extend(d.chunks.iter().cloned());
+                    let tail = d.chunk_pts.saturating_sub(2) * 3;
+                    if let Some(s) = Self::build_stroke_shape(cam, origin, dark_bg, &d.pts[tail..], d.size, d.hl, color, d.opacity) {
+                        out.push(s);
+                    }
+                } else {
+                    if d.chunk_pts != d.pts.len() {
+                        d.chunks.clear();
+                        if let Some(s) = Self::build_stroke_shape(cam, origin, dark_bg, &d.pts, d.size, d.hl, color, d.opacity) {
+                            d.chunks.push(s);
+                        }
+                        d.chunk_pts = d.pts.len();
+                    }
+                    out.extend(d.chunks.iter().cloned());
+                }
+            }
             _ => {}
         }
 

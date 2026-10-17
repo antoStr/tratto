@@ -32,16 +32,15 @@ pub fn stroke_path(pts: &[f32], size: f64, highlighter: bool) -> Path {
             _ => q,
         });
     }
-    let c = thin3(&c, size * 0.12);
-    // A dab where the band turns or changes width, at the ends, and on both sides of a band
-    // left out; along a straight even stretch the bands meet edge to edge and need none (far
-    // fewer overlapping pieces: a thick stroke filled ten times faster).
+    let c = smooth3(&thin3(&c, size * 0.08), size);
+    // A dab where the band turns sharply or changes width fast, at the ends, and on both sides of
+    // a band left out; along a smooth stretch the bands meet edge to edge along the bisector.
     let mut dab = vec![false; c.len()];
     let heading = |a: [f64; 3], b: [f64; 3]| (b[1] - a[1]).atan2(b[0] - a[0]);
     for i in 0..c.len() {
         dab[i] = i == 0 || i + 1 == c.len() || {
             let turn = (heading(c[i], c[i + 1]) - heading(c[i - 1], c[i]) + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
-            turn.abs() > 0.03 || (c[i + 1][2] - c[i][2]).abs() + (c[i][2] - c[i - 1][2]).abs() > 1e-9
+            turn.abs() > 0.35 || (c[i + 1][2] - c[i][2]).abs() + (c[i][2] - c[i - 1][2]).abs() > size * 0.04
         };
     }
     let mut bands = Vec::with_capacity(c.len());
@@ -69,7 +68,7 @@ pub fn stroke_path(pts: &[f32], size: f64, highlighter: bool) -> Path {
     let shared = |i: usize| {
         let ((ax, ay), (bx, by)) = (left(i - 1), left(i));
         let (mx, my) = (ax + bx, ay + by);
-        let k = c[i][2] / (mx * ax + my * ay);
+        let k = c[i][2] / (mx * ax + my * ay).max(0.5);
         [c[i][0] - mx * k, c[i][1] - my * k, c[i][0] + mx * k, c[i][1] + my * k]
     };
     for (i, d, s) in bands {
@@ -109,6 +108,47 @@ fn thin3(pts: &[[f64; 3]], step: f64) -> Vec<[f64; 3]> {
             _ => out.push(p),
         }
     }
+    out
+}
+
+/// Rounds polygonal joints into local quadratic B-spline arcs so thin strokes stay smooth even
+/// when zoomed in, while keeping the already-drawn part of a live stroke completely still.
+fn smooth3(pts: &[[f64; 3]], size: f64) -> Vec<[f64; 3]> {
+    if pts.len() < 3 {
+        return pts.to_vec();
+    }
+    let lerp = |a: [f64; 3], b: [f64; 3], t: f64| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+    let mut out = Vec::with_capacity(pts.len() * 3);
+    out.push(pts[0]);
+    for i in 1..pts.len() - 1 {
+        let (p0, p1, p2) = (pts[i - 1], pts[i], pts[i + 1]);
+        let d0 = (p1[0] - p0[0]).hypot(p1[1] - p0[1]);
+        let d1 = (p2[0] - p1[0]).hypot(p2[1] - p1[1]);
+        if d0 <= size * 0.12 || d1 <= size * 0.12 {
+            out.push(p1);
+            continue;
+        }
+        let h0 = (p1[1] - p0[1]).atan2(p1[0] - p0[0]);
+        let h1 = (p2[1] - p1[1]).atan2(p2[0] - p1[0]);
+        let turn = ((h1 - h0 + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI).abs();
+        if !(0.03..2.6).contains(&turn) {
+            out.push(p1);
+            continue;
+        }
+        let a = lerp(p1, p0, 0.45);
+        let b = lerp(p1, p2, 0.45);
+        let steps = ((turn * 6.0).ceil() as usize).clamp(2, 6);
+        for k in 0..=steps {
+            let t = k as f64 / steps as f64;
+            let u = 1.0 - t;
+            out.push([
+                u * u * a[0] + 2.0 * u * t * p1[0] + t * t * b[0],
+                u * u * a[1] + 2.0 * u * t * p1[1] + t * t * b[1],
+                u * u * a[2] + 2.0 * u * t * p1[2] + t * t * b[2],
+            ]);
+        }
+    }
+    out.push(*pts.last().unwrap());
     out
 }
 

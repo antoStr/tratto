@@ -479,8 +479,12 @@ pub fn scale_element(el: &El, from: BBox, to: BBox) -> El {
             next.y = ncy - next.h / 2.0;
             next.x = ncx - next.w / 2.0;
         }
-        Kind::Code(_) => {
+        Kind::Code(c) => {
             next.w = w.max(160.0);
+            if (h - el.h).abs() > 0.5 {
+                c.fixed_height = true;
+                next.h = h;
+            }
             crate::text::fit_text(&mut next);
             next.y = ncy - next.h / 2.0;
             next.x = ncx - next.w / 2.0;

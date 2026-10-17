@@ -196,6 +196,10 @@ pub(crate) struct Draw {
     pointer: u64,
     /// Tells this stroke's pieces apart from the previous one's, for the others.
     sid: u64,
+    /// Settled tessellated chunks of a live stroke so long strokes stay O(1) per frame.
+    chunks: Vec<egui::Shape>,
+    chunk_pts: usize,
+    chunk_cam: (i64, i64, i64, i64, i64),
 }
 
 pub(crate) struct Touched {
@@ -720,6 +724,42 @@ impl Editor {
                 best = Some(h);
             }
         }
+        if best.is_none() {
+            let els = self.selected();
+            if !self.read_only
+                && !els.is_empty()
+                && !els.iter().any(|e| e.locked)
+                && !(els.len() == 1 && (els[0].is_comment() || els[0].line().is_some() || matches!(els[0].kind, Kind::Stamp { .. })))
+                && let Some((b, rot)) = self.selection_frame()
+            {
+                let c = b.center();
+                let corner = |lx: f64, ly: f64| {
+                    let p = rotate(lx, ly, c.x, c.y, rot);
+                    self.to_screen(p.x, p.y)
+                };
+                let (nw, ne, se, sw) = (corner(b.x, b.y), corner(b.right(), b.y), corner(b.right(), b.bottom()), corner(b.x, b.bottom()));
+                let seg_d = |a: Pos2, b: Pos2| -> f32 {
+                    let ab = b - a;
+                    let len2 = ab.length_sq();
+                    if len2 <= 1e-4 {
+                        return s.distance(a);
+                    }
+                    let t = ((s - a).dot(ab) / len2).clamp(0.0, 1.0);
+                    s.distance(a + ab * t)
+                };
+                let mut side_d = r * 0.75;
+                for (h, p0, p1) in [(Handle::N, nw, ne), (Handle::S, sw, se), (Handle::E, ne, se), (Handle::W, nw, sw)] {
+                    if matches!(h, Handle::N | Handle::S) && els.len() == 1 && els[0].text().is_some() {
+                        continue;
+                    }
+                    let d = seg_d(p0, p1);
+                    if d <= side_d {
+                        side_d = d;
+                        best = Some(h);
+                    }
+                }
+            }
+        }
         best
     }
 
@@ -938,6 +978,7 @@ impl Editor {
     pub(crate) fn start_draw(&mut self, s: Pos2, hl: bool, kind: PointerKind, pointer: u64) {
         let pen = if hl { self.prefs.highlighter.clone() } else { self.prefs.pens.get(self.pen).or(self.prefs.pens.first()).cloned().unwrap_or_default() };
         let size = self.world_size(pen.size);
+        let cutoff = if kind == PointerKind::Mouse { self.prefs.ink_smoothing.cutoff() * 1.2 } else { self.prefs.ink_smoothing.cutoff() };
         self.gesture = Some(Gesture::Draw(Box::new(Draw {
             hl,
             color: pen.color,
@@ -945,12 +986,15 @@ impl Editor {
             opacity: pen.opacity.clamp(0.05, 1.0),
             pts: Vec::new(),
             snap: ink::ruler_snapper(&self.ruler, s.x as f64, s.y as f64, size * self.cam.z / 2.0),
-            filter: (kind != PointerKind::Mouse || self.prefs.ink_smoothing == crate::prefs::Smoothing::High).then(|| OneEuro::new(self.prefs.ink_smoothing.cutoff())),
+            filter: Some(OneEuro::new(cutoff)),
             pressure: None,
             use_pressure: kind == PointerKind::Pen && self.prefs.pressure && !hl,
             raw: None,
             pointer,
             sid: (now() * 1000.0) as u64,
+            chunks: Vec::new(),
+            chunk_pts: 0,
+            chunk_cam: (0, 0, 0, 0, 0),
         })));
     }
 
@@ -1005,7 +1049,7 @@ impl Editor {
         }
         let z = self.cam.z;
         let flat: Vec<f32> = g.pts.iter().map(|&v| v as f32).collect();
-        let thin: Vec<f64> = ink::thin_points(&flat, 0.4 / z).into_iter().map(|v| v as f64).collect();
+        let thin: Vec<f64> = ink::thin_points(&flat, (0.2 / z).min(g.size * 0.08)).into_iter().map(|v| v as f64).collect();
         let mut el = self.ink_element(&thin, g.size, &g.color, g.hl, g.opacity);
         if !g.hl && self.prefs.ink_to_shape && g.snap.is_none() {
             let flat: Vec<f32> = thin.iter().map(|&v| v as f32).collect();
@@ -2446,7 +2490,7 @@ fn push_draw_point(g: &mut Draw, cam: &Camera, s: Pt, pressure: f64, force: bool
     };
     let w = cam.to_world(s.x, s.y);
     let n = g.pts.len();
-    if !force && n > 0 && (g.pts[n - 3] - w.x).hypot(g.pts[n - 2] - w.y) < 0.5 / cam.z {
+    if !force && n > 0 && (g.pts[n - 3] - w.x).hypot(g.pts[n - 2] - w.y) < 0.25 / cam.z {
         return;
     }
     g.pts.extend([w.x, w.y, pressure]);
