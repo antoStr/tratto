@@ -1,6 +1,6 @@
 [package]
 name = "tratto"
-version = "2.5.1"
+version = "2.5.2"
 edition = "2024"
 description = "Lavagna infinita con penna e condivisione sicura"
 authors = ["antoStr <antostr.dev@gmail.com>"]
