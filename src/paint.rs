@@ -146,17 +146,30 @@ impl Part {
         self.col.extend(std::iter::repeat_n(color, buf.vertices.len()));
         self.idx.extend(buf.indices.iter().map(|i| i + base));
     }
-    /// Quad with full `inner` colour fading to transparent at `outer` (both as 4 corners).
-    fn feathered(&mut self, inner: [[f32; 2]; 4], outer: [[f32; 2]; 4], color: Color32) {
+    /// A soft shadow: rings round the outline (corners included), each fading on to the next.
+    /// `rings` go from the inside out, each a closed outline (all the same number of points)
+    /// with its colour; the innermost is filled.
+    fn rings(&mut self, rings: &[(Vec<[f32; 2]>, Color32)]) {
+        let Some((first, _)) = rings.first() else { return };
+        let n = first.len() as u32;
+        if n < 3 {
+            return;
+        }
         let base = self.pos.len() as u32;
-        self.pos.extend(inner);
-        self.pos.extend(outer);
-        self.col.extend([color; 4]);
-        self.col.extend([Color32::TRANSPARENT; 4]);
-        self.idx.extend([0, 1, 2, 0, 2, 3].map(|i| i + base));
-        for i in 0..4 {
-            let j = (i + 1) % 4;
-            self.idx.extend([i, j, 4 + j, i, 4 + j, 4 + i].map(|k| k + base));
+        for (ring, c) in rings {
+            self.pos.extend_from_slice(ring);
+            self.col.extend(std::iter::repeat_n(*c, ring.len()));
+        }
+        // The middle, a fan (the outline is convex).
+        for i in 1..n - 1 {
+            self.idx.extend([base, base + i, base + i + 1]);
+        }
+        for k in 0..rings.len() as u32 - 1 {
+            let (a, b) = (base + k * n, base + (k + 1) * n);
+            for i in 0..n {
+                let j = (i + 1) % n;
+                self.idx.extend([a + i, a + j, b + j, a + i, b + j, b + i]);
+            }
         }
     }
 }
@@ -598,16 +611,28 @@ impl Painter {
                     });
                     parts.push(Part { image: Some((key, alpha)), pos: corners.to_vec(), col: Vec::new(), idx: Vec::new() });
                 }
-                Prim::Shadow { x, y, w, h, blur, dy, color, .. } => {
-                    let b = blur / 2.0;
-                    let rect = |x0: f32, y0: f32, x1: f32, y1: f32| [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].map(|(px, py)| {
-                        let (qx, qy) = tf(px, py);
-                        [qx, qy]
-                    });
-                    let (ib, jb) = (b.min(w / 2.0), b.min(h / 2.0));
-                    let inner = rect(x + ib, y + dy + jb, x + w - ib, y + dy + h - jb);
-                    let outer = rect(x - b, y + dy - b, x + w + b, y + dy + h + b);
-                    last_colored(&mut parts).feathered(inner, outer, color);
+                Prim::Shadow { x, y, w, h, radius, blur, dy, color } => {
+                    // Rounded rectangles from inside the edge to beyond it, following the corners,
+                    // fading on a soft curve (a straight fade between two boxes made the corners
+                    // look cut).
+                    let b = blur.max(0.5);
+                    const STEPS: [(f32, f32); 6] = [(-0.5, 1.0), (-0.25, 0.8), (0.0, 0.52), (0.3, 0.26), (0.62, 0.08), (1.0, 0.0)];
+                    let ring = |o: f32| -> Vec<[f32; 2]> {
+                        let e = (o * b).max(-(w.min(h) / 2.0 - 0.5));
+                        let (x0, y0, x1, y1) = (x - e, y + dy - e, x + w + e, y + dy + h + e);
+                        let r = (radius + e).clamp(0.0, ((x1 - x0).min(y1 - y0) / 2.0).max(0.0));
+                        let mut pts = Vec::with_capacity(32);
+                        for (cx, cy, a0) in [(x1 - r, y0 + r, -90.0f32), (x1 - r, y1 - r, 0.0), (x0 + r, y1 - r, 90.0), (x0 + r, y0 + r, 180.0)] {
+                            for i in 0..8 {
+                                let a = (a0 + 90.0 * i as f32 / 7.0).to_radians();
+                                let (px, py) = tf(cx + r * a.cos(), cy + r * a.sin());
+                                pts.push([px, py]);
+                            }
+                        }
+                        pts
+                    };
+                    let rings: Vec<(Vec<[f32; 2]>, Color32)> = STEPS.iter().map(|&(o, k)| (ring(o), color.gamma_multiply(k))).collect();
+                    last_colored(&mut parts).rings(&rings);
                 }
             }
         }

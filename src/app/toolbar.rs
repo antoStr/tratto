@@ -509,19 +509,6 @@ fn tape_roll(p: &egui::Painter, x: f32, top: f32, c: Color32, t: &Theme, k: f32)
     p.circle(centre, 4.5 * k, if t.dark { Color32::from_gray(0x3A) } else { Color32::WHITE }, Stroke::new(1.0, edge));
 }
 
-/// A pad of sticky notes: the top one straight, the one under it a little askew.
-fn sticky_pad(ui: &Ui, c: Pos2, color: Color32, t: &Theme, lift: f32) {
-    let p = ui.painter();
-    let under = ui::mix(color, 0.82, Color32::BLACK);
-    let a = -0.16f32;
-    let (s, k) = (a.sin(), a.cos());
-    let rot = |x: f32, y: f32| c + vec2(1.5 + x * k - y * s, 1.0 + x * s + y * k);
-    p.add(egui::Shape::convex_polygon(vec![rot(-8.0, -8.0), rot(8.0, -8.0), rot(8.0, 8.0), rot(-8.0, 8.0)], under, Stroke::NONE));
-    let top = Rect::from_center_size(c + vec2(-1.0, -1.0 - 2.0 * lift), vec2(16.0, 16.0));
-    p.rect(top, 2.0, color, Stroke::new(1.0, ui::mix(color, 0.7, if t.dark { Color32::WHITE } else { Color32::BLACK })), egui::StrokeKind::Inside);
-    // The fold at the corner.
-    p.add(egui::Shape::convex_polygon(vec![top.right_bottom() - vec2(5.0, 0.0), top.right_bottom() - vec2(0.0, 5.0), top.right_bottom() - vec2(5.0, 5.0)], under, Stroke::NONE));
-}
 
 
 /// Tools with options in a tray over the toolbar.

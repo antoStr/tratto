@@ -893,6 +893,7 @@ pub fn background_fields(ui: &mut Ui, meta: &mut BoardMeta) {
     });
     if meta.pattern != Pattern::None {
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
             ui.label(RichText::new("Passo").color(t.text2));
             let mut g = meta.grid_size as i64;
             if ui::segmented(ui, &mut g, &[(12, "Fitto"), (24, "Medio"), (48, "Ampio")], 160.0) {

@@ -186,6 +186,10 @@ pub struct Prefs {
     pub sticky_arrows: bool,
     /// The others' rulers shown on the board (off: only your own).
     pub peer_rulers: bool,
+    /// New notes, code and widgets come with a shadow, this dark (0–1) and this soft (blur).
+    pub shadows: bool,
+    pub shadow_opacity: f64,
+    pub shadow_blur: f64,
     /// The toolbar's size: 0.85 compact, 1 normal, 1.2 large (easier with a pen or fingers).
     pub toolbar_size: f32,
     /// Which default layout these preferences were last brought to (see `from_json`); missing in
@@ -319,6 +323,9 @@ impl Default for Prefs {
             timer_sound: true,
             sticky_arrows: false,
             peer_rulers: false,
+            shadows: true,
+            shadow_opacity: 0.14,
+            shadow_blur: 10.0,
             toolbar_size: 1.0,
             layout: LAYOUT,
         }
@@ -359,6 +366,8 @@ impl Prefs {
         p.toolbar_profiles.truncate(20);
         p.music_volume = if p.music_volume.is_finite() { p.music_volume.clamp(0.0, 1.0) } else { 0.6 };
         p.toolbar_size = if p.toolbar_size.is_finite() { p.toolbar_size.clamp(0.8, 1.4) } else { 1.0 };
+        p.shadow_opacity = if p.shadow_opacity.is_finite() { p.shadow_opacity.clamp(0.0, 0.6) } else { 0.14 };
+        p.shadow_blur = if p.shadow_blur.is_finite() { p.shadow_blur.clamp(0.0, 40.0) } else { 10.0 };
         // Once, preferences saved by an older Tratto move to the new, cleaner layout; the panels
         // reopen from their buttons and stay as chosen afterwards.
         if p.layout < 2 {

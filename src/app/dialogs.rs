@@ -321,6 +321,17 @@ fn settings_section(ui: &mut egui::Ui, tab: SettingsTab, p: &mut Prefs, host: bo
             ui::switch(ui, &mut p.sticky_arrows, "Freccia tra le note aggiunte con +");
             ui::switch(ui, &mut p.peer_rulers, "Righelli degli altri");
             ui.add_space(4.0);
+            ui::heading(ui, "Ombre");
+            ui::switch(ui, &mut p.shadows, "Ombra sotto note, codice e widget nuovi");
+            if p.shadows {
+                row(ui, "Densità", None, |ui| {
+                    ui::slider_inline(ui, "", &mut p.shadow_opacity, 0.02, 0.5, 0.01, false, |v| format!("{}%", (v * 100.0).round()), 200.0);
+                });
+                row(ui, "Sfumatura", None, |ui| {
+                    ui::slider_inline(ui, "", &mut p.shadow_blur, 0.0, 32.0, 1.0, false, |v| format!("{}", v.round()), 200.0);
+                });
+            }
+            ui.add_space(4.0);
             ui::heading(ui, "Pannelli");
             ui::switch(ui, &mut p.left_panel, "Livelli e modelli, a sinistra");
             ui::switch(ui, &mut p.right_panel, "Design e condivisione, a destra");

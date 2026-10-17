@@ -872,6 +872,17 @@ impl Editor {
         el.rotation = 0.0;
         el.z = self.board.top_z();
         el.opacity = 1.0;
+        // The shadow chosen in the settings for new notes, code and widgets (without one, or
+        // another than the usual, it is written into the element so everyone sees the same).
+        if el.shadow.is_none() && crate::style::default_shade(&el).is_some() {
+            let p = &self.prefs;
+            let usual = Prefs::default();
+            if !p.shadows {
+                el.shadow = Some(crate::model::Shade { opacity: 0.0, blur: p.shadow_blur, y: 3.0 });
+            } else if (p.shadow_opacity - usual.shadow_opacity).abs() > 1e-6 || (p.shadow_blur - usual.shadow_blur).abs() > 1e-6 {
+                el.shadow = Some(crate::model::Shade { opacity: p.shadow_opacity, blur: p.shadow_blur, y: (p.shadow_blur * 0.3).round() });
+            }
+        }
         el
     }
 
