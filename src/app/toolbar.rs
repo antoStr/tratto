@@ -386,7 +386,9 @@ fn drawer_slot(ui: &mut Ui, ed: &mut Editor, t: &Theme, tool: Tool) -> egui::Res
     let slot = Rect::from_min_size(pos2(rect.min.x + 1.0, rect.min.y - 6.0), vec2(slot_w - 2.0, btn() + 11.0));
     let resp = ui.interact(slot, ui.id().with(("drawer", format!("{tool:?}"))), Sense::click());
     let on = ed.tool == tool;
-    let lift = ui::motion::spring(ui.ctx(), resp.id.with("lift"), if on { 1.0 } else if resp.hovered() { 0.45 } else { 0.0 }, 0.3, 0.7);
+    // In hand: drawn out of the drawer, a little less with its options folded away.
+    let out = if tool_look(ed, tool).0 { 0.7 } else { 1.0 };
+    let lift = ui::motion::spring(ui.ctx(), resp.id.with("lift"), if on { out } else if resp.hovered() { 0.45 } else { 0.0 }, 0.3, 0.7);
     let top = slot.min.y + 18.0 - 14.0 * lift;
     let c = crate::model::parse_color(&color).unwrap_or(crate::model::DARK);
     let p = ui.painter().with_clip_rect((clip).intersect(ui.clip_rect()));
@@ -440,6 +442,28 @@ fn sticky_pad(ui: &Ui, c: Pos2, color: Color32, t: &Theme, lift: f32) {
 }
 
 
+/// Tools with options in a tray over the toolbar.
+fn has_tray(tool: Tool) -> bool {
+    matches!(tool, Tool::Pen | Tool::Highlighter | Tool::Tape | Tool::Eraser | Tool::Shape | Tool::Line | Tool::Arrow | Tool::Text | Tool::Sticky | Tool::Stamp | Tool::Comment | Tool::Section | Tool::Table | Tool::Laser)
+}
+
+/// How a tool's button looks, as (tinted, solid): solid while the tool is in hand with its
+/// options open, a light tint once they are folded away (so that shows), plain otherwise.
+fn tool_look(ed: &Editor, tool: Tool) -> (bool, bool) {
+    let held = ed.tool == tool;
+    let folded = held && !ed.prefs.tray && has_tray(tool);
+    (folded, held && !folded)
+}
+
+/// The colour of an icon drawn over a tool button in that look.
+fn tool_ink(ed: &Editor, tool: Tool, t: &Theme) -> Color32 {
+    match tool_look(ed, tool) {
+        (_, true) => Color32::WHITE,
+        (true, _) if !t.dark => ui::mix(t.brand, 0.7, Color32::BLACK),
+        _ => t.icon,
+    }
+}
+
 /// Picks a tool from the toolbar; the tool already chosen opens or closes its options instead.
 fn pick(ed: &mut Editor, tool: Tool) {
     if ed.tool == tool {
@@ -454,7 +478,8 @@ fn pick(ed: &mut Editor, tool: Tool) {
 fn toolbar_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme, id: &str, top: bool) {
     let ctx = ui.ctx().clone();
     let simple = |ui: &mut Ui, ed: &mut Editor, tool: Tool, name: &str, label: &str, kbd: Option<&str>| {
-        if icon_button(ui, name, label, kbd, vec2(btn(), btn()), icon_px(), false, ed.tool == tool).clicked() {
+        let (tint, solid) = tool_look(ed, tool);
+        if icon_button(ui, name, label, kbd, vec2(btn(), btn()), icon_px(), tint, solid).clicked() {
             pick(ed, tool);
         }
     };
@@ -481,7 +506,8 @@ fn toolbar_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme, id: &
         }
         "sticky" => {
             // A little pad in the colour the next note will have.
-            let r = icon_button(ui, "", "Nota adesiva", Some("S"), vec2(btn(), btn()), icon_px(), false, ed.tool == Tool::Sticky);
+            let (tint, solid) = tool_look(ed, Tool::Sticky);
+            let r = icon_button(ui, "", "Nota adesiva", Some("S"), vec2(btn(), btn()), icon_px(), tint, solid);
             if r.clicked() {
                 pick(ed, Tool::Sticky);
             }
@@ -490,24 +516,40 @@ fn toolbar_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme, id: &
         "shape" => {
             let shape = ed.prefs.last_shape;
             let (label, kbd) = SHAPES.iter().find(|s| s.0 == shape).map_or(("Forma", None), |s| (s.1, s.2));
-            let r = icon_button(ui, "", label, kbd, vec2(btn(), btn()), icon_px(), false, ed.tool == Tool::Shape);
+            let (tint, solid) = tool_look(ed, Tool::Shape);
+            let r = icon_button(ui, "", label, kbd, vec2(btn(), btn()), icon_px(), tint, solid);
             if r.clicked() {
                 pick(ed, Tool::Shape);
             }
-            shape_icon(ui, shape, r.rect.center(), icon_px(), if ed.tool == Tool::Shape { Color32::WHITE } else { t.icon });
+            shape_icon(ui, shape, r.rect.center(), icon_px(), tool_ink(ed, Tool::Shape, t));
             let (cr, chevron) = ui.allocate_exact_size(vec2(14.0, btn()), Sense::click());
             ui::hover_fill(ui, chevron.id, cr, chevron.hovered(), 4.0, t.hover);
             icon(ui, "chevron-down", cr.center(), 12.0, t.icon2);
+            // 29 shapes don't fit above the toolbar of a small window: the list scrolls, opened
+            // at the shape in use.
+            let screen = ui.ctx().content_rect();
+            let room = if top { screen.bottom() - chevron.rect.bottom() } else { chevron.rect.top() - screen.top() } - 40.0;
+            let fresh = Id::new("shape-menu-fresh");
+            if chevron.clicked() {
+                ui.data_mut(|d| d.insert_temp(fresh, true));
+            }
+            let opened = ui.data_mut(|d| d.remove_temp::<bool>(fresh)).is_some();
             egui::Popup::menu(&chevron).frame(ui::menu_frame(t)).align(if top { egui::RectAlign::BOTTOM } else { egui::RectAlign::TOP }).show(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                for (k, label, kbd) in SHAPES {
-                    let resp = ui::menu_item(ui, None, label, kbd, false);
-                    shape_icon(ui, k, pos2(resp.rect.min.x + 12.0, resp.rect.center().y), 14.0, t.menu_text);
-                    if resp.clicked() {
-                        ed.prefs.last_shape = k;
-                        ed.set_tool(Tool::Shape);
+                ui.spacing_mut().scroll = egui::style::ScrollStyle::floating();
+                egui::ScrollArea::vertical().max_height(room.clamp(120.0, 420.0)).show(ui, |ui| {
+                    for (k, label, kbd) in SHAPES {
+                        let resp = ui::menu_item(ui, None, label, kbd, false);
+                        shape_icon(ui, k, pos2(resp.rect.min.x + 12.0, resp.rect.center().y), 14.0, t.menu_text);
+                        if opened && k == ed.prefs.last_shape {
+                            resp.scroll_to_me(Some(egui::Align::Center));
+                        }
+                        if resp.clicked() {
+                            ed.prefs.last_shape = k;
+                            ed.set_tool(Tool::Shape);
+                        }
                     }
-                }
+                });
             });
         }
         "arrow" => simple(ui, ed, Tool::Arrow, "arrow-up-right", "Connettore e freccia: parti da una forma per collegarla", Some("X")),
@@ -720,7 +762,8 @@ pub fn toolbar(ctx: &egui::Context, stage: Rect, ed: &mut Editor, st: &mut Board
 }
 
 fn laser_button(ui: &mut Ui, ed: &mut Editor) {
-    let r = icon_button(ui, "", "Puntatore laser", Some("K"), vec2(btn(), btn()), icon_px(), false, ed.tool == Tool::Laser);
+    let (tint, solid) = tool_look(ed, Tool::Laser);
+    let r = icon_button(ui, "", "Puntatore laser", Some("K"), vec2(btn(), btn()), icon_px(), tint, solid);
     if r.clicked() {
         pick(ed, Tool::Laser);
     }
@@ -748,7 +791,7 @@ const PCT: fn(f64) -> String = |v| format!("{}%", (v * 100.0).round());
 /// The contextual tray above the toolbar: what the current tool can be set to.
 fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t: &Theme) -> Option<Rect> {
     let tool = ed.tool;
-    if !matches!(tool, Tool::Pen | Tool::Highlighter | Tool::Tape | Tool::Eraser | Tool::Shape | Tool::Line | Tool::Arrow | Tool::Text | Tool::Sticky | Tool::Stamp | Tool::Comment | Tool::Section | Tool::Table | Tool::Laser) {
+    if !has_tray(tool) {
         return None;
     }
     let pivot = if top { egui::Align2::CENTER_TOP } else { egui::Align2::CENTER_BOTTOM };
@@ -777,8 +820,10 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
     let slide = move |ui: &mut Ui, label: &str, v: &mut f64, min: f64, max: f64, step: f64, log: bool, f: fn(f64) -> String, w: f32| {
         if narrow { ui::slider_chip(ui, label, v, min, max, step, log, f, top) } else { ui::slider_inline(ui, label, v, min, max, step, log, f, w) }
     };
-    // The tallest thing in the tray sets its height; everything else is centred on it.
+    // The tallest thing in the tray sets its height; everything else is centred on it. When
+    // the row wraps, each line is as tall as what it holds.
     let h = match tool {
+        _ if narrow => ui::ctl(TRAY_H),
         Tool::Shape => 124.0,
         Tool::Stamp => 96.0,
         _ => ui::ctl(TRAY_H),
@@ -789,9 +834,16 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
         // An area lays out in last frame's size: give the row the width it may take.
         ui.set_max_width(max_tray_w);
         ui::float_frame(t).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+            // On a phone the shapes go above the rest: in the wrapping row their tall grid
+            // would make every line below it as tall.
+            if narrow && tool == Tool::Shape {
+                ui.add_space(4.0);
+                shape_grid(ui, &mut ed.prefs, t);
+                ui.add_space(2.0);
+            }
             {
                 ui::wrap_row(ui, h, |ui| {
-                ui.spacing_mut().item_spacing = vec2(6.0, 0.0);
+                ui.spacing_mut().item_spacing = vec2(6.0, if narrow { 4.0 } else { 0.0 });
                 let p = &mut ed.prefs;
                 match tool {
                     Tool::Pen => {
@@ -845,20 +897,10 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                     }
                     Tool::Shape | Tool::Line | Tool::Arrow => {
                         if tool == Tool::Shape {
-                            egui::Grid::new("shape-grid").spacing(vec2(2.0, 2.0)).show(ui, |ui| {
-                                for (i, (k, label, kbd)) in SHAPES.iter().enumerate() {
-                                    let on = p.last_shape == *k;
-                                    let r = icon_button(ui, "", label, *kbd, vec2(28.0, 28.0), 16.0, on, false);
-                                    shape_icon(ui, *k, r.rect.center(), 16.0, t.icon);
-                                    if r.clicked() {
-                                        p.last_shape = *k;
-                                    }
-                                    if i % 8 == 7 {
-                                        ui.end_row();
-                                    }
-                                }
-                            });
-                            sep_h(ui, t, h);
+                            if !narrow {
+                                shape_grid(ui, p, t);
+                                sep_h(ui, t, h);
+                            }
                             color_pop(ui, "Riempimento", &mut p.shape_style.fill, true, false, top, t);
                         }
                         if tool != Tool::Shape {
@@ -944,6 +986,22 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
         ctx.data_mut(|d| d.insert_temp(natural_id, w));
     }
     Some(shown.response.rect)
+}
+
+/// Every shape, eight to a row: the one picked is what the shape tool draws.
+fn shape_grid(ui: &mut Ui, p: &mut crate::prefs::Prefs, t: &Theme) {
+    egui::Grid::new("shape-grid").spacing(vec2(2.0, 2.0)).min_row_height(28.0).show(ui, |ui| {
+        for (i, (k, label, kbd)) in SHAPES.iter().enumerate() {
+            let r = icon_button(ui, "", label, *kbd, vec2(28.0, 28.0), 16.0, p.last_shape == *k, false);
+            shape_icon(ui, *k, r.rect.center(), 16.0, t.icon);
+            if r.clicked() {
+                p.last_shape = *k;
+            }
+            if i % 8 == 7 {
+                ui.end_row();
+            }
+        }
+    });
 }
 
 /// Colours of the laser pointer.

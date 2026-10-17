@@ -463,6 +463,8 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
     let selected: std::collections::HashSet<String> = ed.selection.iter().cloned().collect();
     let ro = ed.read_only;
     let row_h = ui::ctl(32.0);
+    // A little air between the tabs and the first row (its highlight would touch their line).
+    ui.add_space(6.0);
     ScrollArea::vertical().auto_shrink(false).show_rows(ui, row_h, rows.len(), |ui, range| {
         ui.spacing_mut().item_spacing.y = 0.0;
         for row in &rows[range] {
@@ -805,11 +807,12 @@ fn share_button(ui: &mut Ui, b: &mut BoardScreen) {
 
 fn section(ui: &mut Ui, title: Option<&str>, body: impl FnOnce(&mut Ui)) {
     let t = ui::theme(ui.ctx());
-    egui::Frame::new().inner_margin(egui::Margin { left: 16, right: 16, top: 8, bottom: 14 }).show(ui, |ui| {
+    egui::Frame::new().inner_margin(egui::Margin { left: 16, right: 16, top: 14, bottom: 16 }).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.spacing_mut().item_spacing.y = 8.0;
+        ui.spacing_mut().item_spacing.y = 10.0;
         if let Some(title) = title {
             ui.label(RichText::new(title).font(ui::medium(ui::px(11.0))).color(t.text));
+            ui.add_space(2.0);
         }
         body(ui);
     });

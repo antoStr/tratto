@@ -410,6 +410,14 @@ mod picture {
         if crowded {
             (prefs.left_panel, prefs.right_panel, prefs.minimap, prefs.timer_banner) = (true, true, true, true);
         }
+        // TRATTO_FOLDED=1: the tool's options folded away.
+        if std::env::var_os("TRATTO_FOLDED").is_some() {
+            prefs.tray = false;
+        }
+        // TRATTO_PANELS=1: both side panels open.
+        if std::env::var_os("TRATTO_PANELS").is_some() {
+            (prefs.left_panel, prefs.right_panel) = (true, true);
+        }
         // TRATTO_BAR=1.2: the large toolbar.
         if let Some(b) = std::env::var("TRATTO_BAR").ok().and_then(|v| v.parse().ok()) {
             prefs.toolbar_size = b;
@@ -441,11 +449,39 @@ mod picture {
                 if prefs.ui_scale != 1.0 {
                     ctx.set_zoom_factor(prefs.ui_scale);
                 }
+                // TRATTO_PICK=code: a code block, selected. TRATTO_ZOOM=0.04: that zoom.
+                // TRATTO_TOOL=shape: that tool in hand (its tray open).
+                match std::env::var("TRATTO_TOOL").as_deref() {
+                    Ok("shape") => b.editor.set_tool(crate::editor::Tool::Shape),
+                    Ok("arrow") => b.editor.set_tool(crate::editor::Tool::Arrow),
+                    Ok("eraser") => b.editor.set_tool(crate::editor::Tool::Eraser),
+                    _ => {}
+                }
+                if std::env::var("TRATTO_PICK").is_ok_and(|v| v == "code") {
+                    b.editor.insert_code(None);
+                    b.editor.stop_editing();
+                }
+                if let Some(z) = std::env::var("TRATTO_ZOOM").ok().and_then(|v| v.parse::<f64>().ok()) {
+                    let c = b.editor.cam;
+                    b.editor.set_cam(crate::geom::Camera { z, ..c });
+                }
                 screen = Some(b);
                 return;
             }
             screen.as_mut().unwrap().ui(ui, &mut toasts, &mut dialogs);
         });
+        // TRATTO_POINTER=x,y: the pointer resting there (hover effects); TRATTO_CLICK too: clicked.
+        if let Some((x, y)) = std::env::var("TRATTO_POINTER").ok().and_then(|v| v.split_once(',').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))) {
+            harness.run_steps(20);
+            let at = egui::pos2(x, y);
+            harness.event(egui::Event::PointerMoved(at));
+            if std::env::var_os("TRATTO_CLICK").is_some() {
+                harness.run_steps(2);
+                harness.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+                harness.run_steps(1);
+                harness.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+            }
+        }
         harness.run_steps(40);
         harness.render().unwrap().save(path).unwrap();
     }
