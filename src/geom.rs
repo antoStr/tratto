@@ -385,7 +385,9 @@ pub fn hit_test(el: &El, x: f64, y: f64, tol: f64, ignore_erase: bool) -> bool {
         // Only the border: the inside is free for selecting and drawing what the section holds.
         Kind::Section { .. } => in_box(tol) && !(p.x > tol && p.y > tol && p.x < el.w - tol && p.y < el.h - tol),
         Kind::Ink(i) | Kind::Highlighter(i) => in_box(i.size + tol) && near_polyline(&i.points, 3, p.x, p.y, i.size / 2.0 + tol, false),
-        Kind::Line(l) => near_polyline(&route_points(l), 2, p.x, p.y, l.stroke_width / 2.0 + tol, false),
+        // A connector is thin: it is taken from twice as far, and its label counts as part of it
+        // (clicked on, the text under the pointer would otherwise miss the line it sits on).
+        Kind::Line(l) => near_polyline(&route_points(l), 2, p.x, p.y, l.stroke_width / 2.0 + tol * 2.0, false) || on_label(l, p.x, p.y, tol),
         Kind::Shape(s) => {
             // Text inside makes the whole shape clickable, as if it were filled.
             let filled = s.fill != "transparent" || s.text.as_ref().is_some_and(|t| !t.is_empty());
@@ -548,6 +550,15 @@ pub fn bezier(c: &[(f64, f64); 4], t: f64) -> (f64, f64) {
 }
 
 /// Middle of a line's path, where its label sits: half-way along it.
+/// Whether (x, y), in the line's own coordinates, is on its label.
+fn on_label(l: &Line, x: f64, y: f64, tol: f64) -> bool {
+    let Some(text) = l.label.as_deref().filter(|t| !t.trim().is_empty()) else { return false };
+    let (mx, my) = route_mid(l);
+    let size = crate::prims::label_size(l);
+    let w = crate::text::measure(crate::text::font(crate::model::FontKind::Sans, false, false).face, text.lines().next().unwrap_or(""), size) + size;
+    (x - mx).abs() <= w / 2.0 + tol && (y - my).abs() <= size * 0.9 + tol
+}
+
 pub fn route_mid(l: &Line) -> (f64, f64) {
     let [x1, y1, x2, y2] = [0, 1, 2, 3].map(|i| l.points[i] as f64);
     match l.route {
@@ -892,6 +903,21 @@ pub fn snap_angle(angle: f64, step: f64) -> f64 {
 pub mod tests {
     use super::*;
     use crate::model::*;
+
+    #[test]
+    fn a_connector_is_easy_to_take_and_so_is_its_label() {
+        let line = |label: Option<&str>| {
+            let mut el = El::new(Kind::Line(Line { points: vec![0.0, 0.0, 200.0, 0.0], stroke_width: 2.0, label: label.map(String::from), ..Default::default() }));
+            (el.w, el.h) = (200.0, 1.0);
+            el
+        };
+        // 4 px of slack (a mouse): taken from 8 px off the line.
+        assert!(hit_test(&line(None), 100.0, 8.0, 4.0, false));
+        assert!(!hit_test(&line(None), 100.0, 14.0, 4.0, false));
+        // On the label, above the line, it is the connector too.
+        assert!(hit_test(&line(Some("Sì, procedi")), 120.0, 14.0, 4.0, false));
+        assert!(!hit_test(&line(Some("Sì")), 190.0, 14.0, 4.0, false), "beside a short label, still nothing");
+    }
 
     pub fn base(kind: Kind) -> El {
         El { id: "a".into(), x: 0.0, y: 0.0, w: 0.0, h: 0.0, rotation: 0.0, z: 0.0, opacity: 1.0, locked: false, hidden: false, name: None, group_id: None, erase: vec![], shadow: None, kind }

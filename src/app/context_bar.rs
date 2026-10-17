@@ -291,6 +291,14 @@ fn controls(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], t: &Theme) {
                 });
             }
         }
+        // Text on a connector, in one click (a double click on it works too).
+        if let [one] = els
+            && one.line().is_some_and(|l| !l.tape)
+            && ui::icon_button(ui, "type", "Testo sulla freccia", Some("Invio"), vec2(B, B), 16.0, false, false).clicked()
+        {
+            let one = (**one).clone();
+            ed.edit_at(&one, None);
+        }
         if only("line") && !els.iter().any(|e| e.line().is_some_and(|l| l.tape)) {
             let route = same(els, |e| e.line().map(|l| l.route));
             for (r, name, label) in super::toolbar::ROUTES {

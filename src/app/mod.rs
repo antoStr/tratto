@@ -717,6 +717,9 @@ mod picture {
                     b.editor.board.put([c]);
                     b.editor.comment = Some(cid);
                 }
+                if std::env::var("TRATTO_PICK").is_ok_and(|v| v == "line") {
+                    b.editor.selection = b.editor.board.all().iter().filter(|e| e.line().is_some()).take(1).map(|e| e.id.clone()).collect();
+                }
                 if std::env::var("TRATTO_PICK").is_ok_and(|v| v == "code") {
                     b.editor.insert_code(None);
                     b.editor.stop_editing();
