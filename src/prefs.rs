@@ -204,28 +204,37 @@ pub struct ToolbarProfile {
 
 /// Every button the toolbar can have: id, name, and the group it sits with (a thin line
 /// separates groups).
-pub const TOOLBAR_ITEMS: [(&str, &str, u8); 20] = [
+pub const TOOLBAR_ITEMS: [(&str, &str, u8); 21] = [
     ("select", "Seleziona", 0),
     ("hand", "Mano", 0),
+    ("draw", "Penne e gomma", 1),
     ("pen", "Penna", 1),
     ("highlighter", "Evidenziatore", 1),
     ("tape", "Nastro adesivo", 1),
     ("eraser", "Gomma", 1),
     ("lasso", "Lazo", 1),
     ("ruler", "Righello", 1),
-    ("sticky", "Nota adesiva", 2),
-    ("shape", "Forme", 2),
-    ("arrow", "Connettore", 2),
-    ("line", "Linea", 2),
+    ("sticky", "Note adesive", 1),
+    ("shape", "Forme e connettori", 1),
+    ("arrow", "Connettore", 1),
+    ("line", "Linea", 1),
     ("text", "Testo", 2),
     ("section", "Sezione", 2),
     ("table", "Tabella", 2),
-    ("stamp", "Reazioni", 3),
-    ("comment", "Commento", 3),
-    ("chat", "Chat vicino al cursore", 3),
-    ("more", "Altri strumenti (+)", 3),
-    ("laser", "Puntatore laser", 4),
+    ("stamp", "Reazioni", 2),
+    ("comment", "Commento", 2),
+    ("chat", "Chat del cursore", 2),
+    ("laser", "Puntatore laser", 2),
+    ("more", "Altri strumenti", 3),
 ];
+
+/// FigJam's toolbar: the pens in one drawer, the connectors with the shapes, the chat and the
+/// laser among the other tools. Shown one by one if wanted.
+pub const TOOLBAR_HIDDEN: [&str; 10] = ["pen", "highlighter", "tape", "eraser", "lasso", "ruler", "arrow", "line", "chat", "laser"];
+
+pub fn toolbar_hidden_default() -> Vec<String> {
+    TOOLBAR_HIDDEN.iter().map(|s| s.to_string()).collect()
+}
 
 pub fn toolbar_default() -> Vec<String> {
     TOOLBAR_ITEMS.iter().map(|i| i.0.to_string()).collect()
@@ -302,7 +311,7 @@ impl Default for Prefs {
             tray: true,
             zen: false,
             toolbar_order: toolbar_default(),
-            toolbar_hidden: Vec::new(),
+            toolbar_hidden: toolbar_hidden_default(),
             toolbar_profiles: Vec::new(),
             timer_banner: false,
             music_volume: 0.6,
@@ -357,6 +366,11 @@ impl Prefs {
         }
         if p.layout < 3 && p.accent.eq_ignore_ascii_case("#0D99FF") {
             p.accent = DEFAULT_ACCENT.into();
+        }
+        // The toolbar as it came becomes FigJam's; one arranged by hand stays as it was.
+        if p.layout < 3 && p.toolbar_hidden.is_empty() {
+            p.toolbar_order = toolbar_default();
+            p.toolbar_hidden = toolbar_hidden_default();
         }
         p.layout = LAYOUT;
         p

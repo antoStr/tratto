@@ -1649,6 +1649,20 @@ impl Editor {
         self.editing = Some(id);
     }
 
+    /// A shape of `kind` in the shape style, centred on `p` at its usual size, selected.
+    pub fn place_shape(&mut self, kind: ShapeKind, p: Pt) {
+        let s = self.world_size(120.0);
+        let shape = Shape { shape: kind, fill: self.prefs.shape_style.fill.clone(), stroke: self.prefs.shape_style.stroke.clone(), stroke_width: self.world_size(self.prefs.shape_style.stroke_width), ..Default::default() };
+        let mut el = self.base(El::new(Kind::Shape(shape)));
+        (el.x, el.y, el.w, el.h) = (p.x - s / 2.0, p.y - s / 2.0, s, s);
+        self.board.stop_capturing();
+        let id = el.id.clone();
+        self.board.put([el]);
+        self.board.stop_capturing();
+        self.selection = vec![id];
+        self.set_tool(Tool::Select);
+    }
+
     pub(crate) fn start_sticky(&mut self, p: Pt) {
         let s = self.world_size(220.0);
         let mut el = self.base(El::new(Kind::Sticky(Sticky { color: self.prefs.sticky_color.clone(), author: self.name.clone(), ..Default::default() })));

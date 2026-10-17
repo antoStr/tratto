@@ -581,7 +581,7 @@ fn toolbar_settings(ui: &mut egui::Ui, p: &mut Prefs) {
     ui::row(ui, 28.0, |ui| {
         if ui::button(ui, "Ripristina la barra predefinita", Btn::Secondary, Some("rotate-ccw"), false, true).clicked() {
             p.toolbar_order = crate::prefs::toolbar_default();
-            p.toolbar_hidden.clear();
+            p.toolbar_hidden = crate::prefs::toolbar_hidden_default();
         }
     });
     ui.add_space(4.0);

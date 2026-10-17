@@ -242,6 +242,10 @@ const TRAY_H: f32 = 32.0;
 /// Something taken from the "+" card or the templates, being dragged onto the board.
 #[derive(Clone, PartialEq)]
 pub enum Payload {
+    /// A note torn off the pad, in the colour of the pad.
+    Sticky,
+    /// A shape from the shapes panel.
+    Shape(crate::model::ShapeKind),
     Code,
     Poll,
     Checklist,
@@ -257,6 +261,14 @@ pub fn insert_payload(ed: &mut Editor, what: &Payload, at: Option<crate::geom::P
         Payload::Poll => ed.insert_widget(Widget::Poll { question: String::new(), options: (1..=3).map(|n| PollOption { text: format!("Opzione {n}"), votes: Vec::new() }).collect() }, at),
         Payload::Checklist => ed.insert_widget(Widget::Checklist { title: String::new(), items: (0..3).map(|_| CheckItem { text: String::new(), done: false }).collect() }, at),
         Payload::Counter => ed.insert_widget(Widget::Counter { label: String::new(), value: 0 }, at),
+        Payload::Sticky => {
+            let p = at.unwrap_or_else(|| ed.viewport_center());
+            ed.start_sticky(p);
+        }
+        Payload::Shape(kind) => {
+            let p = at.unwrap_or_else(|| ed.viewport_center());
+            ed.place_shape(*kind, p);
+        }
         Payload::Template(id) => {
             if let Some(t) = crate::templates::TEMPLATES.iter().find(|t| t.id == *id) {
                 match at {
@@ -294,6 +306,21 @@ pub fn insert_drag(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     }
     let k = ui::motion::appear(ctx, Id::new("insert-drag-card"), true);
     let lift = ui::motion::spring(ctx, Id::new("insert-drag-lift"), if over_board { 1.0 } else { 0.0 }, 0.25, 0.8);
+    // A note torn off the pad: the note itself under the pointer, as big as it will be, swinging
+    // a little with the movement.
+    if what == Payload::Sticky {
+        let color = crate::model::color_or(&ed.prefs.sticky_color, Color32::from_rgb(0xFF, 0xE5, 0x8F));
+        let vx = ctx.input(|i| i.pointer.velocity().x);
+        let swing = ui::motion::spring(ctx, Id::new("sticky-swing"), (vx * 0.0006).clamp(-0.22, 0.22), 0.2, 0.7);
+        let size = (220.0 * (0.55 + 0.45 * k.clamp(0.0, 1.0))).min(220.0);
+        let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("sticky-ghost")));
+        let c = pos2(pos.x, pos.y + size * 0.3);
+        note_shadow(&p, c + vec2(0.0, 10.0), size, swing);
+        note_shape(&p, c, size, swing, color, ui::mix(color, 0.8, Color32::BLACK).gamma_multiply(0.4));
+        ctx.set_cursor_icon(if over_board { egui::CursorIcon::Grabbing } else { egui::CursorIcon::NoDrop });
+        ctx.request_repaint();
+        return;
+    }
     egui::Area::new(Id::new("insert-drag-card")).fixed_pos(pos + vec2(12.0, 12.0)).order(egui::Order::Tooltip).interactable(false).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0) * (0.75 + 0.25 * lift));
         ui::float_frame(&t).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
@@ -311,7 +338,12 @@ pub fn insert_drag(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
 /// FigJam's "+": code, widgets, pictures and templates, in a light card of big tiles. A tile
 /// clicked adds in the middle of the view; dragged, it goes where it is let go.
 fn more_tools(ui: &mut Ui, ed: &mut Editor, t: &Theme, top: bool) {
-    let r = icon_button(ui, "plus", "Altri strumenti", None, vec2(btn(), btn()), icon_px(), false, false);
+    // FigJam's round "+" at the end of the toolbar.
+    let (rect, r) = ui.allocate_exact_size(vec2(btn(), btn()), Sense::click());
+    let h = ui::motion::hover(ui.ctx(), r.id.with("h"), r.hovered() || egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&r)));
+    ui.painter().circle_filled(rect.center(), 15.0 * bar(), ui::blend(t.bg2, t.press, h));
+    icon(ui, "plus", rect.center(), icon_px(), t.icon);
+    let r = ui::tip(r, "Altri strumenti", None);
     egui::Popup::menu(&r).frame(ui::float_frame(t).inner_margin(egui::Margin::same(8))).align(if top { egui::RectAlign::BOTTOM } else { egui::RectAlign::TOP }).gap(10.0).show(|ui| {
         ui.label(egui::RichText::new("Aggiungi").font(ui::medium(ui::px(11.0))).color(t.text2));
         ui.add_space(4.0);
@@ -373,7 +405,7 @@ fn tile(ui: &mut Ui, name: &str, label: &str, hint: &str, t: &Theme, draggable: 
 /// colour it will draw with. It peeks out of the toolbar, rises a little under the pointer and
 /// stands up when chosen, on a spring.
 fn drawer_slot(ui: &mut Ui, ed: &mut Editor, t: &Theme, tool: Tool) -> egui::Response {
-    let slot_w = (30.0 * bar()).round();
+    let slot_w = slot_w();
     let (rect, _) = ui.allocate_exact_size(vec2(slot_w, btn()), Sense::hover());
     // The drawer runs into the toolbar's bottom edge: the tools vanish into it.
     let clip = Rect::from_min_max(pos2(rect.min.x, rect.min.y - 6.0), pos2(rect.max.x, rect.max.y + 5.0));
@@ -393,28 +425,34 @@ fn drawer_slot(ui: &mut Ui, ed: &mut Editor, t: &Theme, tool: Tool) -> egui::Res
     let c = crate::model::parse_color(&color).unwrap_or(crate::model::DARK);
     let p = ui.painter().with_clip_rect((clip).intersect(ui.clip_rect()));
     match tool {
-        Tool::Pen => marker(&p, slot.center().x, top, c, t, 11.0 * bar(), false),
-        Tool::Highlighter => marker(&p, slot.center().x, top, c, t, 15.0 * bar(), true),
+        Tool::Pen => marker(&p, slot.center().x, top, c, t, 14.0 * bar(), false),
+        Tool::Highlighter => marker(&p, slot.center().x, top, c, t, 17.0 * bar(), true),
         _ => tape_roll(&p, slot.center().x, top, c, t, bar()),
     }
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, label));
     ui::tip(resp, label, Some(kbd))
 }
 
-/// A marker standing in the drawer: coloured tip, collar, light body.
+/// A marker standing in the drawer, as FigJam draws it: a white barrel, a grey cone and the tip in
+/// the colour it draws with (a highlighter: a wide cap and a slanted chisel).
 fn marker(p: &egui::Painter, x: f32, top: f32, c: Color32, t: &Theme, w: f32, chisel: bool) {
-    let body = if t.dark { Color32::from_gray(0x5A) } else { Color32::from_gray(0xF2) };
-    let edge = if t.dark { Color32::from_gray(0x6E) } else { Color32::from_gray(0xD4) };
-    let shoulder = top + 9.0;
+    let (body, edge, cone) = if t.dark { (Color32::from_gray(0x58), Color32::from_gray(0x70), Color32::from_gray(0x48)) } else { (Color32::from_gray(0xFC), Color32::from_gray(0xCF), Color32::from_gray(0xE4)) };
     let h = w / 2.0;
-    p.rect(Rect::from_min_max(pos2(x - h, shoulder), pos2(x + h, top + 60.0)), egui::CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, body, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
-    p.rect_filled(Rect::from_min_max(pos2(x - h, shoulder + 3.0), pos2(x + h, shoulder + 7.0)), 0.0, c);
-    let tip = if chisel {
-        vec![pos2(x - h + 1.5, shoulder + 0.5), pos2(x + h - 1.5, shoulder + 0.5), pos2(x + h - 1.5, top + 3.0), pos2(x - h + 4.0, top)]
+    let neck = top + if chisel { 12.0 } else { 15.0 };
+    p.rect(Rect::from_min_max(pos2(x - h, neck), pos2(x + h, top + 70.0)), egui::CornerRadius { nw: 2, ne: 2, sw: 0, se: 0 }, body, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+    // Light down one side of the barrel.
+    if !t.dark {
+        p.rect_filled(Rect::from_min_max(pos2(x + h - 3.5, neck + 2.0), pos2(x + h - 2.0, top + 70.0)), 1.0, Color32::from_gray(0xEC));
+    }
+    if chisel {
+        p.rect(Rect::from_min_max(pos2(x - h, top + 6.0), pos2(x + h, neck + 1.0)), 1.0, c, Stroke::new(1.0, ui::mix(c, 0.8, Color32::BLACK)), egui::StrokeKind::Inside);
+        let tip = vec![pos2(x - h + 2.0, top + 6.5), pos2(x + h - 2.0, top + 6.5), pos2(x + h - 2.0, top + 2.0), pos2(x - h + 4.0, top)];
+        p.add(egui::Shape::convex_polygon(tip, ui::mix(c, 0.85, Color32::BLACK), Stroke::NONE));
     } else {
-        vec![pos2(x - h + 1.5, shoulder + 0.5), pos2(x + h - 1.5, shoulder + 0.5), pos2(x + 2.0, top + 1.0), pos2(x - 2.0, top + 1.0)]
-    };
-    p.add(egui::Shape::convex_polygon(tip, c, Stroke::new(1.0, ui::mix(c, 0.75, Color32::BLACK))));
+        let n = h * 0.34;
+        p.add(egui::Shape::convex_polygon(vec![pos2(x - h + 0.5, neck), pos2(x + h - 0.5, neck), pos2(x + n, top + 5.0), pos2(x - n, top + 5.0)], cone, Stroke::new(1.0, edge)));
+        p.add(egui::Shape::convex_polygon(vec![pos2(x - n, top + 5.5), pos2(x + n, top + 5.5), pos2(x + 0.9, top), pos2(x - 0.9, top)], c, Stroke::NONE));
+    }
 }
 
 /// A roll of washi tape with its loose end standing up.
@@ -484,6 +522,7 @@ fn toolbar_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme, id: &
         }
     };
     match id {
+        "draw" => draw_drawer(ui, ed, t),
         "select" => simple(ui, ed, Tool::Select, "mouse-pointer-2", "Seleziona", Some("V")),
         "hand" => simple(ui, ed, Tool::Hand, "hand", "Mano", Some("H")),
         "pen" | "highlighter" | "tape" => {
@@ -504,15 +543,8 @@ fn toolbar_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme, id: &
                 ed.toggle_ruler();
             }
         }
-        "sticky" => {
-            // A little pad in the colour the next note will have.
-            let (tint, solid) = tool_look(ed, Tool::Sticky);
-            let r = icon_button(ui, "", "Nota adesiva", Some("S"), vec2(btn(), btn()), icon_px(), tint, solid);
-            if r.clicked() {
-                pick(ed, Tool::Sticky);
-            }
-            sticky_pad(ui, r.rect.center(), crate::model::color_or(&ed.prefs.sticky_color, Color32::YELLOW), t, ui::motion::hover(&ctx, r.id.with("lift"), r.hovered()));
-        }
+        "sticky" => sticky_stack(ui, ed, t),
+        "shape" if !ed.prefs.toolbar_hidden.iter().any(|h| h == "draw") => shapes_combo(ui, ed, t),
         "shape" => {
             let shape = ed.prefs.last_shape;
             let (label, kbd) = SHAPES.iter().find(|s| s.0 == shape).map_or(("Forma", None), |s| (s.1, s.2));
@@ -555,9 +587,9 @@ fn toolbar_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme, id: &
         "arrow" => simple(ui, ed, Tool::Arrow, "arrow-up-right", "Connettore", Some("X")),
         "line" => simple(ui, ed, Tool::Line, "minus", "Linea", Some("L")),
         "text" => simple(ui, ed, Tool::Text, "type", "Testo", Some("T")),
-        "section" => simple(ui, ed, Tool::Section, "square-dashed-top-solid", "Sezione", Some("Maiusc+S")),
+        "section" => simple(ui, ed, Tool::Section, "section", "Sezione", Some("Maiusc+S")),
         "table" => simple(ui, ed, Tool::Table, "table", "Tabella", None),
-        "stamp" => simple(ui, ed, Tool::Stamp, "smile", "Reazioni", None),
+        "stamp" => simple(ui, ed, Tool::Stamp, "stamp", "Reazioni", None),
         "comment" => simple(ui, ed, Tool::Comment, "message-circle", "Commento", Some("C")),
         "chat" => {
             let on = st.chat.is_some();
@@ -572,18 +604,169 @@ fn toolbar_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme, id: &
 }
 
 /// Width a toolbar button takes (with the gap after it).
-fn item_width(id: &str) -> f32 {
+fn item_width(id: &str, ed: &Editor) -> f32 {
     match id {
-        "pen" | "highlighter" | "tape" => (30.0 * bar()).round() + 2.0,
+        "pen" | "highlighter" | "tape" => slot_w() + 2.0,
+        "draw" if is_drawing(ed.tool) => drawer_open_width() + 2.0,
+        "draw" => slot_w() + 2.0,
+        "sticky" => stack_w() + 2.0,
+        "shape" if !ed.prefs.toolbar_hidden.iter().any(|h| h == "draw") => combo_w() + 2.0,
         "shape" => btn() + 14.0 + 4.0,
         _ => btn() + 2.0,
     }
+}
+
+/// The width of a marker in the drawer.
+fn slot_w() -> f32 {
+    (32.0 * bar()).round()
+}
+
+fn stack_w() -> f32 {
+    (50.0 * bar()).round()
+}
+
+fn combo_w() -> f32 {
+    (btn() + 8.0).round()
+}
+
+/// The tools of the pens' drawer.
+fn is_drawing(tool: Tool) -> bool {
+    matches!(tool, Tool::Pen | Tool::Highlighter | Tool::Tape | Tool::Eraser | Tool::Lasso)
+}
+
+/// The drawer open: three markers, then eraser, lasso and ruler.
+fn drawer_open_width() -> f32 {
+    3.0 * (slot_w() + 2.0) + 3.0 * (btn() + 2.0)
+}
+
+/// FigJam's pens: one marker waits in the toolbar; with a drawing tool in hand the drawer slides
+/// open on the pens, the washi tape, the eraser, the lasso and the ruler.
+fn draw_drawer(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
+    let open = is_drawing(ed.tool);
+    let k = ui::motion::spring(ui.ctx(), Id::new("draw-drawer"), if open { 1.0 } else { 0.0 }, 0.3, 0.92).clamp(0.0, 1.0);
+    let closed = slot_w();
+    let w = closed + (drawer_open_width() - 2.0 - closed) * k;
+    let (rect, _) = ui.allocate_exact_size(vec2(w, btn()), Sense::hover());
+    // Room above for the markers standing up; the sides cut the drawer as it slides.
+    let clip = Rect::from_min_max(pos2(rect.min.x, rect.min.y - 12.0), pos2(rect.max.x, rect.max.y + 6.0)).intersect(ui.clip_rect());
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    child.set_clip_rect(clip);
+    child.spacing_mut().item_spacing = vec2(2.0, 0.0);
+    if k < 0.02 {
+        if drawer_slot(&mut child, ed, t, Tool::Pen).clicked() {
+            pick(ed, Tool::Pen);
+        }
+        return;
+    }
+    for tool in [Tool::Pen, Tool::Highlighter, Tool::Tape] {
+        if drawer_slot(&mut child, ed, t, tool).clicked() {
+            pick(ed, tool);
+        }
+    }
+    child.multiply_opacity(k);
+    for (tool, name, label, kbd) in [(Tool::Eraser, "eraser", "Gomma", "E"), (Tool::Lasso, "lasso", "Lazo", "Q")] {
+        let (tint, solid) = tool_look(ed, tool);
+        if icon_button(&mut child, name, label, Some(kbd), vec2(btn(), btn()), icon_px(), tint, solid).clicked() {
+            pick(ed, tool);
+        }
+    }
+    let on = ed.ruler.visible;
+    if icon_button(&mut child, "ruler", if on { "Nascondi righello" } else { "Mostra righello" }, Some("U"), vec2(btn(), btn()), icon_px(), on, false).clicked() {
+        ed.toggle_ruler();
+    }
+}
+
+/// A sticky note drawn turned by `a`: its colour, a thin edge and the fold at the corner.
+fn note_shape(p: &egui::Painter, c: Pos2, s: f32, a: f32, color: Color32, edge: Color32) {
+    let (sn, cs) = a.sin_cos();
+    let r = |x: f32, y: f32| c + vec2(x * cs - y * sn, x * sn + y * cs);
+    let (h, f) = (s / 2.0, s * 0.2);
+    p.add(egui::Shape::convex_polygon(vec![r(-h, -h), r(h, -h), r(h, h - f), r(h - f, h), r(-h, h)], color, Stroke::new(1.0, edge)));
+    p.add(egui::Shape::convex_polygon(vec![r(h, h - f), r(h - f, h), r(h - f, h - f)], ui::mix(color, 0.84, Color32::BLACK), Stroke::NONE));
+}
+
+/// The soft shadow of a note held up: a few widening, fainter copies of its outline.
+fn note_shadow(p: &egui::Painter, c: Pos2, s: f32, a: f32) {
+    let (sn, cs) = a.sin_cos();
+    for (grow, alpha) in [(14.0, 10u8), (8.0, 14), (3.0, 20)] {
+        let h = s / 2.0 + grow;
+        let r = |x: f32, y: f32| c + vec2(x * cs - y * sn, x * sn + y * cs);
+        p.add(egui::Shape::convex_polygon(vec![r(-h, -h), r(h, -h), r(h, h), r(-h, h)], Color32::from_black_alpha(alpha), Stroke::NONE));
+    }
+}
+
+/// FigJam's pad of sticky notes: a click picks the note tool; dragged, the top note peels off
+/// and goes where it is let go, while the next one slides up into its place.
+fn sticky_stack(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
+    let ctx = ui.ctx().clone();
+    let (rect, resp) = ui.allocate_exact_size(vec2(stack_w(), btn()), Sense::click_and_drag());
+    let color = crate::model::color_or(&ed.prefs.sticky_color, Color32::from_rgb(0xFF, 0xE5, 0x8F));
+    let (tint, solid) = tool_look(ed, Tool::Sticky);
+    let sel = ui::motion::hover(&ctx, resp.id.with("sel"), tint || solid);
+    if sel > 0.0 {
+        ui.painter().rect_filled(rect, 8.0, t.selected.gamma_multiply(sel));
+    }
+    ui::hover_fill(ui, resp.id, rect, resp.hovered() && !(tint || solid), 8.0, t.hover);
+    let lift = ui::motion::hover(&ctx, resp.id.with("lift"), resp.hovered() || resp.dragged());
+    // The next note coming up after one was torn off.
+    let refill = Id::new("sticky-refill");
+    let torn = ctx.data(|d| d.get_temp::<f64>(refill));
+    let k = torn.map_or(1.0, |t0| (((crate::platform::now_ms() - t0) / 380.0) as f32).clamp(0.0, 1.0));
+    if k < 1.0 {
+        ctx.request_repaint();
+    }
+    let k = egui::emath::easing::cubic_out(k);
+    let edge = ui::mix(color, 0.72, Color32::BLACK).gamma_multiply(0.55);
+    let s = (30.0 * bar()).round();
+    let c = rect.center() + vec2(0.0, 3.0);
+    let p = ui.painter().with_clip_rect(Rect::from_min_max(pos2(rect.min.x, rect.min.y - 10.0), pos2(rect.max.x, rect.max.y + 4.0)).intersect(ui.clip_rect()));
+    note_shape(&p, c + vec2(3.0, 1.5), s, 0.14, ui::mix(color, 0.9, Color32::BLACK), edge);
+    note_shape(&p, c + vec2(-2.0, 0.5), s, -0.1, ui::mix(color, 0.95, Color32::BLACK), edge);
+    note_shape(&p, c + vec2(0.0, -1.0 - 3.0 * lift + (1.0 - k) * 6.0), s * (0.92 + 0.08 * k), -0.02 * lift, color, edge);
+    if resp.drag_started() && !ed.read_only {
+        start_drag(&ctx, Payload::Sticky, "Nota adesiva", "sticky-note");
+        ctx.data_mut(|d| d.insert_temp(refill, crate::platform::now_ms()));
+    } else if resp.clicked() {
+        pick(ed, Tool::Sticky);
+    }
+    if resp.hovered() {
+        ctx.set_cursor_icon(egui::CursorIcon::Grab);
+    }
+    ui::tip(resp, "Note adesive", Some("S"));
+}
+
+/// The shapes and connectors, one button: a square, a circle and an arrow between them.
+fn shapes_combo(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
+    let held = matches!(ed.tool, Tool::Shape | Tool::Arrow | Tool::Line);
+    let folded = held && !ed.prefs.tray;
+    let r = icon_button(ui, "", "Forme e connettori", Some("R"), vec2(combo_w(), btn()), icon_px(), folded, held && !folded);
+    if r.clicked() {
+        if held {
+            ed.prefs.tray = !ed.prefs.tray;
+        } else {
+            ed.set_tool(Tool::Shape);
+            ed.prefs.tray = true;
+        }
+    }
+    let ink = if held && !folded { Color32::WHITE } else if folded && !t.dark { ui::mix(t.brand, 0.7, Color32::BLACK) } else { t.icon };
+    let k = bar();
+    let c = r.rect.center();
+    let p = ui.painter();
+    let line = Stroke::new(1.3, ink);
+    p.rect_stroke(Rect::from_center_size(c + vec2(-6.0, -5.0) * k, vec2(11.0, 11.0) * k), 1.5, line, egui::StrokeKind::Middle);
+    p.circle_stroke(c + vec2(6.0, 6.0) * k, 5.5 * k, line);
+    let a = c + vec2(2.0, -4.0) * k;
+    let b = c + vec2(9.0, -8.0) * k;
+    p.add(egui::Shape::CubicBezier(egui::epaint::CubicBezierShape::from_points_stroke([a, a + vec2(0.0, -4.0) * k, b + vec2(-4.0, 0.0) * k, b], false, Color32::TRANSPARENT, line)));
+    p.line_segment([b, b + vec2(-3.0, -2.5) * k], line);
+    p.line_segment([b, b + vec2(-3.0, 2.5) * k], line);
 }
 
 /// A toolbar button that didn't fit, as a row of the "…" menu.
 fn overflow_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, id: &str) {
     let name = crate::prefs::TOOLBAR_ITEMS.iter().find(|i| i.0 == id).map_or(id, |i| i.1);
     let tool = match id {
+        "draw" => Some(Tool::Pen),
         "select" => Some(Tool::Select),
         "hand" => Some(Tool::Hand),
         "pen" => Some(Tool::Pen),
@@ -643,6 +826,7 @@ fn overflow_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, id: &str) {
 /// The icon of a toolbar button, in lists and menus.
 pub fn toolbar_icon(id: &str) -> &'static str {
     match id {
+        "draw" => "pen-line",
         "select" => "mouse-pointer-2",
         "hand" => "hand",
         "pen" => "pen",
@@ -656,9 +840,9 @@ pub fn toolbar_icon(id: &str) -> &'static str {
         "arrow" => "arrow-up-right",
         "line" => "minus",
         "text" => "type",
-        "section" => "square-dashed-top-solid",
+        "section" => "section",
         "table" => "table",
-        "stamp" => "smile",
+        "stamp" => "stamp",
         "comment" => "message-circle",
         "chat" => "message-square-text",
         "more" => "plus",
@@ -683,12 +867,13 @@ pub fn toolbar(ctx: &egui::Context, stage: Rect, ed: &mut Editor, st: &mut Board
     let room = stage.width() - 40.0;
     let width = |list: &[String]| {
         let seps = list.windows(2).filter(|w| group(&w[0]) != group(&w[1])).count() as f32;
-        list.iter().map(|id| item_width(id)).sum::<f32>() + seps * 11.0
+        list.iter().map(|id| item_width(id, ed)).sum::<f32>() + seps * 11.0
     };
     let mut shown = items.clone();
     let mut hidden: Vec<String> = Vec::new();
     while shown.len() > 2 && width(&shown) + if hidden.is_empty() { 0.0 } else { btn() + 13.0 } > room {
         let current = |id: &str| match id {
+            "draw" => is_drawing(ed.tool),
             "select" => ed.tool == Tool::Select,
             "hand" => ed.tool == Tool::Hand,
             "pen" => ed.tool == Tool::Pen,
@@ -697,7 +882,7 @@ pub fn toolbar(ctx: &egui::Context, stage: Rect, ed: &mut Editor, st: &mut Board
             "eraser" => ed.tool == Tool::Eraser,
             "lasso" => ed.tool == Tool::Lasso,
             "sticky" => ed.tool == Tool::Sticky,
-            "shape" => ed.tool == Tool::Shape,
+            "shape" => matches!(ed.tool, Tool::Shape | Tool::Arrow | Tool::Line),
             "arrow" => ed.tool == Tool::Arrow,
             "line" => ed.tool == Tool::Line,
             "text" => ed.tool == Tool::Text,
