@@ -716,7 +716,14 @@ impl BoardScreen {
                 }
                 Request::Paste(text) => self.paste(&ctx, &text, toasts),
                 Request::Shortcuts => self.ui.shortcuts = true,
-                Request::Templates => self.ui.left_tab = super::board::LeftTab::Templates,
+                Request::Templates => {
+                    // Shown even where the panel only shows on request (a phone, a narrow window).
+                    self.ui.left_tab = super::board::LeftTab::Templates;
+                    self.ui.peek_left = true;
+                    if ui::narrow(&ctx) {
+                        self.ui.peek_right = false;
+                    }
+                }
                 Request::OpenLink(url) => {
                     if url.starts_with("https://") || url.starts_with("http://") {
                         ctx.open_url(egui::OpenUrl::new_tab(url));
@@ -764,6 +771,12 @@ impl BoardScreen {
 
     fn text_editor(&mut self, ctx: &egui::Context, stage: Rect, t: &Theme) {
         let ed = &mut self.editor;
+        // On a phone an open panel covers the board: the writing there ends (its box and its
+        // tools would stay on top of the panel).
+        let (left, right) = ctx.data(|d| d.get_temp::<(bool, bool)>(Id::new("panels-shown"))).unwrap_or_default();
+        if ui::narrow(ctx) && (left || right) && ed.editing.is_some() {
+            ed.stop_editing();
+        }
         let Some(id) = ed.editing.clone() else {
             self.ui.text_for = None;
             return;

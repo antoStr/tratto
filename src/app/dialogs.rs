@@ -319,6 +319,7 @@ fn settings_section(ui: &mut egui::Ui, tab: SettingsTab, p: &mut Prefs, host: bo
             ui::switch(ui, &mut p.timer_banner, "Timer grande in alto");
             ui::switch(ui, &mut p.timer_sound, "Suono a fine timer");
             ui::switch(ui, &mut p.sticky_arrows, "Freccia tra le note aggiunte con +");
+            ui::switch(ui, &mut p.peer_rulers, "Righelli degli altri");
             ui.add_space(4.0);
             ui::heading(ui, "Pannelli");
             ui::switch(ui, &mut p.left_panel, "Livelli e modelli, a sinistra");

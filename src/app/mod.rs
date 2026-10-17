@@ -559,7 +559,7 @@ mod picture {
                 // TRATTO_COMMENT=1: a new comment open, being written.
                 if std::env::var_os("TRATTO_COMMENT").is_some() {
                     let mut c = crate::model::El::new(crate::model::Kind::Comment { thread: Vec::new() });
-                    (c.x, c.y) = (0.0, 0.0);
+                    (c.x, c.y) = (-600.0, 300.0);
                     let cid = c.id.clone();
                     b.editor.board.put([c]);
                     b.editor.comment = Some(cid);

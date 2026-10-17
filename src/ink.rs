@@ -32,18 +32,34 @@ pub fn stroke_path(pts: &[f32], size: f64, highlighter: bool) -> Path {
             _ => q,
         });
     }
-    let c = simplify3(&c, size * 0.02);
-    for &[x, y, r] in &c {
-        circle(&mut path, x, y, r);
+    let c = thin3(&c, size * 0.12);
+    // A dab where the band turns or changes width, at the ends, and on both sides of a band
+    // left out; along a straight even stretch the bands meet edge to edge and need none (far
+    // fewer overlapping pieces: a thick stroke filled ten times faster).
+    let mut dab = vec![false; c.len()];
+    let heading = |a: [f64; 3], b: [f64; 3]| (b[1] - a[1]).atan2(b[0] - a[0]);
+    for i in 0..c.len() {
+        dab[i] = i == 0 || i + 1 == c.len() || {
+            let turn = (heading(c[i], c[i + 1]) - heading(c[i - 1], c[i]) + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
+            turn.abs() > 0.03 || (c[i + 1][2] - c[i][2]).abs() + (c[i][2] - c[i - 1][2]).abs() > 1e-9
+        };
     }
-    for w in c.windows(2) {
+    let mut bands = Vec::with_capacity(c.len());
+    for (i, w) in c.windows(2).enumerate() {
         let ([x0, y0, r0], [x1, y1, r1]) = (w[0], w[1]);
         let d = (x1 - x0).hypot(y1 - y0);
         let s = (r0 - r1) / d;
-        // One dab inside the other: nothing to join.
+        // One dab inside the other: nothing to join, both dabs drawn.
         if !(s.abs() < 1.0) {
+            (dab[i], dab[i + 1]) = (true, true);
             continue;
         }
+        bands.push((w[0], w[1], d, s));
+    }
+    for (&[x, y, r], _) in c.iter().zip(&dab).filter(|(_, d)| **d) {
+        circle(&mut path, x, y, r);
+    }
+    for ([x0, y0, r0], [x1, y1, r1], d, s) in bands {
         // The two lines touching both dabs, and the band between them (turning the same way
         // as the dabs, or the union would have holes).
         let (ux, uy) = ((x1 - x0) / d, (y1 - y0) / d);
@@ -60,30 +76,19 @@ fn circle(p: &mut Path, x: f64, y: f64, r: f64) {
     p.cmds.extend(Path::ellipse(x as f32, y as f32, r as f32, r as f32).cmds);
 }
 
-/// Douglas–Peucker on (x, y, radius): the points a stroke needs, within `eps`.
-fn simplify3(pts: &[[f64; 3]], eps: f64) -> Vec<[f64; 3]> {
-    if pts.len() < 3 {
-        return pts.to_vec();
-    }
-    let far = |a: [f64; 3], b: [f64; 3], p: [f64; 3]| {
-        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-        let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
-        let l2 = ab.iter().map(|v| v * v).sum::<f64>();
-        let t = if l2 > 0.0 { (ap.iter().zip(&ab).map(|(x, y)| x * y).sum::<f64>() / l2).clamp(0.0, 1.0) } else { 0.0 };
-        ap.iter().zip(&ab).map(|(x, y)| (x - y * t).powi(2)).sum::<f64>()
-    };
-    let mut keep = vec![false; pts.len()];
-    keep[0] = true;
-    keep[pts.len() - 1] = true;
-    let mut todo = vec![(0, pts.len() - 1)];
-    while let Some((a, b)) = todo.pop() {
-        let (i, d) = (a + 1..b).map(|i| (i, far(pts[a], pts[b], pts[i]))).fold((a, 0.0), |m, x| if x.1 > m.1 { x } else { m });
-        if d > eps * eps {
-            keep[i] = true;
-            todo.extend([(a, i), (i, b)]);
+/// The points a stroke needs: each one at least `step` away from the one kept before it (the
+/// last always kept). A point kept stays kept as the stroke grows, so while drawing only its tip
+/// changes: a best-fit simplification picked other points at every move, and the part already
+/// drawn jumped about.
+fn thin3(pts: &[[f64; 3]], step: f64) -> Vec<[f64; 3]> {
+    let mut out: Vec<[f64; 3]> = Vec::with_capacity(pts.len());
+    for (i, &p) in pts.iter().enumerate() {
+        match out.last() {
+            Some(a) if i + 1 < pts.len() && (p[0] - a[0]).hypot(p[1] - a[1]) < step && (p[2] - a[2]).abs() < step => {}
+            _ => out.push(p),
         }
     }
-    pts.iter().zip(keep).filter(|x| x.1).map(|x| *x.0).collect()
+    out
 }
 
 /// The "1€ filter" (Casiez et al.): heavy smoothing when the pen moves slowly, where tremor is
@@ -650,7 +655,7 @@ mod tests {
     #[test]
     fn a_thick_stroke_is_one_clean_band_even_drawn_with_a_shaky_mouse() {
         // A tight wave drawn with a mouse (positions rounded to screen pixels, zoomed out) with a
-        // 96 px highlighter: every pixel on the stroke's centre line is inside, every pixel
+        // 96 px highlighter: everything near the stroke's centre line is inside, everything
         // farther than its half width is outside: no notches, holes or hairs.
         let z = 0.56;
         let mut pts = Vec::new();
@@ -678,7 +683,8 @@ mod tests {
             let mut x = 40.0;
             while x < 1140.0 {
                 let d = away(x, y);
-                if d < 40.0 && !inside(x, y) {
+                // (Sharp corners of the mouse's path are rounded off a little: an eighth of the width.)
+                if d < 36.0 && !inside(x, y) {
                     holes += 1;
                 }
                 if d > 52.0 && d < 110.0 && inside(x, y) {
@@ -750,5 +756,29 @@ mod big_stroke_picture {
             pm.fill_path(&pb.finish().unwrap(), &paint, tiny_skia::FillRule::Winding, tr, None);
         }
         pm.save_png(std::env::var("TRATTO_SHOT").unwrap()).unwrap();
+    }
+}
+#[cfg(test)]
+mod live {
+    /// A 64 px pen being drawn: from one move to the next only the tip may change; what is
+    /// already on screen stays exactly where it is (it used to jump about, looking jerky).
+    #[test]
+    fn a_stroke_being_drawn_only_changes_at_its_tip() {
+        let mut pts = Vec::new();
+        for i in 0..600 {
+            let t = i as f64 / 600.0;
+            pts.extend([(t * 1400.0 + 60.0 * (t * 31.0).sin()) as f32, (200.0 * (t * 9.0).sin() + 40.0 * (t * 53.0).cos()) as f32, -1.0]);
+        }
+        let dabs = |n: usize| -> Vec<(f32, f32)> {
+            let p = super::stroke_path(&pts[..n * 3], 64.0, false);
+            p.cmds.windows(2).filter_map(|w| if let (crate::prims::Cmd::Move(x, y), crate::prims::Cmd::Cubic(..)) = (w[0], w[1]) { Some((x, y)) } else { None }).collect()
+        };
+        let mut prev = dabs(30);
+        for n in (35..600).step_by(5) {
+            let now = dabs(n);
+            let settled = prev.len().saturating_sub(3);
+            assert_eq!(&prev[..settled], &now[..settled], "after {n} points");
+            prev = now;
+        }
     }
 }

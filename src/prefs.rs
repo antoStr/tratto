@@ -184,6 +184,8 @@ pub struct Prefs {
     /// The "+" beside a note also draws an arrow to the new one (as for shapes); off: just a
     /// note beside it, as in FigJam.
     pub sticky_arrows: bool,
+    /// The others' rulers shown on the board (off: only your own).
+    pub peer_rulers: bool,
     /// The toolbar's size: 0.85 compact, 1 normal, 1.2 large (easier with a pen or fingers).
     pub toolbar_size: f32,
     /// Which default layout these preferences were last brought to (see `from_json`); missing in
@@ -305,6 +307,7 @@ impl Default for Prefs {
             music_muted: false,
             timer_sound: true,
             sticky_arrows: false,
+            peer_rulers: false,
             toolbar_size: 1.0,
             layout: LAYOUT,
         }

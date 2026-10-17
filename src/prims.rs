@@ -572,8 +572,13 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
                 return out;
             }
             let s = (COMMENT_PIN / env.zoom) as f32;
-            out.push(Prim::Shadow { x: 0.0, y: -s, w: s, h: s, radius: s / 2.0, blur: 6.0 / env.zoom as f32, dy: 1.0 / env.zoom as f32, color: rgba(0, 0, 0, 0.25 * alpha) });
-            out.push(Prim::Fill { path: Path::round_rect(0.0, -s, s, s, [s / 2.0, s / 2.0, s / 2.0, 0.0]), color: with_alpha(Color32::WHITE, alpha) });
+            // Its shadow has its own shape (a blurred box round a round pin showed a grey square):
+            // a soft edge and a little drop.
+            let px = (1.0 / env.zoom) as f32;
+            let pin = |e: f32, dy: f32| Path::round_rect(-e, -s - e + dy, s + e * 2.0, s + e * 2.0, [s / 2.0 + e, s / 2.0 + e, s / 2.0 + e, e]);
+            out.push(Prim::Fill { path: pin(px * 1.5, px * 1.5), color: rgba(0, 0, 0, 0.06 * alpha) });
+            out.push(Prim::Fill { path: pin(px * 0.75, px), color: rgba(0, 0, 0, 0.1 * alpha) });
+            out.push(Prim::Fill { path: pin(0.0, 0.0), color: with_alpha(Color32::WHITE, alpha) });
             let first = thread.first();
             let color = first.and_then(|m| crate::model::parse_color(&m.color)).unwrap_or(Color32::from_rgb(0x0D, 0x99, 0xFF));
             out.push(Prim::Fill { path: Path::ellipse(s / 2.0, -s / 2.0, s * 0.36, s * 0.36), color: with_alpha(color, alpha) });

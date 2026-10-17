@@ -289,8 +289,8 @@ impl Editor {
             out.push(circle(e + o, (self.prefs.eraser.size / 2.0) as f32, Color32::from_white_alpha(89), Stroke::new(1.0, Color32::from_black_alpha(140))));
         }
 
-        // The others' rulers, faint and in their colour, under their own pens.
-        for (_, s) in &self.presence.peers {
+        // The others' rulers, faint and in their colour, under their own pens (if wanted).
+        for (_, s) in self.presence.peers.iter().filter(|_| self.prefs.peer_rulers) {
             let r = &s["ruler"];
             if let (Some(x), Some(y), Some(a), Some(len)) = (r["x"].as_f64(), r["y"].as_f64(), r["a"].as_f64(), r["len"].as_f64())
                 && x.is_finite()

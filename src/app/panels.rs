@@ -178,7 +178,10 @@ pub fn left(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, dialogs: &mut
     let shift = ui::motion::travel(ui.ctx(), k.clamp(0.0, 1.0)) * 12.0;
     ui.with_visual_transform(egui::emath::TSTransform::from_translation(vec2(0.0, shift)), |ui| {
         if b.ui.left_tab == LeftTab::Templates && !b.editor.read_only {
-            templates(ui, &mut b.editor, &t);
+            // On a phone the panel covers the board: it steps aside to show the template added.
+            if templates(ui, &mut b.editor, &t) && ui::narrow(ui.ctx()) {
+                b.ui.peek_left = false;
+            }
         } else {
             layers(ui, &mut b.editor, &mut b.ui, &t);
         }
@@ -632,7 +635,9 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
 
 /* ---------- templates ---------- */
 
-fn templates(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
+/// The templates; true when one was added.
+fn templates(ui: &mut Ui, ed: &mut Editor, t: &Theme) -> bool {
+    let mut added = false;
     ui.add_space(8.0);
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         for tpl in crate::templates::TEMPLATES.iter() {
@@ -649,12 +654,14 @@ fn templates(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
                 super::toolbar::start_drag(ui.ctx(), super::toolbar::Payload::Template(tpl.id), tpl.name, "layout-template");
             } else if resp.clicked() {
                 ed.insert((tpl.build)(), None, true, true);
+                added = true;
             }
             if resp.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
             }
         }
     });
+    added
 }
 
 /* ---------------- right panel ---------------- */
