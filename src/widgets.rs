@@ -226,7 +226,7 @@ pub fn prims(el: &El, w: &Widget, alpha: f64, before: Option<(&Widget, f32)>, ou
                 one_line(&count, 13.0, true, Align::Right, 0.0, p.y + (p.h - 13.0 * LINE_HEIGHT) / 2.0, p.x + p.w - 14.0, MUTED, alpha, out);
             }
             let votes = match total {
-                0 => "Nessun voto: clicca un'opzione per votare".to_string(),
+                0 => "Nessun voto".to_string(),
                 1 => "1 voto".to_string(),
                 n => format!("{n} voti"),
             };

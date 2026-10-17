@@ -248,26 +248,26 @@ fn settings_section(ui: &mut egui::Ui, tab: SettingsTab, p: &mut Prefs, host: bo
             row(ui, "Tema", None, |ui| {
                 ui::segmented(ui, &mut p.theme, &[(Theme::System, "Sistema"), (Theme::Light, "Chiaro"), (Theme::Dark, "Scuro")], 270.0);
             });
-            row(ui, "Dimensione dell'interfaccia", Some("Ingrandisce menu, pannelli e testi."), |ui| {
+            row(ui, "Dimensione dell'interfaccia", None, |ui| {
                 let mut v = (p.ui_scale * 100.0).round() as i32;
                 if ui::segmented(ui, &mut v, &[(90, "90%"), (100, "100%"), (115, "115%"), (130, "130%"), (150, "150%")], 270.0) {
                     p.ui_scale = v as f32 / 100.0;
                 }
             });
-            row(ui, "Dimensione del testo", Some("Solo i testi dell'interfaccia, non quelli sulla lavagna."), |ui| {
+            row(ui, "Dimensione del testo", Some("Solo l'interfaccia."), |ui| {
                 let mut v = (p.text_scale * 100.0).round() as i32;
                 if ui::segmented(ui, &mut v, &[(100, "Normale"), (118, "Grande"), (136, "Molto grande")], 270.0) {
                     p.text_scale = v as f32 / 100.0;
                 }
             });
             ui.add_space(2.0);
-            ui::switch(ui, &mut p.high_contrast, "Contrasto elevato: testi secondari più scuri e bordi ben visibili");
-            ui::switch(ui, &mut p.big_handles, "Maniglie di selezione più grandi, più facili da prendere con la penna e con le dita");
-            ui::switch(ui, &mut p.reduce_motion, "Riduci il movimento: niente scorrimenti, rimbalzi o ingrandimenti, solo dissolvenze");
+            ui::switch(ui, &mut p.high_contrast, "Contrasto elevato");
+            ui::switch(ui, &mut p.big_handles, "Maniglie di selezione grandi");
+            ui::switch(ui, &mut p.reduce_motion, "Riduci le animazioni");
         }
         SettingsTab::Profile => {
             ui::heading(ui, "Profilo");
-            ui::hint(ui, "Come ti vedono gli altri quando la lavagna è condivisa: il nome accanto al cursore e il colore del cursore, della selezione e dei commenti.");
+            ui::hint(ui, "Nome e colore che vedono gli altri.");
             profile_preview(ui, p);
             ui::field_label(ui, "Nome");
             ui::text_field(ui, &mut p.name, "Come ti vedranno gli altri", 40);
@@ -288,7 +288,7 @@ fn settings_section(ui: &mut egui::Ui, tab: SettingsTab, p: &mut Prefs, host: bo
         }
         SettingsTab::Look => {
             ui::heading(ui, "Personalizzazione");
-            row(ui, "Colore principale", Some("Per selezione, pulsanti ed evidenziazioni."), |ui| {
+            row(ui, "Colore principale", None, |ui| {
                 let t = ui::theme(ui.ctx());
                 ui.spacing_mut().item_spacing.x = 2.0;
                 for (value, name) in ACCENTS {
@@ -310,20 +310,20 @@ fn settings_section(ui: &mut egui::Ui, tab: SettingsTab, p: &mut Prefs, host: bo
             row(ui, "Barra degli strumenti", None, |ui| {
                 ui::segmented(ui, &mut p.toolbar_pos, &[(ToolbarPos::Bottom, "In basso"), (ToolbarPos::Top, "In alto")], 200.0);
             });
-            row(ui, "Dimensione della barra", Some("Più grande è più comoda con la penna e con le dita."), |ui| {
+            row(ui, "Dimensione della barra", None, |ui| {
                 let mut v = (p.toolbar_size * 100.0).round() as i32;
                 if ui::segmented(ui, &mut v, &[(85, "Compatta"), (100, "Normale"), (120, "Grande")], 270.0) {
                     p.toolbar_size = v as f32 / 100.0;
                 }
             });
-            ui::switch(ui, &mut p.timer_banner, "Timer anche grande in alto sulla lavagna (oltre che sul suo pulsante)");
-            ui::switch(ui, &mut p.timer_sound, "Un suono quando il tempo del timer finisce");
-            ui::switch(ui, &mut p.sticky_arrows, "Il + accanto a una nota la collega con una freccia alla nuova (di base solo per le forme dei diagrammi)");
+            ui::switch(ui, &mut p.timer_banner, "Timer grande in alto");
+            ui::switch(ui, &mut p.timer_sound, "Suono a fine timer");
+            ui::switch(ui, &mut p.sticky_arrows, "Freccia tra le note aggiunte con +");
             ui.add_space(4.0);
             ui::heading(ui, "Pannelli");
             ui::switch(ui, &mut p.left_panel, "Livelli e modelli, a sinistra");
             ui::switch(ui, &mut p.right_panel, "Design e condivisione, a destra");
-            ui::switch(ui, &mut p.minimap, "Minimappa: tutta la lavagna in piccolo, clicca per spostarti, trascinala dalla maniglia per metterla dove vuoi");
+            ui::switch(ui, &mut p.minimap, "Minimappa");
             if host {
                 ui.add_space(4.0);
                 ui::heading(ui, "Sfondo delle nuove lavagne");
@@ -332,17 +332,17 @@ fn settings_section(ui: &mut egui::Ui, tab: SettingsTab, p: &mut Prefs, host: bo
         }
         SettingsTab::Pen => {
             ui::heading(ui, "Penna");
-            row(ui, "Levigatura del tratto", Some("Più alta toglie il tremolio, più bassa segue ogni movimento."), |ui| {
+            row(ui, "Levigatura del tratto", None, |ui| {
                 ui::segmented(ui, &mut p.ink_smoothing, &[(Smoothing::Low, "Bassa"), (Smoothing::Medium, "Media"), (Smoothing::High, "Alta")], 240.0);
             });
-            ui::switch(ui, &mut p.pressure, "Spessore secondo la pressione: premendo di più il tratto diventa più spesso");
-            ui::switch(ui, &mut p.ink_to_shape, "Da tratto a forma: cerchi, rettangoli, triangoli e linee disegnati a mano diventano forme pulite");
-            ui::switch(ui, &mut p.finger_draw, "Disegna con le dita (se è spento, le dita spostano la lavagna e solo la penna disegna)");
+            ui::switch(ui, &mut p.pressure, "Spessore secondo la pressione");
+            ui::switch(ui, &mut p.ink_to_shape, "Riconosci le forme disegnate");
+            ui::switch(ui, &mut p.finger_draw, "Disegna con le dita");
             let mut zoom = p.wheel == Wheel::Zoom;
             if ui::switch(ui, &mut zoom, "La rotellina del mouse fa zoom") {
                 p.wheel = if zoom { Wheel::Zoom } else { Wheel::Pan };
             }
-            ui::hint(ui, "Tasto laterale della penna: trascina per selezionare col lazo, tocca per aprire il menu. Tieni premuta la penna o il dito su un elemento per aprire il menu.");
+            ui::hint(ui, "Tasto laterale della penna: lazo · Tieni premuto: menu");
         }
         SettingsTab::Updates => {
             ui::heading(ui, "Aggiornamenti");
@@ -365,7 +365,7 @@ fn linux_install(ui: &mut egui::Ui) {
     ui.add_space(6.0);
     ui::heading(ui, "Installazione");
     let installed = crate::install::in_menu();
-    ui::hint(ui, if installed { "Tratto è nel menu delle applicazioni, nella tua cartella personale (~/.local/share/tratto). Gli aggiornamenti sostituiscono quella copia." } else { "Tratto è partito da un'AppImage. Aggiungilo al menu delle applicazioni: lo trovi tra le altre app, con la sua icona, senza password di amministratore." });
+    ui::hint(ui, if installed { "Tratto è nel menu delle applicazioni." } else { "Aggiungi Tratto al menu delle applicazioni." });
     let result = if installed {
         ui::button(ui, "Togli dal menu delle applicazioni", Btn::Secondary, Some("trash-2"), false, true).clicked().then(crate::install::uninstall)
     } else {
@@ -386,7 +386,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
             ("Penne 1–4", "1 2 3 4"),
             ("Evidenziatore", "M"),
             ("Gomma", "E"),
-            ("Emote (un'emoji che vola per tutti)", "tieni premuto E"),
+            ("Emote", "tieni premuto E"),
             ("Lazo", "Q"),
             ("Righello", "U"),
             ("Rettangolo / Ellisse", "R / O"),
@@ -419,7 +419,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
             ("Blocca", "Ctrl+Maiusc+L"),
             ("Nascondi", "Ctrl+Maiusc+H"),
             ("Duplica trascinando", "Alt + trascina"),
-            ("Apri il link scritto in un testo o in una nota", "Ctrl + clic"),
+            ("Apri un link", "Ctrl + clic"),
             ("Senza aggancio", "Ctrl + trascina"),
         ],
     ),
@@ -442,7 +442,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
             ("Adatta alla selezione", "Maiusc+2"),
             ("Zoom 100%", "Maiusc+0"),
             ("Nascondi o mostra i pannelli", "Ctrl+\\"),
-            ("Modalità zen (solo la lavagna)", "Alt+Z  ·  Ctrl+Maiusc+\\"),
+            ("Modalità zen", "Alt+Z  ·  Ctrl+Maiusc+\\"),
             ("Esporta", "Ctrl+Maiusc+E"),
             ("Impostazioni", "Ctrl+,"),
         ],
@@ -495,7 +495,7 @@ fn shortcut_list(ui: &mut egui::Ui) {
         });
         ui.add_space(8.0);
     }
-    ui::hint(ui, "Con la penna: il tasto laterale seleziona col lazo (un tocco apre il menu), la parte superiore cancella. Tieni premuto per aprire il menu. Con due dita sposti e ingrandisci la lavagna.");
+    ui::hint(ui, "Tasto laterale: lazo. Retro della penna: gomma. Due dita: sposta e zoom.");
 }
 
 pub fn shortcuts(ctx: &egui::Context, open: &mut bool) {
@@ -509,7 +509,7 @@ pub fn shortcuts(ctx: &egui::Context, open: &mut bool) {
 fn toolbar_settings(ui: &mut egui::Ui, p: &mut Prefs) {
     let t = ui::theme(ui.ctx());
     ui::heading(ui, "Barra degli strumenti");
-    ui::hint(ui, "Trascina i pulsanti per cambiarne l'ordine, e scegli quali vedere. Le linee sottili tra i gruppi compaiono da sole.");
+    ui::hint(ui, "Trascina per riordinare.");
     let mut items = crate::prefs::toolbar_items(&p.toolbar_order);
     let mut moved: Option<(usize, usize)> = None;
     let dragging = egui::DragAndDrop::has_payload_of_type::<usize>(ui.ctx());
@@ -585,7 +585,7 @@ fn toolbar_settings(ui: &mut egui::Ui, p: &mut Prefs) {
     });
     ui.add_space(4.0);
     ui::heading(ui, "Profili della barra");
-    ui::hint(ui, "Salva la barra così com'è con un nome, per esempio «Lezione» o «Diagrammi», e ritrovala con un clic.");
+    ui::hint(ui, "Salva questa barra con un nome.");
     let mut remove = None;
     if p.toolbar_profiles.is_empty() {
         ui::hint(ui, "Nessun profilo salvato.");
@@ -667,11 +667,11 @@ pub fn export(ctx: &egui::Context, open: &mut bool, selection_first: bool, b: &m
         }
         ui::segmented(ui, &mut s.format, &formats, 388.0);
         ui::hint(ui, match s.format {
-            Format::Png => "Immagine di alta qualità, anche con sfondo trasparente.",
-            Format::Jpg => "Immagine leggera, la più facile da mandare in chat o per e-mail.",
+            Format::Png => "Alta qualità, sfondo trasparente.",
+            Format::Jpg => "Leggera, per chat ed e-mail.",
             Format::Svg => "Vettoriale, modificabile in altri programmi.",
             Format::Pdf => "Documento da stampare o inviare.",
-            Format::Tratto => "Copia completa da riaprire in Tratto, anche su un altro PC, con «Importa».",
+            Format::Tratto => "Da riaprire in Tratto.",
         });
         if s.format != Format::Tratto {
             if s.format == Format::Pdf {
@@ -730,14 +730,14 @@ pub fn export(ctx: &egui::Context, open: &mut bool, selection_first: bool, b: &m
         #[cfg(not(target_arch = "wasm32"))]
         Format::Tratto => crate::export::tratto(b.store(), &b.id, &b.title, &crate::doc::encode_state(&b.editor.board.doc)).map(|s| (s.into_bytes(), "tratto")),
         #[cfg(target_arch = "wasm32")]
-        Format::Tratto => Err("Solo il proprietario può esportare la lavagna completa.".into()),
+        Format::Tratto => Err("Solo il proprietario può esportarla.".into()),
     };
     match result {
         Err(e) => toasts.error(e),
         #[cfg(not(target_arch = "wasm32"))]
         Ok((png, _)) if copy => match crate::export::copy_png(&png) {
             Ok(()) => {
-                toasts.info("Immagine copiata: incollala dove vuoi con Ctrl+V.");
+                toasts.info("Immagine copiata");
                 *open = false;
             }
             Err(e) => toasts.error(e),

@@ -159,7 +159,7 @@ impl Home {
                 #[cfg(target_os = "linux")]
                 if crate::install::appimage().is_some() && !crate::install::in_menu() && side_button(ui, "download", "Aggiungi al menu delle app").clicked() {
                     match crate::install::install() {
-                        Ok(()) => toasts.info("Tratto è nel menu delle applicazioni: d'ora in poi aprilo da lì."),
+                        Ok(()) => toasts.info("Aggiunto al menu delle applicazioni"),
                         Err(e) => toasts.error(e),
                     }
                 }
@@ -214,7 +214,6 @@ impl Home {
                 if jump == Some(1) {
                     head.scroll_to_me(Some(egui::Align::TOP));
                 }
-                ui::hint(ui, "Parti da una struttura pronta: la trovi già sulla lavagna nuova, da cambiare come vuoi.");
                 ui.add_space(10.0);
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(20.0, 20.0);
@@ -425,8 +424,7 @@ fn empty_state(ui: &mut Ui, t: &ui::Theme, action: &mut Option<Action>) {
     child.add_space(8.0);
     icon(&child, "pen-line", child.cursor().min + vec2(child.available_width() / 2.0, 12.0), 22.0, t.text3);
     child.add_space(30.0);
-    child.label(RichText::new("Nessuna lavagna, per ora").font(ui::medium(ui::px(13.0))).color(t.text));
-    ui::hint(&mut child, "Crea una lavagna vuota o parti da uno dei modelli qui sotto. Tutto viene salvato su questo PC mentre lavori.");
+    child.label(RichText::new("Nessuna lavagna").font(ui::medium(ui::px(13.0))).color(t.text));
     child.add_space(4.0);
     if ui::button(&mut child, "Nuova lavagna", Btn::Primary, Some("plus"), true, true).clicked() {
         *action = Some(Action::New { template: None });

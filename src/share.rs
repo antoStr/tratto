@@ -445,7 +445,7 @@ fn open_tunnel(shared: Arc<Shared>, bin: PathBuf, port: u16, slot: Arc<Mutex<Opt
                 if let Some(mut c) = lock(&slot).take() {
                     let _ = c.kill();
                 }
-                lock(&shared.inner).status = Status::Error("Cloudflare non risponde da un minuto. Controlla la connessione a internet e riprova.".into());
+                lock(&shared.inner).status = Status::Error("Cloudflare non risponde. Controlla la connessione.".into());
                 (shared.notify)();
             }
         });
@@ -482,7 +482,7 @@ fn open_tunnel(shared: Arc<Shared>, bin: PathBuf, port: u16, slot: Arc<Mutex<Opt
         // The program ended.
         let was_live = lock(&shared.inner).status == Status::Live;
         if lock(&slot).is_some() {
-            let msg = if was_live { "La connessione con Cloudflare si è interrotta. Riavvia la condivisione.".to_string() } else { format!("La condivisione si è chiusa. {}", last_err.chars().take(200).collect::<String>()) };
+            let msg = if was_live { "Connessione interrotta. Riavvia la condivisione.".to_string() } else { format!("La condivisione si è chiusa. {}", last_err.chars().take(200).collect::<String>()) };
             if !matches!(lock(&shared.inner).status, Status::Error(_)) {
                 fail(&shared, msg);
             }
@@ -667,7 +667,7 @@ fn guest_auth(s: &Shared, h: &HeaderMap) -> Result<(), Response> {
     let code = token.split('.').next().unwrap_or("");
     if i.status != Status::Live || !same(code, &i.code) {
         fail_login(&mut i, &ip);
-        return Err(err(StatusCode::UNAUTHORIZED, "Questo link non è valido oppure la sessione è terminata."));
+        return Err(err(StatusCode::UNAUTHORIZED, "Link non valido o scaduto."));
     }
     Ok(())
 }
@@ -702,7 +702,7 @@ async fn join(State(s): State<Arc<Shared>>, h: HeaderMap, body: Bytes) -> Respon
     }
     let online: std::collections::HashSet<&String> = i.peers.values().map(|p| &p.ticket).collect();
     if online.len() >= MAX_GUESTS {
-        return err(StatusCode::TOO_MANY_REQUESTS, &format!("La lavagna è al completo: possono esserci al massimo {MAX_GUESTS} persone. Riprova più tardi."));
+        return err(StatusCode::TOO_MANY_REQUESTS, &format!("Lavagna al completo ({MAX_GUESTS} persone)."));
     }
     let ticket = new_id(16);
     let status = if i.auto_admit { TicketStatus::Approved } else { TicketStatus::Pending };
@@ -771,7 +771,7 @@ async fn upload(State(s): State<Arc<Shared>>, h: HeaderMap, Path(board): Path<St
     // the others download is always a plain, reasonable picture.
     let sent = body.len();
     let Ok(Some((data, _))) = tokio::task::spawn_blocking(move || crate::export::prepare_image(&body)).await else {
-        return err(StatusCode::UNSUPPORTED_MEDIA_TYPE, "Questa immagine non si può aprire. Usa PNG, JPG, GIF o WebP.");
+        return err(StatusCode::UNSUPPORTED_MEDIA_TYPE, "Immagine non supportata (PNG, JPG, GIF o WebP).");
     };
     match s.store.save_file(&board, &data) {
         Ok(id) => {
@@ -947,7 +947,7 @@ use crate::ui::{self, Kind as Btn};
 use egui::RichText;
 
 fn secure_note(ui: &mut egui::Ui) {
-    ui::hint(ui, "Il collegamento passa da un tunnel cifrato di Cloudflare: il tuo indirizzo IP resta nascosto e non devi aprire porte sul router. Quando termini la condivisione o chiudi Tratto, il link smette di funzionare.");
+    ui::hint(ui, "Connessione cifrata: il tuo indirizzo IP resta nascosto.");
 }
 
 pub fn dialog(ui: &mut egui::Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
@@ -958,7 +958,7 @@ pub fn dialog(ui: &mut egui::Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
     let mut stop = false;
     match view {
         None => {
-            ui::hint(ui, "Invita qualcuno a lavorare con te su questa lavagna. Riceverà un link da aprire nel browser (Windows, Mac, Linux, tablet), senza installare niente. Possono esserci fino a 30 persone insieme.");
+            ui::hint(ui, "Chi ha il link entra dal browser, senza installare niente. Fino a 30 persone.");
             ui::field_label(ui, "Il tuo nome");
             ui::text_field(ui, &mut b.editor.prefs.name, "Come ti vedranno gli altri", 40);
             ui::field_label(ui, "Chi ha il link");
@@ -975,7 +975,7 @@ pub fn dialog(ui: &mut egui::Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
                 let almost = b.share.as_ref().is_some_and(|s| lock(&s.shared.inner).confirming.is_some());
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(RichText::new(if almost { "Il link è quasi pronto: controllo che si apra da internet…" } else { "Apro un collegamento sicuro…" }).color(t.text));
+                    ui.label(RichText::new(if almost { "Preparazione del link…" } else { "Apro un collegamento sicuro…" }).color(t.text));
                 });
                 ui.ctx().request_repaint_after(Duration::from_millis(250));
                 secure_note(ui);
@@ -999,7 +999,7 @@ pub fn dialog(ui: &mut egui::Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
                 ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), ui::ctl(34.0)), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui::button(ui, "Copia link", Btn::Primary, Some("copy"), true, true).clicked() {
                         ui.ctx().copy_text(url.clone());
-                        toasts.info("Link copiato: mandalo a chi vuoi.");
+                        toasts.info("Link copiato");
                     }
                     ui.add_space(4.0);
                     let mut shown = url.clone();
@@ -1042,7 +1042,7 @@ pub fn dialog(ui: &mut egui::Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui::button(ui, "Rimuovi", Btn::DangerText, None, false, true).clicked() {
                                 if v.auto_admit {
-                                    toasts.info(format!("{name} è fuori. D'ora in poi chi entra deve chiedertelo."));
+                                    toasts.info(format!("{name} rimosso"));
                                 }
                                 share.kick(ticket);
                             }
@@ -1056,12 +1056,12 @@ pub fn dialog(ui: &mut egui::Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
                 ui.horizontal(|ui| {
                     if ui::button(ui, "Nuovo link", Btn::Secondary, Some("refresh-cw"), false, true).clicked() {
                         share.rotate();
-                        toasts.info("Nuovo link creato. Quello vecchio non funziona più.");
+                        toasts.info("Nuovo link creato");
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui::button(ui, "Termina condivisione", Btn::DangerText, None, false, true).clicked() {
                             stop = true;
-                            toasts.info("Condivisione terminata. Il link non funziona più.");
+                            toasts.info("Condivisione terminata");
                         }
                     });
                 });

@@ -243,7 +243,7 @@ fn title(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, width: f32) {
 
 /// A guest's way to the settings and to zen mode (the desktop app has them in its tab bar).
 fn guest_buttons(ui: &mut Ui, b: &mut BoardScreen, dialogs: &mut Dialogs) {
-    if small_icon_button(ui, "scan", "Modalità zen: solo la lavagna (Alt+Z)", false).clicked() {
+    if small_icon_button(ui, "scan", "Modalità zen", false).clicked() {
         b.editor.toggle_zen();
     }
     if small_icon_button(ui, "settings", "Impostazioni (Ctrl+,)", false).clicked() {
@@ -455,7 +455,7 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
             ui.add_space(16.0);
             ui.vertical(|ui| {
                 ui.set_width(200.0);
-                ui::hint(ui, "Ancora niente qui. Tutto quello che disegni o aggiungi comparirà in questo elenco.");
+                ui::hint(ui, "Nessun elemento");
             });
         });
         return;
@@ -634,11 +634,6 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
 
 fn templates(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
     ui.add_space(8.0);
-    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(16, 0)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui::hint(ui, "Clicca per aggiungere, o trascina sulla lavagna.");
-    });
-    ui.add_space(6.0);
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         for tpl in crate::templates::TEMPLATES.iter() {
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 72.0), Sense::click_and_drag());
@@ -704,7 +699,7 @@ pub fn right(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         if b.editor.read_only {
-            section(ui, Some("Solo visione"), |ui| ui::hint(ui, "Puoi guardare la lavagna, spostarti, fare zoom e usare il puntatore laser. Chi l'ha condivisa può darti il permesso di modificarla."));
+            section(ui, Some("Solo visione"), |ui| ui::hint(ui, "Sola lettura"));
         } else if b.editor.selected().is_empty() {
             board_props(ui, b);
         } else {
@@ -772,7 +767,6 @@ fn profile_popup(ui: &Ui, resp: &egui::Response, ed: &mut Editor) {
         ui::field_label(ui, "Nome");
         ui::text_field(ui, &mut ed.prefs.name, "Come ti vedranno gli altri", 40);
         ui::field_label(ui, "Il tuo colore");
-        ui::hint(ui, "Del tuo cursore, della tua selezione e dei tuoi commenti, per chi è sulla lavagna con te.");
         let cur = ed.prefs.own_color().unwrap_or("").to_string();
         if let Some(c) = ui::color_dots(ui, &PERSON_COLORS, &cur, "Il tuo colore") {
             ed.prefs.color = c;
@@ -834,7 +828,6 @@ fn board_props(ui: &mut Ui, b: &mut BoardScreen) {
             b.ui.export = Some(false);
         }
     });
-    section(ui, None, |ui| ui::hint(ui, "Seleziona qualcosa sulla lavagna per modificarne colore, dimensioni e posizione."));
 }
 
 fn pattern_label(p: Pattern) -> &'static str {
@@ -970,18 +963,18 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
         let (bw, bh) = one.as_ref().map_or((frame.w, frame.h), |e| (e.w, e.h));
         let mut set: Option<(Option<f64>, Option<f64>, Option<f64>, Option<f64>)> = None;
         ui.horizontal(|ui| {
-            if let Some(v) = ui::Num::new(Id::new("px"), "X", "Posizione orizzontale: trascina la X o scrivi", Some(x)).width(w).show(ui) {
+            if let Some(v) = ui::Num::new(Id::new("px"), "X", "Posizione X", Some(x)).width(w).show(ui) {
                 set = Some((Some(v), None, None, None));
             }
-            if let Some(v) = ui::Num::new(Id::new("py"), "Y", "Posizione verticale: trascina la Y o scrivi", Some(y)).width(w).show(ui) {
+            if let Some(v) = ui::Num::new(Id::new("py"), "Y", "Posizione Y", Some(y)).width(w).show(ui) {
                 set = Some((None, Some(v), None, None));
             }
         });
         ui.horizontal(|ui| {
-            if let Some(v) = ui::Num::new(Id::new("pw"), "L", "Larghezza: trascina la L o scrivi", Some(bw)).width(w).range(1.0, f64::INFINITY).show(ui) {
+            if let Some(v) = ui::Num::new(Id::new("pw"), "L", "Larghezza", Some(bw)).width(w).range(1.0, f64::INFINITY).show(ui) {
                 set = Some((None, None, Some(v), None));
             }
-            if let Some(v) = ui::Num::new(Id::new("ph"), "A", "Altezza: trascina la A o scrivi", Some(bh)).width(w).range(1.0, f64::INFINITY).show(ui) {
+            if let Some(v) = ui::Num::new(Id::new("ph"), "A", "Altezza", Some(bh)).width(w).range(1.0, f64::INFINITY).show(ui) {
                 set = Some((None, None, None, Some(v)));
             }
         });
@@ -990,7 +983,7 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
         ui.horizontal(|ui| {
             if let Some(e) = &one {
                 let deg = (e.rotation.to_degrees() % 360.0 + 360.0) % 360.0;
-                if let Some(v) = ui::Num::new(Id::new("prot"), "icon:rotate-cw", "Rotazione in gradi: trascina l'icona o scrivi", Some(deg)).width(w).suffix("°").show(ui) {
+                if let Some(v) = ui::Num::new(Id::new("prot"), "icon:rotate-cw", "Rotazione", Some(deg)).width(w).suffix("°").show(ui) {
                     let v = v.rem_euclid(360.0);
                     apply(ed, &mut |el| el.rotation = v.to_radians());
                 }
@@ -998,7 +991,7 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
             if round {
                 let cur = radii.windows(2).all(|p| (p[0] - p[1]).abs() < 0.01).then(|| radii[0]);
                 let max = els.iter().map(|e| crate::style::max_radius(e)).fold(f64::INFINITY, f64::min);
-                if let Some(v) = ui::Num::new(Id::new("pradius"), "icon:corner-radius", "Raggio degli angoli: trascina l'icona o scrivi", cur.map(|r| r.min(max).round())).width(w).range(0.0, max.round()).show(ui) {
+                if let Some(v) = ui::Num::new(Id::new("pradius"), "icon:corner-radius", "Raggio degli angoli", cur.map(|r| r.min(max).round())).width(w).range(0.0, max.round()).show(ui) {
                     apply(ed, &mut |el| crate::style::set_radius(el, v));
                 }
             }
@@ -1084,7 +1077,6 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
                     }
                 });
             }
-            ui::hint(ui, "Quello che metti dentro la sezione si sposta, si copia e si duplica insieme a lei.");
         });
     }
     if els.iter().all(|e| crate::style::look(e).is_some()) {
@@ -1154,7 +1146,7 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
             ui.horizontal(|ui| {
                 if widths.iter().all(Option::is_some) {
                     let v = widths.windows(2).all(|w| w[0] == w[1]).then(|| widths[0].unwrap());
-                    if let Some(w) = ui::Num::new(Id::new("pstroke"), "Sp", "Spessore: trascina «Sp» o scrivi", v).decimals(1).step(0.5).range(0.1, 200.0).width(96.0).show(ui) {
+                    if let Some(w) = ui::Num::new(Id::new("pstroke"), "Sp", "Spessore", v).decimals(1).step(0.5).range(0.1, 200.0).width(96.0).show(ui) {
                         apply(ed, &mut |el| match &mut el.kind {
                             Kind::Ink(i) | Kind::Highlighter(i) => i.size = w,
                             Kind::Shape(s) => s.stroke_width = w,
@@ -1272,7 +1264,7 @@ fn selection_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
         ui::row(ui, 24.0, |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             let op = same(&els, |e| Some((e.opacity * 100.0).round()));
-            if let Some(v) = ui::Num::new(Id::new("popacity"), "icon:droplet", "Opacità: trascina la goccia o scrivi", op).suffix("%").range(0.0, 100.0).width(84.0).show(ui) {
+            if let Some(v) = ui::Num::new(Id::new("popacity"), "icon:droplet", "Opacità", op).suffix("%").range(0.0, 100.0).width(84.0).show(ui) {
                 let v = (v / 100.0).clamp(0.0, 1.0);
                 apply(ed, &mut |el| el.opacity = v);
             }
@@ -1326,7 +1318,7 @@ fn text_props(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], ids: &[String]) {
             ui.spacing_mut().item_spacing.x = 2.0;
             let auto = looks.iter().all(|l| l.auto && l.size.is_none());
             let size = same(els, |e| crate::style::shown_size(e).map(|v| (v * 10.0).round() / 10.0));
-            let title = if auto { "Dimensione del testo (adesso si adatta da sola): trascina o scrivi per fissarla" } else { "Dimensione del testo: trascina l'icona o scrivi" };
+            let title = if auto { "Dimensione del testo (automatica)" } else { "Dimensione del testo" };
             if let Some(v) = ui::Num::new(Id::new("pfont"), "icon:text-size", title, size).decimals(1).range(1.0, 2000.0).width(88.0).show(ui) {
                 change = Some(Change::Size(Some(v)));
             }
@@ -1439,7 +1431,7 @@ fn table_props(ui: &mut Ui, ed: &mut Editor, el: &El, tb: &Table) {
                 }
                 next = Some(t);
             }
-            if let Some(v) = ui::Num::new(Id::new("tcols"), "Colonne", "Colonne: trascina o scrivi", Some(tb.cols.len() as f64)).range(1.0, 50.0).width(w).show(ui) {
+            if let Some(v) = ui::Num::new(Id::new("tcols"), "Colonne", "Colonne", Some(tb.cols.len() as f64)).range(1.0, 50.0).width(w).show(ui) {
                 let mut t = tb.clone();
                 let n = (v as usize).clamp(1, 50);
                 while t.cols.len() < n {
@@ -1465,7 +1457,7 @@ fn table_props(ui: &mut Ui, ed: &mut Editor, el: &El, tb: &Table) {
                     next = Some(t);
                 }
             }
-            _ => ui::hint(ui, "Un clic su una cella per scriverci; Tab passa alla cella dopo (nell'ultima aggiunge una riga). Il colore di una cella si sceglie mentre ci scrivi."),
+            _ => {}
         }
     });
     if let Some(t) = next {

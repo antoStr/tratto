@@ -313,7 +313,7 @@ pub fn insert_drag(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
 fn more_tools(ui: &mut Ui, ed: &mut Editor, t: &Theme, top: bool) {
     let r = icon_button(ui, "plus", "Altri strumenti", None, vec2(btn(), btn()), icon_px(), false, false);
     egui::Popup::menu(&r).frame(ui::float_frame(t).inner_margin(egui::Margin::same(8))).align(if top { egui::RectAlign::BOTTOM } else { egui::RectAlign::TOP }).gap(10.0).show(|ui| {
-        ui.label(egui::RichText::new("Aggiungi: clicca, o trascina sulla lavagna").font(ui::medium(ui::px(11.0))).color(t.text2));
+        ui.label(egui::RichText::new("Aggiungi").font(ui::medium(ui::px(11.0))).color(t.text2));
         ui.add_space(4.0);
         let items: [(&str, &str, &str, Option<Payload>); 6] = [
             ("code", "Blocco di codice", "Codice con i colori della sintassi", Some(Payload::Code)),
@@ -552,7 +552,7 @@ fn toolbar_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme, id: &
                 });
             });
         }
-        "arrow" => simple(ui, ed, Tool::Arrow, "arrow-up-right", "Connettore e freccia: parti da una forma per collegarla", Some("X")),
+        "arrow" => simple(ui, ed, Tool::Arrow, "arrow-up-right", "Connettore", Some("X")),
         "line" => simple(ui, ed, Tool::Line, "minus", "Linea", Some("L")),
         "text" => simple(ui, ed, Tool::Text, "type", "Testo", Some("T")),
         "section" => simple(ui, ed, Tool::Section, "square-dashed-top-solid", "Sezione", Some("Maiusc+S")),
@@ -561,7 +561,7 @@ fn toolbar_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme, id: &
         "comment" => simple(ui, ed, Tool::Comment, "message-circle", "Commento", Some("C")),
         "chat" => {
             let on = st.chat.is_some();
-            if icon_button(ui, "message-square-text", "Chat vicino al cursore: scrivi e gli altri lo leggono accanto al tuo puntatore", Some("/"), vec2(btn(), btn()), icon_px(), on, false).clicked() {
+            if icon_button(ui, "message-square-text", "Chat del cursore", Some("/"), vec2(btn(), btn()), icon_px(), on, false).clicked() {
                 st.chat = if on { None } else { Some(String::new()) };
             }
         }
@@ -862,10 +862,10 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                         slide(ui, "Opacità", &mut pen.opacity, 0.1, 1.0, 0.05, false, PCT, sw(172.0));
                         sep_h(ui, t, h);
                         ui.spacing_mut().item_spacing.x = 2.0;
-                        if icon_button(ui, "shapes", "Da tratto a forma: trasforma linee, cerchi e rettangoli disegnati a mano", None, vec2(32.0, 32.0), 18.0, p.ink_to_shape, false).clicked() {
+                        if icon_button(ui, "shapes", "Riconosci le forme", None, vec2(32.0, 32.0), 18.0, p.ink_to_shape, false).clicked() {
                             p.ink_to_shape = !p.ink_to_shape;
                         }
-                        let label = if p.finger_draw { "Le dita disegnano (tocca per usarle per spostarti)" } else { "Le dita spostano la lavagna (tocca per disegnare con le dita)" };
+                        let label = if p.finger_draw { "Le dita disegnano" } else { "Le dita spostano la lavagna" };
                         if icon_button(ui, "hand", label, None, vec2(32.0, 32.0), 18.0, p.finger_draw, false).clicked() {
                             p.finger_draw = !p.finger_draw;
                         }
@@ -931,7 +931,7 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                         if ui::segmented(ui, &mut size, &[(16, "S"), (24, "M"), (36, "L"), (56, "XL")], sw(150.0)) {
                             p.text.font_size = size as f64;
                         }
-                        if let Some(v) = ui::Num::new(Id::new("tray-font-size"), "icon:text-size", "Dimensione del testo in pixel: trascina per cambiarla", Some(p.text.font_size)).width(76.0).range(4.0, 400.0).show(ui) {
+                        if let Some(v) = ui::Num::new(Id::new("tray-font-size"), "icon:text-size", "Dimensione del testo", Some(p.text.font_size)).width(76.0).range(4.0, 400.0).show(ui) {
                             p.text.font_size = v;
                         }
                     }
@@ -947,17 +947,17 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                     }
                     Tool::Table => {
                         let [rows, cols] = p.table_size;
-                        if let Some(v) = ui::Num::new(Id::new("tray-table-rows"), "Righe", "Righe della nuova tabella: trascina o scrivi", Some(rows as f64)).width(92.0).range(1.0, 20.0).show(ui) {
+                        if let Some(v) = ui::Num::new(Id::new("tray-table-rows"), "Righe", "Righe", Some(rows as f64)).width(92.0).range(1.0, 20.0).show(ui) {
                             p.table_size[0] = v as u8;
                         }
-                        if let Some(v) = ui::Num::new(Id::new("tray-table-cols"), "Colonne", "Colonne della nuova tabella: trascina o scrivi", Some(cols as f64)).width(108.0).range(1.0, 12.0).show(ui) {
+                        if let Some(v) = ui::Num::new(Id::new("tray-table-cols"), "Colonne", "Colonne", Some(cols as f64)).width(108.0).range(1.0, 12.0).show(ui) {
                             p.table_size[1] = v as u8;
                         }
                         sep_h(ui, t, h);
-                        ui::hint(ui, "Clicca sulla lavagna per metterla. Poi un clic su una cella per scriverci.");
+                        ui::hint(ui, "Clicca per inserirla");
                     }
-                    Tool::Comment => ui::hint(ui, "Clicca dove vuoi lasciare un commento. Gli altri lo vedono e possono rispondere."),
-                    Tool::Section => ui::hint(ui, "Trascina per disegnare una sezione: quello che ci metti dentro si sposta insieme a lei."),
+                    Tool::Comment => ui::hint(ui, "Clicca per commentare"),
+                    Tool::Section => ui::hint(ui, "Trascina per creare una sezione"),
                     Tool::Laser => {
                         ui.label(RichText::new("Colore del laser").color(t.text2));
                         if let Some(c) = ui::swatches(ui, &LASER_COLORS, &p.laser_color, false) {
@@ -968,7 +968,7 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                 }
                 // Closes the options; the tool stays. Picking the tool again brings them back.
                 sep_h(ui, t, h);
-                if icon_button(ui, if top { "chevron-up" } else { "chevron-down" }, "Nascondi le opzioni (clicca di nuovo lo strumento per riaprirle)", None, vec2(24.0, 24.0), 14.0, false, false).clicked() {
+                if icon_button(ui, if top { "chevron-up" } else { "chevron-down" }, "Nascondi le opzioni", None, vec2(24.0, 24.0), 14.0, false, false).clicked() {
                     close = true;
                 }
             });
@@ -1438,7 +1438,7 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
             m.grab = None;
         }
         let over = ui.rect_contains_pointer(card);
-        ui::tip(resp, "Minimappa: clicca o trascina per spostarti sulla lavagna", None);
+        ui::tip(resp, "Minimappa", None);
         // The close button shows while the pointer is over the map, like Figma's hover controls.
         let close = Rect::from_center_size(map.right_top() + vec2(-13.0, 13.0), vec2(20.0, 20.0));
         let c = ui.interact(close, Id::new("minimap-close"), Sense::click());

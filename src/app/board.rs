@@ -187,7 +187,7 @@ impl BoardScreen {
         if let Some(state) = store.ydoc(id)?
             && !state.is_empty()
         {
-            apply_update(&doc, &state, REMOTE).map_err(|_| "Questa lavagna è danneggiata e non si può aprire.".to_string())?;
+            apply_update(&doc, &state, REMOTE).map_err(|_| "Lavagna danneggiata: non si può aprire.".to_string())?;
         }
         let c = ctx.clone();
         let board = Board::new(doc, Arc::new(move || c.request_repaint()));
@@ -391,7 +391,7 @@ impl BoardScreen {
         let mut els = Vec::new();
         for bytes in files.into_iter().take(20) {
             let Some((data, img)) = crate::export::prepare_image(&bytes) else {
-                toasts.error("Questa immagine non si può aprire. Usa PNG, JPG, GIF o WebP.");
+                toasts.error("Immagine non supportata (PNG, JPG, GIF o WebP).");
                 continue;
             };
             match self.store.save_file(&self.id, &data) {
@@ -504,7 +504,7 @@ impl BoardScreen {
                         ui::icon(ui, "scan", pos2(pill.min.x + 14.0, pill.center().y), 15.0, t.chrome_text);
                         ui.painter().galley(pos2(pill.min.x + 27.0, pill.center().y - g.size().y / 2.0), g, t.chrome_text);
                         r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Modalità zen"));
-                        if ui::tip(r, "Modalità zen: solo la lavagna, a tutto schermo", Some("Alt+Z")).clicked() {
+                        if ui::tip(r, "Modalità zen", Some("Alt+Z")).clicked() {
                             self.editor.toggle_zen();
                         }
                     });
@@ -781,7 +781,7 @@ impl BoardScreen {
                 ed.editing = None;
                 ed.editing_cell = None;
                 self.ui.text_for = None;
-                ed.requests.push(crate::editor::Request::Notice(format!("{who} sta scrivendo qui: aspetta che finisca.")));
+                ed.requests.push(crate::editor::Request::Notice(format!("{who} sta già scrivendo qui")));
                 return;
             }
             self.ui.text_for = Some(key);

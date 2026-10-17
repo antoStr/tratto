@@ -208,7 +208,7 @@ pub fn settings_ui(ui: &mut egui::Ui) {
         State::Latest => ("Hai l'ultima versione.".into(), false),
         State::Available { version, .. } => (format!("È disponibile la versione {version}."), false),
         State::Downloading { version, .. } => (format!("Download della versione {version} in corso…"), false),
-        State::ReadyToInstall { version, .. } => (format!("La versione {version} è pronta per l'installazione!"), false),
+        State::ReadyToInstall { version, .. } => (format!("Versione {version} pronta"), false),
         State::Error(msg) => (format!("Errore: {msg}"), true),
     };
     ui.label(RichText::new(text).color(if is_err { t.danger_text } else { t.text2 }));

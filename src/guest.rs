@@ -84,7 +84,7 @@ pub fn start() {
         if let Some(el) = window().document().and_then(|d| d.get_element_by_id("loading")) {
             match started {
                 Ok(()) => el.remove(),
-                Err(_) => el.set_text_content(Some("Questo browser non riesce a disegnare la lavagna (serve WebGL 2). Prova con Chrome, Edge, Firefox o Safari aggiornati.")),
+                Err(_) => el.set_text_content(Some("Serve un browser con WebGL 2: Chrome, Edge, Firefox o Safari aggiornati.")),
             }
         }
     });
@@ -301,13 +301,13 @@ impl BoardScreen {
                     self.editor.presence.peers.clear();
                     self.editor.following = None;
                     match code {
-                        CLOSE_ENDED => self.guest.ended = Some("La condivisione è terminata: il proprietario l'ha chiusa.".into()),
+                        CLOSE_ENDED => self.guest.ended = Some("Condivisione terminata.".into()),
                         CLOSE_REMOVED => self.guest.ended = Some("Non hai più accesso a questa lavagna.".into()),
                         CLOSE_RECONNECT => self.guest.retry_at = now(),
                         _ => {
                             let since = *self.guest.offline_since.get_or_insert(now());
                             if now() - since > 20_000.0 {
-                                self.guest.ended = Some("Connessione persa. Forse il proprietario ha chiuso Tratto o è offline.".into());
+                                self.guest.ended = Some("Connessione persa.".into());
                             }
                             self.guest.attempts += 1;
                             self.guest.retry_at = now() + (500.0 * 2f64.powi(self.guest.attempts as i32)).min(5000.0);
@@ -435,7 +435,7 @@ impl UploadSink {
     /// Scales the picture down, sends it to the host, then it goes on the board.
     fn upload(&self, ctx: &egui::Context, bytes: Vec<u8>, at: Pt) {
         let Some((data, img)) = crate::export::prepare_image(&bytes) else {
-            self.done.lock().unwrap().push(Err("Questa immagine non si può aprire. Usa PNG, JPG, GIF o WebP.".into()));
+            self.done.lock().unwrap().push(Err("Immagine non supportata (PNG, JPG, GIF o WebP).".into()));
             ctx.request_repaint();
             return;
         };
@@ -511,7 +511,7 @@ impl GuestApp {
         if net::valid_code(&app.code) {
             app.pending = Some(api(&cc.egui_ctx, ehttp::Method::GET, "/api/guest/session", &app.code, None));
         } else {
-            app.stage = Stage::Ended("Questo link non è completo. Chiedi a chi te l'ha mandato di copiarlo di nuovo.".into());
+            app.stage = Stage::Ended("Link incompleto.".into());
         }
         app
     }
@@ -589,8 +589,8 @@ impl GuestApp {
             },
             _ => {
                 self.stage = Stage::Ended(match status {
-                    0 => "Non riesco a raggiungere la lavagna. Controlla la connessione; forse il proprietario ha chiuso Tratto.".into(),
-                    401 => "Questo link non è valido oppure la condivisione è terminata.".into(),
+                    0 => "Lavagna non raggiungibile.".into(),
+                    401 => "Link non valido o scaduto.".into(),
                     _ => v["error"].as_str().unwrap_or("Qualcosa è andato storto. Riprova tra poco.").to_string(),
                 })
             }
@@ -682,7 +682,7 @@ impl eframe::App for GuestApp {
                 let (name, error) = (&mut self.name, &self.error);
                 card(ui, &t, |ui| {
                     ui.label(RichText::new(format!("Ti hanno invitato su «{title}»")).font(ui::medium(ui::px(16.0))).color(t.text));
-                    ui::hint(ui, if view { "Potrai guardare la lavagna dal vivo. Chi ti ha invitato deve farti entrare." } else { "Potrai disegnare e scrivere insieme agli altri. Chi ti ha invitato deve farti entrare." });
+                    ui::hint(ui, if view { "Sola lettura. Il proprietario ti farà entrare." } else { "Il proprietario ti farà entrare." });
                     ui::field_label(ui, "Il tuo nome");
                     let edit = ui::text_field(ui, name, "Come ti vedranno gli altri", 40);
                     if let Some(e) = error {
@@ -703,7 +703,7 @@ impl eframe::App for GuestApp {
                     ui.spinner();
                     ui.label(RichText::new("Aspetto che ti facciano entrare…").font(ui::medium(ui::px(14.0))).color(t.text));
                 });
-                ui::hint(ui, "Chi ti ha invitato vede la tua richiesta su Tratto. Tieni aperta questa pagina.");
+                ui::hint(ui, "Aspetta che il proprietario ti faccia entrare.");
             }),
             Stage::Ended(msg) => {
                 let msg = msg.clone();

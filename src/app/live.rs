@@ -285,7 +285,7 @@ fn timer_panel(ui: &mut egui::Ui, ed: &mut Editor) {
             });
             ui.data_mut(|d| d.insert_temp(draft_id, draft));
             if ro {
-                ui::hint(ui, "Solo chi può modificare la lavagna avvia il timer.");
+                ui::hint(ui, "Solo chi modifica può avviarlo.");
             } else if full_button(ui, "Avvia per tutti", Btn::Primary, Some("play")).clicked() {
                 start_timer(ed, draft);
                 egui::Popup::close_all(ui.ctx());
@@ -487,7 +487,7 @@ pub fn emote_button(ui: &mut egui::Ui, ed: &mut Editor) {
     emoji(ui, ed, "❤️", Rect::from_center_size(r.center(), vec2(17.0, 17.0)));
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Emote"));
     ui::focus_ring(ui, &resp, r);
-    let resp = ui::tip(resp, "Emote: un'emoji che vola per tutti", Some("tieni premuto E"));
+    let resp = ui::tip(resp, "Emote", Some("tieni premuto E"));
     egui::Popup::from_toggle_button_response(&resp)
         .frame(ui::float_frame(&t).inner_margin(egui::Margin::same(6)))
         .align(egui::RectAlign::BOTTOM_END)
@@ -523,7 +523,7 @@ pub fn vote_button(ui: &mut egui::Ui, ed: &mut Editor) {
     egui::Popup::from_toggle_button_response(&r).frame(ui::float_frame(&t).inner_margin(egui::Margin::same(12))).align(egui::RectAlign::BOTTOM_END).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.set_width(240.0);
         ui::heading(ui, "Votazione");
-        ui::hint(ui, "Ognuno clicca sulle note, forme o immagini che preferisce. I voti degli altri si vedono alla fine.");
+        ui::hint(ui, "I voti restano nascosti fino alla fine.");
         ui::heading(ui, "Voti per persona");
         let id = Id::new("vote-per");
         let mut per: u32 = ui.data(|d| d.get_temp(id)).unwrap_or(3);
@@ -545,7 +545,7 @@ fn spotlight_of(s: &Value) -> Option<f64> {
 
 pub fn spotlight_button(ui: &mut egui::Ui, ed: &mut Editor) {
     let on = ed.presence.local.get("spotlight").and_then(|v| v.as_f64()).is_some();
-    let label = if on { "Smetti di presentare" } else { "Presenta: tutti seguono la tua vista" };
+    let label = if on { "Smetti di presentare" } else { "Presenta" };
     if ui::icon_button(ui, "presentation", label, None, vec2(ui::hit(ui.ctx(), 24.0), ui::hit(ui.ctx(), 24.0)), 16.0, on, false).clicked() {
         ed.presence.set("spotlight", if on { Value::Null } else { json!(now()) });
     }
@@ -648,8 +648,8 @@ pub fn top_bars(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
                     ui.add_space(18.0);
                     if !ended {
                         let used: u32 = ed.board.tally(Some(&ed.voter)).values().sum();
-                        let text = if ed.read_only { "Votazione: vota chi può modificare".to_string() } else { format!("Votazione · ti restano {} voti su {per}", per.saturating_sub(used)) };
-                        ui.label(RichText::new(text).color(t.text)).on_hover_text("Clicca su note, forme o immagini per votarle; Maiusc+clic per togliere un voto.");
+                        let text = if ed.read_only { "Votazione".to_string() } else { format!("Votazione · ti restano {} voti su {per}", per.saturating_sub(used)) };
+                        ui.label(RichText::new(text).color(t.text)).on_hover_text("Clic per votare · Maiusc+clic per togliere");
                         if !ed.read_only && ui::button(ui, "Termina", Btn::Secondary, None, false, true).clicked() {
                             ed.board.end_voting();
                         }
@@ -676,7 +676,7 @@ pub fn top_bars(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
                 pill(ui, &t, |ui| {
                     icon(ui, "presentation", ui.cursor().min + vec2(7.0, 12.0), 14.0, t.icon);
                     ui.add_space(18.0);
-                    ui.label(RichText::new("Stai presentando: tutti seguono la tua vista").color(t.text));
+                    ui.label(RichText::new("Stai presentando").color(t.text));
                     if ui::button(ui, "Interrompi", Btn::Secondary, None, false, true).clicked() {
                         ed.presence.set("spotlight", Value::Null);
                     }
@@ -773,7 +773,7 @@ pub fn comment_thread(ctx: &egui::Context, ed: &mut Editor, st: &mut BoardUi) {
                     if ui::small_icon_button(ui, "x", "Chiudi", false).clicked() {
                         close = true;
                     }
-                    if !ed.read_only && !thread.is_empty() && ui::small_icon_button(ui, "check", "Risolvi: togli il commento", false).clicked() {
+                    if !ed.read_only && !thread.is_empty() && ui::small_icon_button(ui, "check", "Risolvi", false).clicked() {
                         ed.board.remove([id.clone()]);
                         close = true;
                     }
