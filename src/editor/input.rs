@@ -402,6 +402,12 @@ impl Editor {
             }
         }
 
+        // A widget's button (a vote, a box to tick, + and −) right under the pointer comes before
+        // the selection's handles, whose finger-sized grip would otherwise take it on a small one.
+        let voting = self.board.voting().is_some_and(|(_, ended)| !ended);
+        if tool == Tool::Select && !voting && self.try_widget(p) {
+            return;
+        }
         let mut handle = if !ro && matches!(tool, Tool::Select | Tool::Lasso) { self.hit_handle(s, kind != PointerKind::Mouse) } else { None };
         // The "+" of a shape or note under the pointer: it becomes the selection, then as below.
         if handle.is_none()
@@ -449,7 +455,7 @@ impl Editor {
         if self.try_vote(p, m.shift || m.alt) {
             return;
         }
-        if tool == Tool::Select && self.try_widget(p) {
+        if tool == Tool::Select && voting && self.try_widget(p) {
             return;
         }
 

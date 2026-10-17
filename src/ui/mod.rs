@@ -357,6 +357,15 @@ pub enum Kind {
     DangerText,
 }
 
+/// A big button as wide as the space it is in.
+pub fn full_button(ui: &mut Ui, label: &str, kind: Kind, icon_name: Option<&str>) -> Response {
+    full_button_on(ui, label, kind, icon_name, true)
+}
+
+pub fn full_button_on(ui: &mut Ui, label: &str, kind: Kind, icon_name: Option<&str>, enabled: bool) -> Response {
+    ui.allocate_ui_with_layout(vec2(ui.available_width(), ctl(32.0)), egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| button(ui, label, kind, icon_name, true, enabled)).inner
+}
+
 /// A text button, 24 px high (32 with `big`).
 pub fn button(ui: &mut Ui, text: &str, kind: Kind, icon_name: Option<&str>, big: bool, enabled: bool) -> Response {
     let t = theme(ui.ctx());

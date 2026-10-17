@@ -384,6 +384,100 @@ mod picture {
         harness.render().unwrap().save(path).unwrap();
     }
 
+    /// Frame times (the interface's own work, no drawing on the card) on a heavy board while
+    /// panels open and close: `cargo test --release frame_times -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn frame_times() {
+        use crate::model::{El, Ink, Kind, Sticky};
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let id = store.create("Pesante", None).unwrap();
+        let shared: std::rc::Rc<std::cell::RefCell<Option<board::BoardScreen>>> = Default::default();
+        let inner = shared.clone();
+        let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
+        let mut prefs = Prefs::default();
+        (prefs.left_panel, prefs.right_panel) = (false, false);
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui(move |ui| {
+            let ctx = ui.ctx().clone();
+            let mut screen = inner.borrow_mut();
+            if screen.is_none() {
+                ui::install_fonts(&ctx);
+                ui::setup(&ctx, Theme::new(false, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
+                let mut b = board::BoardScreen::open(&ctx, &store, &id, prefs.clone(), None).unwrap();
+                let mut els = Vec::new();
+                for i in 0..400 {
+                    let mut s = El::new(Kind::Sticky(Sticky { text: format!("Idea numero {i}: qualcosa da ricordare"), color: "#FFE58F".into(), ..Default::default() }));
+                    (s.x, s.y, s.w, s.h) = ((i % 20) as f64 * 240.0, (i / 20) as f64 * 240.0, 220.0, 220.0);
+                    els.push(s);
+                }
+                for i in 0..600 {
+                    let pts: Vec<f32> = (0..150).flat_map(|k| [(k as f32 * 3.0), ((k as f32 * 0.2 + i as f32).sin() * 30.0), -1.0]).collect();
+                    let mut s = El::new(Kind::Ink(Ink { points: pts, color: "#1E1E1E".into(), size: 4.0 }));
+                    (s.x, s.y, s.w, s.h) = ((i % 30) as f64 * 160.0, 5000.0 + (i / 30) as f64 * 90.0, 450.0, 60.0);
+                    els.push(s);
+                }
+                b.editor.board.put(els);
+                *screen = Some(b);
+                return;
+            }
+            screen.as_mut().unwrap().ui(ui, &mut toasts, &mut dialogs);
+        });
+        harness.run_steps(5);
+        let mut measure = |name: &str, harness: &mut egui_kittest::Harness<'_>, n: usize| {
+            let mut v = Vec::new();
+            for _ in 0..n {
+                let t = std::time::Instant::now();
+                harness.step();
+                v.push(t.elapsed().as_secs_f64() * 1000.0);
+            }
+            println!("{name:<22} p50 {:6.2} ms  p95 {:6.2} ms  max {:6.2} ms", percentile(&v, 0.5), percentile(&v, 0.95), percentile(&v, 1.0));
+        };
+        let set = |f: &dyn Fn(&mut board::BoardScreen)| f(shared.borrow_mut().as_mut().unwrap());
+        set(&|b| b.editor.fit_now());
+        measure("all in view", &mut harness, 30);
+        for i in 0..30 {
+            set(&|b| {
+                let c = b.editor.cam;
+                b.editor.set_cam(crate::geom::Camera { x: c.x + if i % 2 == 0 { 7.0 } else { -7.0 }, ..c });
+            });
+            let t = std::time::Instant::now();
+            harness.step();
+            if i == 29 {
+                println!("panning frame        {:6.2} ms", t.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        set(&|b| {
+            let first = b.editor.board.all().iter().find(|e| e.sticky().is_some()).map(|e| e.id.clone()).unwrap();
+            b.editor.selection = vec![first];
+        });
+        measure("panels closed", &mut harness, 30);
+        set(&|b| b.editor.prefs.right_panel = true);
+        measure("right panel opening", &mut harness, 40);
+        set(&|b| b.editor.prefs.left_panel = true);
+        measure("left panel opening", &mut harness, 40);
+        measure("both open, idle", &mut harness, 30);
+        set(&|b| b.editor.selection = b.editor.board.all().iter().take(1).map(|e| e.id.clone()).collect());
+        measure("one selected", &mut harness, 30);
+        set(&|b| b.editor.selection = b.editor.board.all().iter().map(|e| e.id.clone()).collect());
+        measure("all selected", &mut harness, 30);
+        set(&|b| {
+            b.editor.selection.clear();
+            b.editor.prefs.minimap = true;
+        });
+        measure("minimap on", &mut harness, 30);
+        set(&|b| b.ui.left_tab = board::LeftTab::Templates);
+        measure("templates tab", &mut harness, 10);
+        // At rest nothing should keep asking for frames (that keeps the processor and the card busy).
+        for (name, f) in [("idle, everything open", &(|_: &mut board::BoardScreen| {}) as &dyn Fn(&mut board::BoardScreen)), ("idle, panels closed", &|b: &mut board::BoardScreen| (b.editor.prefs.left_panel, b.editor.prefs.right_panel, b.editor.prefs.minimap) = (false, false, false))] {
+            set(f);
+            harness.run_steps(120);
+            match harness.try_run() {
+                Ok(n) => println!("{name:<22} settles after {n} frames"),
+                Err(e) => println!("{name:<22} NEVER SETTLES: {e}"),
+            }
+        }
+    }
+
     /// The whole board screen as a picture: `TRATTO_SHOT=out.png cargo test app::picture -- --nocapture`.
     #[test]
     fn board_screen_picture() {

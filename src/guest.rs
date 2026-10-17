@@ -617,28 +617,41 @@ impl GuestApp {
     }
 }
 
-/// A card in the middle of the page, for the steps before the board.
+/// A card in the middle of the page, for the steps before the board: the logo on top, then
+/// the step, all centred.
 fn card(ui: &mut egui::Ui, t: &Theme, body: impl FnOnce(&mut egui::Ui)) {
     let ctx = ui.ctx().clone();
     ui.painter().rect_filled(ui.max_rect(), 0.0, t.canvas);
-    let max_h = (ui.ctx().content_rect().height() - 32.0).max(200.0);
+    let screen = ctx.content_rect();
+    let width = (screen.width() - 32.0).min(380.0);
     egui::Area::new(Id::new("join")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(&ctx, |ui| {
         // An area lays out in last frame's size: without this the card stays as small as its
         // first step and cuts off the name field and the button of the next one.
-        ui.set_max_size(ui.ctx().content_rect().size() - vec2(32.0, 32.0));
-        let width = (ui.ctx().content_rect().width() - 32.0).min(400.0);
-        egui::Frame::new().fill(t.bg).stroke(egui::Stroke::new(1.0, t.border)).corner_radius(ui::RADIUS_LG).inner_margin(egui::Margin::same(24)).show(ui, |ui| {
-            ui.set_width(width - 48.0);
-            egui::ScrollArea::vertical().max_height(max_h - 48.0).auto_shrink([false, true]).show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 12.0;
-                ui.horizontal(|ui| {
-                    ui::logo(ui, 24.0);
-                    ui.label(RichText::new("Tratto").font(ui::medium(ui::px(14.0))).color(t.text));
+        ui.set_max_size(screen.size() - vec2(32.0, 32.0));
+        let frame = egui::Frame::new().fill(t.bg).stroke(egui::Stroke::new(1.0, t.border)).corner_radius(16).inner_margin(egui::Margin::same(28));
+        // The shadows go under the card, drawn once its size is known.
+        let under = [ui.painter().add(egui::Shape::Noop), ui.painter().add(egui::Shape::Noop)];
+        let shown = frame.show(ui, |ui| {
+            ui.set_width(width - 56.0);
+            egui::ScrollArea::vertical().max_height((screen.height() - 88.0).max(200.0)).auto_shrink([false, true]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 10.0;
+                ui.vertical_centered(|ui| {
+                    ui::logo(ui, 40.0);
                 });
+                ui.add_space(6.0);
                 body(ui);
             });
         });
+        let r = shown.response.rect;
+        for (at, s) in under.into_iter().zip(ui::card_shadows(t)) {
+            ui.painter().set(at, s.as_shape(r, egui::CornerRadius::same(16)));
+        }
     });
+}
+
+/// A line of text centred in the card.
+fn centred(ui: &mut egui::Ui, text: RichText) {
+    ui.vertical_centered(|ui| ui.add(egui::Label::new(text).wrap()));
 }
 
 impl eframe::App for GuestApp {
@@ -671,18 +684,20 @@ impl eframe::App for GuestApp {
                 }
             }
             Stage::Checking => card(ui, &t, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(RichText::new("Apro la lavagna…").color(t.text));
-                });
+                ui.vertical_centered(|ui| ui.spinner());
+                centred(ui, RichText::new("Apro la lavagna…").color(t.text2));
             }),
             Stage::Name => {
                 let mut ask = false;
                 let (title, view, busy) = (self.title.clone(), self.access == "view", self.pending.is_some());
                 let (name, error) = (&mut self.name, &self.error);
                 card(ui, &t, |ui| {
-                    ui.label(RichText::new(format!("Ti hanno invitato su «{title}»")).font(ui::medium(ui::px(16.0))).color(t.text));
-                    ui::hint(ui, if view { "Sola lettura. Il proprietario ti farà entrare." } else { "Il proprietario ti farà entrare." });
+                    centred(ui, RichText::new("Ti hanno invitato su").size(ui::px(13.0)).color(t.text2));
+                    centred(ui, RichText::new(title).font(ui::medium(ui::px(19.0))).color(t.text));
+                    if view {
+                        centred(ui, RichText::new("Sola lettura").size(ui::px(12.0)).color(t.text2));
+                    }
+                    ui.add_space(10.0);
                     ui::field_label(ui, "Il tuo nome");
                     let edit = ui::text_field(ui, name, "Come ti vedranno gli altri", 40);
                     if let Some(e) = error {
@@ -690,7 +705,8 @@ impl eframe::App for GuestApp {
                     }
                     let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     let ready = !name.trim().is_empty() && !busy;
-                    ask = (ui::button(ui, "Chiedi di entrare", Btn::Primary, Some("arrow-up-right"), true, ready).clicked() || enter) && ready;
+                    ui.add_space(4.0);
+                    ask = (ui::full_button_on(ui, "Chiedi di entrare", Btn::Primary, None, ready).clicked() || enter) && ready;
                 });
                 if ask {
                     self.error = None;
@@ -699,17 +715,16 @@ impl eframe::App for GuestApp {
                 }
             }
             Stage::Waiting => card(ui, &t, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(RichText::new("Aspetto che ti facciano entrare…").font(ui::medium(ui::px(14.0))).color(t.text));
-                });
-                ui::hint(ui, "Aspetta che il proprietario ti faccia entrare.");
+                ui.vertical_centered(|ui| ui.spinner());
+                centred(ui, RichText::new("In attesa di entrare").font(ui::medium(ui::px(16.0))).color(t.text));
+                centred(ui, RichText::new("Tieni aperta questa pagina.").size(ui::px(13.0)).color(t.text2));
             }),
             Stage::Ended(msg) => {
                 let msg = msg.clone();
                 card(ui, &t, |ui| {
-                    ui.label(RichText::new(msg).color(t.text));
-                    if ui::button(ui, "Riprova", Btn::Secondary, Some("refresh-cw"), false, true).clicked() {
+                    centred(ui, RichText::new(msg).font(ui::medium(ui::px(15.0))).color(t.text));
+                    ui.add_space(4.0);
+                    if ui::full_button(ui, "Riprova", Btn::Secondary, Some("refresh-cw")).clicked() {
                         let _ = window().location().reload();
                     }
                 });

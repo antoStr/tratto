@@ -286,7 +286,7 @@ fn timer_panel(ui: &mut egui::Ui, ed: &mut Editor) {
             ui.data_mut(|d| d.insert_temp(draft_id, draft));
             if ro {
                 ui::hint(ui, "Solo chi modifica può avviarlo.");
-            } else if full_button(ui, "Avvia per tutti", Btn::Primary, Some("play")).clicked() {
+            } else if ui::full_button(ui, "Avvia per tutti", Btn::Primary, Some("play")).clicked() {
                 start_timer(ed, draft);
                 egui::Popup::close_all(ui.ctx());
             }
@@ -379,10 +379,6 @@ fn chip(ui: &mut egui::Ui, label: &str, on: bool, t: &ui::Theme) -> egui::Respon
 }
 
 /// A button as wide as the panel.
-fn full_button(ui: &mut egui::Ui, label: &str, kind: Btn, icon_name: Option<&str>) -> egui::Response {
-    ui.allocate_ui_with_layout(vec2(ui.available_width(), 32.0), egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| ui::button(ui, label, kind, icon_name, true, true)).inner
-}
-
 /// The music: one piece for everyone (anyone who can edit picks or stops it) and this
 /// person's own volume.
 fn music_section(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
@@ -432,7 +428,7 @@ fn music_section(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
             p.music_muted = false;
         }
     });
-    if playing.is_some() && !ed.read_only && full_button(ui, "Ferma la musica", Btn::Secondary, Some("square")).clicked() {
+    if playing.is_some() && !ed.read_only && ui::full_button(ui, "Ferma la musica", Btn::Secondary, Some("square")).clicked() {
         set_music(ed, None);
     }
 }
