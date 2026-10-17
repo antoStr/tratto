@@ -27,9 +27,9 @@ Il collegamento passa da un tunnel cifrato di Cloudflare. Il PC si collega solo 
 
 **Modalità zen** (il pulsante *Zen* in alto a destra, `Alt+Z` o `Ctrl+Maiusc+\`): tutto schermo, solo la lavagna; la barra degli strumenti compare avvicinandosi al bordo e si fa da parte mentre disegni; `Esc` per uscire.
 
-**Timer e musica** (il cronometro accanto a *Condividi*): il tempo si imposta con − e + (o le frecce, Maiusc per 5 minuti) e parte con Invio per tutti; *Pausa*, *+1 min* e *Ferma*; a 00:00 il tempo trema e suona un campanello. La musica (Lo-fi, Ambient, Pianoforte, Pioggia, composte e generate da Tratto stesso, senza file né diritti) la sentono tutti allo stesso punto; il volume è di ognuno.
+**Timer, musica e votazione** (il disco e il tempo accanto a *Condividi*): il tempo si scrive sul display come su un microonde (solo cifre, da destra: `130` è 1:30, fino a 99 ore) e parte con Invio o col pulsante tondo per tutti; *+1 min*, pausa e stop; a 00:00 il tempo trema e suona un campanello. Il giradischi suona per tutti, allo stesso punto, uno dei sei brani di FigJam (Acoustic ambient, Lo-fi hip hop, Button smash, It's Friday, Synthwave, Hero's journey), composti e generati da Tratto stesso, senza file né diritti; il volume è di ognuno. *Nuova votazione* fa votare note, forme e immagini; alla fine un pannello a destra mostra la classifica (chi ospita o ha avviato la votazione la rifà o la toglie per tutti).
 
-**Emote**: tieni premuto `E` (un tocco breve resta la gomma) e scegli un'emoji dalla ruota, o usa il cuore accanto al timer: vola dal cursore e la vedono tutti. Le opzioni dello strumento sopra la barra si chiudono con la freccia, o cliccando di nuovo lo strumento, che resta in uso.
+**Emote**: tieni premuto `E` (un tocco breve resta la gomma) e scegli un'emoji dalla ruota (tenendo premuto il clic ne parte una raffica), o dal menu accanto agli avatar: vola dal cursore e la vedono tutti. Le opzioni dello strumento sopra la barra si chiudono con la freccia, o cliccando di nuovo lo strumento, che resta in uso.
 
 **Come in FigJam.** Selezionando qualcosa compare sopra una barra scura con i suoi colori, la forma, il carattere e le altre impostazioni. Il **+** della barra degli strumenti aggiunge blocchi di codice e widget: con un clic in mezzo alla vista, trascinandoli dove li lasci (lo stesso per i modelli). *Connettori*: si attaccano al centro dei lati, dritti, a gomito o curvi; inizio e fine hanno la punta che vuoi (triangolo, freccia aperta, cerchio, rombo, barra) e la direzione si inverte con un clic; doppio clic su una linea per scriverci un'etichetta. *Widget*: si cliccano direttamente sulla lavagna (con lo strumento di selezione) e si scrivono nel pannello a destra.
 
@@ -43,7 +43,7 @@ Il collegamento passa da un tunnel cifrato di Cloudflare. Il PC si collega solo 
 
 Tutte le scorciatoie sono nel menu, alla voce *Scorciatoie da tastiera* (`?`).
 
-**Aggiornamenti.** All'avvio Tratto controlla se c'è una versione nuova: se c'è, nella schermata delle lavagne compare *Scarica Tratto X.Y.Z*, che apre la pagina da cui scaricarla. Le lavagne non si toccano. Chi ha ancora Tratto 1 su Windows o in AppImage riceve la versione 2 da solo, alla chiusura dell'app.
+**Aggiornamenti.** All'avvio Tratto controlla se c'è una versione nuova: se c'è, nella schermata delle lavagne compare *Aggiorna a X.Y.Z e riavvia*, che scarica, installa e riapre Tratto (su Windows l'installer senza domande; sul Mac l'app sostituita; su Linux l'AppImage sostituita, oppure il .rpm o il .deb installati con la password di sistema). Le lavagne non si toccano. Chi ha ancora Tratto 1 su Windows o in AppImage riceve la versione 2 da solo, alla chiusura dell'app.
 
 ## Per chi la sviluppa
 
