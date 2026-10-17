@@ -1265,17 +1265,19 @@ pub struct Minimap {
     seen_at: f64,
     /// Pointer offset from the view centre while dragging, in board units.
     grab: Option<(f64, f64)>,
+    /// The map's scale while dragging in it: still, or the point under the pointer would run off.
+    frozen: Option<Fit>,
     /// Pointer offset from the card's corner while the card itself is being moved.
     moving: Option<egui::Vec2>,
     /// The picture being drawn away from the interface, and how it maps the board.
     job: Option<std::sync::mpsc::Receiver<(Option<egui::ColorImage>, Fit)>>,
 }
 
-/// What the minimap frames: the content, but never much less than a screenful around it, so a
-/// single dot doesn't fill the map and where you are stays readable.
-fn map_area(content: Option<BBox>, view: BBox) -> BBox {
-    let Some(c) = content else { return view };
-    let (w, h) = (c.w.max(view.w * 0.8), c.h.max(view.h * 0.8));
+/// What the minimap's picture frames: the content, but never less than a screenful at 100%
+/// around it, so a single dot doesn't fill the map.
+fn map_area(content: Option<BBox>, view: BBox, screen: (f64, f64)) -> BBox {
+    let c = content.unwrap_or(BBox { x: view.center().x, y: view.center().y, w: 0.0, h: 0.0 });
+    let (w, h) = (c.w.max(screen.0 * 0.8), c.h.max(screen.1 * 0.8));
     BBox { x: c.x + c.w / 2.0 - w / 2.0, y: c.y + c.h / 2.0 - h / 2.0, w, h }
 }
 
@@ -1311,7 +1313,7 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
     if m.job.is_none() && (m.tex.is_none() || (m.drawn != version && m.grab.is_none() && quiet > 300.0)) {
         m.drawn = version;
         let content = union(ed.board.all().iter().filter(|e| !e.hidden).map(|e| crate::geom::aabb(e)));
-        let fit = fit_for(map_area(content, ed.view()), mw, mh);
+        let fit = fit_for(map_area(content, ed.view(), ed.size), mw, mh);
         let ppp = ctx.pixels_per_point() as f64;
         let (w, h) = ((mw * ppp) as u32, (mh * ppp) as u32);
         let b = BBox { x: -fit.x / fit.k, y: -fit.y / fit.k, w: mw / fit.k, h: mh / fit.k };
@@ -1364,8 +1366,17 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
     }
-    let Some(f) = m.shown else { return };
+    let Some(pic) = m.shown else { return };
     let view = ed.view();
+    // The map always takes in where you are: zoomed far out (or off the content) it widens
+    // around both, the picture drawn smaller inside it.
+    let area = BBox { x: -pic.x / pic.k, y: -pic.y / pic.k, w: mw / pic.k, h: mh / pic.k };
+    let inside = view.x >= area.x && view.y >= area.y && view.right() <= area.right() && view.bottom() <= area.bottom();
+    let f = match m.frozen {
+        Some(f) => f,
+        None if inside => pic,
+        None => fit_for(union([area, view]).unwrap_or(area), mw, mh),
+    };
     let k = ui::motion::appear(ctx, Id::new("minimap"), true);
     // Where the card sits: a fraction of the room it can move in, so it keeps its corner when
     // the window changes size. Dragged, it follows the pointer; let go, it glides into place.
@@ -1404,14 +1415,23 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
         ui.painter().rect(card, radius, t.bg, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
         let map = card.shrink(PAD);
         let bg = crate::model::color_or(&ed.board.meta().background, Color32::from_gray(0xF5));
-        let fill = egui::epaint::RectShape::filled(map, egui::CornerRadius::same(8), if m.tex.is_some() { Color32::WHITE } else { bg });
-        ui.painter().add(match &m.tex {
-            Some(tex) => fill.with_texture(tex.id(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))),
-            None => fill,
-        });
+        let to = |x: f64, y: f64| map.min + vec2((x * f.k + f.x) as f32, (y * f.k + f.y) as f32);
+        let fill = egui::epaint::RectShape::filled(map, egui::CornerRadius::same(8), if m.tex.is_some() && f == pic { Color32::WHITE } else { bg });
+        match &m.tex {
+            Some(tex) if f == pic => ui.painter().add(fill.with_texture(tex.id(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)))),
+            Some(tex) => {
+                ui.painter().add(fill);
+                let r = Rect::from_min_max(to(area.x, area.y), to(area.right(), area.bottom()));
+                // Too small to make out: a mark where the drawing is.
+                if r.width() < 10.0 {
+                    ui.painter().rect_filled(Rect::from_center_size(r.center(), r.size().max(vec2(8.0, 8.0))), 2.0, t.text3.gamma_multiply(0.6));
+                }
+                ui.painter().with_clip_rect(map).image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE)
+            }
+            None => ui.painter().add(fill),
+        };
         // Where you are: kept inside the map on each axis, so it shows the way back when you
         // are far off and never spills over the card.
-        let to = |x: f64, y: f64| map.min + vec2((x * f.k + f.x) as f32, (y * f.k + f.y) as f32);
         let vr = Rect::from_min_max(to(view.x, view.y), to(view.right(), view.bottom()));
         let inner = map.shrink(1.5);
         let (x0, x1) = clamp_span(vr.min.x, vr.max.x, inner.min.x, inner.max.x, 6.0);
@@ -1419,7 +1439,7 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
         let v = Rect::from_min_max(pos2(x0, y0), pos2(x1, y1));
         // Everything in view: no rectangle, the map alone says it.
         if !vr.contains_rect(inner) {
-            ui.painter().with_clip_rect((map).intersect(ui.clip_rect())).rect(v, egui::CornerRadius::same(3), t.brand.gamma_multiply(0.1), Stroke::new(1.5, t.brand), egui::StrokeKind::Inside);
+            ui.painter().with_clip_rect((map).intersect(ui.clip_rect())).rect(v, egui::CornerRadius::same(3), t.brand.gamma_multiply(0.06), Stroke::new(1.5, t.brand), egui::StrokeKind::Inside);
         }
         let point = |p: Pos2| ((p.x.clamp(map.min.x, map.max.x) - map.min.x) as f64 - f.x) / f.k;
         let point_y = |p: Pos2| ((p.y.clamp(map.min.y, map.max.y) - map.min.y) as f64 - f.y) / f.k;
@@ -1429,13 +1449,22 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
                 let inside = view.contains(crate::geom::pt(px, py));
                 // Grabbing the rectangle drags it from where it was taken; elsewhere the view centres on the click.
                 m.grab = Some(if inside { (px - view.center().x, py - view.center().y) } else { (0.0, 0.0) });
+                m.frozen = Some(f);
             }
         }
         if let (Some(g), Some(p)) = (m.grab, resp.interact_pointer_pos()) {
             ed.center_on(crate::geom::pt(point(p) - g.0, point_y(p) - g.1));
+            // Zoomed out far beyond the drawing, a click goes there close enough to see it.
+            if resp.clicked() && f != pic {
+                let z = (ed.size.0 / area.w).min(ed.size.1 / area.h) * 0.9;
+                let (cx, cy) = (ed.size.0 / 2.0, ed.size.1 / 2.0);
+                let (x, y) = (point(p), point_y(p));
+                ed.fly_to(crate::geom::Camera { x: cx - x * z, y: cy - y * z, z });
+            }
         }
         if resp.drag_stopped() || resp.clicked() {
             m.grab = None;
+            m.frozen = None;
         }
         let over = ui.rect_contains_pointer(card);
         ui::tip(resp, "Minimappa", None);

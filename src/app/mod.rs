@@ -426,6 +426,11 @@ mod picture {
         if let Some(z) = std::env::var("TRATTO_UI").ok().and_then(|v| v.parse().ok()) {
             prefs.ui_scale = z;
         }
+        // TRATTO_MAP=1: the minimap shown.
+        if std::env::var_os("TRATTO_MAP").is_some() {
+            prefs.minimap = true;
+        }
+        let mut frames = 0;
         let mut harness = egui_kittest::Harness::builder().with_size(size).with_pixels_per_point(ppp()).wgpu().build_ui(move |ui| {
             let ctx = ui.ctx().clone();
             if screen.is_none() {
@@ -461,12 +466,17 @@ mod picture {
                     b.editor.insert_code(None);
                     b.editor.stop_editing();
                 }
-                if let Some(z) = std::env::var("TRATTO_ZOOM").ok().and_then(|v| v.parse::<f64>().ok()) {
-                    let c = b.editor.cam;
-                    b.editor.set_cam(crate::geom::Camera { z, ..c });
-                }
                 screen = Some(b);
                 return;
+            }
+            frames += 1;
+            // TRATTO_ZOOM=0.04: that zoom about the window's centre, once the board has opened.
+            if frames == 10
+                && let Some(z) = std::env::var("TRATTO_ZOOM").ok().and_then(|v| v.parse::<f64>().ok())
+            {
+                let ed = &mut screen.as_mut().unwrap().editor;
+                let (w, h) = ed.size;
+                ed.zoom_at(w / 2.0, h / 2.0, z);
             }
             screen.as_mut().unwrap().ui(ui, &mut toasts, &mut dialogs);
         });
