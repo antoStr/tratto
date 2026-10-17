@@ -153,26 +153,6 @@ fn ep(l: &mut Loop, at: f32, note: f32, hold: f32, gain: f32) {
     });
 }
 
-/// A soft piano: slightly stretched partials, the higher ones dying first.
-fn piano(l: &mut Loop, at: f32, note: f32, gain: f32) {
-    let f = midi(note);
-    let damp = (note - 60.0).max(0.0) * 0.02;
-    // Each partial: frequency, loudness, and its own decay (the whole note's folded in).
-    let mut partials: Vec<(f32, f32, Decay)> = (1..=6)
-        .map(|k| {
-            let k = k as f32;
-            (f * k * (1.0 + 0.0004 * k * k).sqrt(), 1.0 / k.powf(1.3), Decay::new(1.0 / (1.2 + 0.9 * k + damp + 1.0 / 2.6)))
-        })
-        .collect();
-    l.add(at, 3.5, |t| {
-        let a = attack(t, 0.003);
-        let s: f32 = partials.iter_mut().map(|(pf, amp, d)| {
-            let e = d.next();
-            if e > 0.002 { *amp * e * sine(*pf * t) } else { 0.0 }
-        }).sum();
-        gain * a * s
-    });
-}
 
 fn bass(l: &mut Loop, at: f32, note: f32, hold: f32, gain: f32) {
     let f = midi(note);

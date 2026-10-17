@@ -760,6 +760,53 @@ pub fn participants(ui: &mut Ui, ed: &mut Editor) {
     }
 }
 
+/// The little arrow by the avatars: who is here (a click follows them), presenting, emotes.
+fn people_menu(ui: &mut Ui, ed: &mut Editor) {
+    let t = ui::theme(ui.ctx());
+    let (r, resp) = ui.allocate_exact_size(vec2(16.0, 24.0), Sense::click());
+    ui::hover_fill(ui, resp.id, r, resp.hovered(), 4.0, t.hover);
+    ui::icon(ui, "chevron-down", r.center(), 12.0, t.icon2);
+    let resp = ui::tip(resp, "Persone, presentazione ed emote", None);
+    egui::Popup::from_toggle_button_response(&resp).frame(ui::menu_frame(&t)).align(egui::RectAlign::BOTTOM_END).gap(8.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(240.0);
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let me = serde_json::Value::Object(ed.presence.local.clone());
+        let _ = ui::menu_item(ui, Some("user"), &format!("{} (tu)", peer_name(&me)), None, false);
+        let people: Vec<(u64, String)> = ed.presence.peers.iter().filter(|(_, s)| s["user"].is_object()).map(|(id, s)| (*id, peer_name(s))).collect();
+        for (id, name) in people {
+            let following = ed.following == Some(id);
+            if ui::menu_item(ui, Some(if following { "eye" } else { "user" }), &if following { format!("Smetti di seguire {name}") } else { format!("Segui {name}") }, None, false).clicked() {
+                ed.follow(if following { None } else { Some(id) });
+            }
+        }
+        ui::menu_sep(ui);
+        let on = ed.presence.local.get("spotlight").and_then(|v| v.as_f64()).is_some();
+        if ui::menu_item(ui, Some("presentation"), if on { "Smetti di presentare" } else { "Presenta: tutti seguono te" }, None, false).clicked() {
+            ed.presence.set("spotlight", if on { serde_json::Value::Null } else { serde_json::json!(crate::platform::now_ms()) });
+        }
+        ui::menu_sep(ui);
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(6.0);
+            ui.spacing_mut().item_spacing.x = 0.0;
+            for e in crate::editor::EMOTES {
+                let (r, b) = ui.allocate_exact_size(vec2(28.0, 32.0), Sense::click());
+                let h = ui::motion::hover(ui.ctx(), b.id, b.hovered());
+                ui.painter().rect_filled(r, 6.0, t.brand_fill.gamma_multiply(h * 0.6));
+                if let Some(Ok(tex)) = ed.painter.images.texture(ui.ctx(), &crate::prims::ImageKey::Stamp(e.to_string())) {
+                    let s = 22.0 + 3.0 * h;
+                    ui.painter().image(tex, Rect::from_center_size(r.center(), vec2(s, s)), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                }
+                if b.on_hover_text("Emote (o tieni premuto E)").clicked() {
+                    let at = ed.viewport_center();
+                    ed.send_emote(e, at);
+                }
+            }
+        });
+        ui.add_space(4.0);
+    });
+}
+
 /// Colours a person can pick for themselves.
 pub const PERSON_COLORS: [&str; 10] = ["#0D99FF", "#9747FF", "#F24822", "#14AE5C", "#FFA629", "#E84393", "#00B5CE", "#7B61FF", "#FF7262", "#1E1E1E"];
 
@@ -1638,22 +1685,18 @@ pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
         ui.set_opacity(k.clamp(0.0, 1.0));
         ui::float_frame(&t).inner_margin(egui::Margin::symmetric(if is_mobile { 6 } else { 8 }, 6)).show(ui, |ui| {
             ui::row(ui, 28.0, |ui| {
-                let line = |ui: &mut Ui| {
-                    let (r, _) = ui.allocate_exact_size(vec2(13.0, 28.0), Sense::hover());
-                    ui.painter().vline(r.center().x, (r.center().y - 9.0)..=(r.center().y + 9.0), Stroke::new(1.0, t.border));
-                };
+                // FigJam's: the people (and their menu), the templates, the timer, Share.
                 if !is_mobile {
                     participants(ui, &mut b.editor);
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    line(ui);
+                }
+                people_menu(ui, &mut b.editor);
+                ui.spacing_mut().item_spacing.x = 4.0;
+                if !is_mobile && !b.editor.read_only && small_icon_button(ui, "layout-template", "Modelli", false).clicked() {
+                    b.editor.prefs.left_panel = true;
+                    b.editor.prefs.focus = false;
+                    b.editor.requests.push(crate::editor::Request::Templates);
                 }
                 super::live::timer_button(ui, &mut b.editor);
-                super::live::emote_button(ui, &mut b.editor);
-                super::live::vote_button(ui, &mut b.editor);
-                if !is_mobile {
-                    super::live::spotlight_button(ui, &mut b.editor);
-                    line(ui);
-                }
                 share_button(ui, b);
                 ui.add_space(2.0);
                 if small_icon_button(ui, "panel-right-open", "Mostra il pannello", false).clicked() {
