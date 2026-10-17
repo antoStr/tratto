@@ -424,9 +424,11 @@ pub fn section_title_box(el: &El, zoom: f64) -> TitleBox {
     let size = 12.0 / zoom;
     let pad = 8.0 / zoom;
     let text = el.name.as_deref().map(str::trim).filter(|t| !t.is_empty()).unwrap_or("Sezione").to_string();
-    let w = (measure(ui_medium(), &text, size) + pad * 2.0 + size * 0.25).min(el.w.max(pad * 4.0));
     let h = 22.0 / zoom;
-    TitleBox { x: el.x, y: el.y - h - 4.0 / zoom, w, h, size, pad, text }
+    // FigJam's section icon comes first, then the name.
+    let icon = h + 4.0 / zoom;
+    let w = (measure(ui_medium(), &text, size) + pad * 2.0 + size * 0.25).min((el.w - icon).max(pad * 4.0));
+    TitleBox { x: el.x + icon, y: el.y - h - 4.0 / zoom, w, h, size, pad, text }
 }
 
 /* ---------------- glyphs ---------------- */

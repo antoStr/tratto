@@ -604,6 +604,12 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
             if !env.hairline {
                 let t = text::section_title_box(el, env.zoom);
                 let (x, y) = ((t.x - el.x) as f32, (t.y - el.y) as f32);
+                // The section icon before the name: a frame with its label tab.
+                let (u, s) = ((1.0 / env.zoom) as f32, t.h as f32);
+                let ic = if env.dark_board { rgba(255, 255, 255, 0.75 * alpha) } else { rgba(0, 0, 0, 0.6 * alpha) };
+                let (ix, iy, is) = (s * 0.18, y + s * 0.18, s * 0.64);
+                out.push(Prim::Stroke { path: Path::round_rect(ix, iy, is, is, [2.0 * u; 4]), width: 1.3 * u, color: ic, round: true, dash: None });
+                out.push(Prim::Stroke { path: Path::polyline(&[ix as f64, (iy + is * 0.33) as f64, (ix + is * 0.33) as f64, (iy + is * 0.33) as f64, (ix + is * 0.33) as f64, iy as f64]), width: 1.3 * u, color: ic, round: true, dash: None });
                 let pill = Path::round_rect(x, y, t.w as f32, t.h as f32, [(5.0 / env.zoom) as f32; 4]);
                 out.push(Prim::Fill { path: pill.clone(), color: with_alpha(fill_c, alpha) });
                 out.push(Prim::Fill { path: pill, color: if dark { rgba(255, 255, 255, 0.12 * alpha) } else { rgba(0, 0, 0, 0.07 * alpha) } });
