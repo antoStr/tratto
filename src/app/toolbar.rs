@@ -355,7 +355,8 @@ pub fn insert_drag(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     if what == Payload::Sticky {
         let color = crate::model::color_or(&ed.prefs.sticky_color, Color32::from_rgb(0xFF, 0xE5, 0x8F));
         let vx = ctx.input(|i| i.pointer.velocity().x);
-        let swing = ui::motion::spring(ctx, Id::new("sticky-swing"), (vx * 0.0006).clamp(-0.22, 0.22), 0.2, 0.7);
+        // Held up, a little askew, swinging with the movement.
+        let swing = ui::motion::spring(ctx, Id::new("sticky-swing"), -0.05 + (vx * 0.0006).clamp(-0.22, 0.22), 0.2, 0.7);
         let size = (220.0 * (0.55 + 0.45 * k.clamp(0.0, 1.0))).min(220.0);
         let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("sticky-ghost")));
         let c = pos2(pos.x, pos.y + size * 0.3);
@@ -906,14 +907,10 @@ enum Cell {
     Connector(Option<crate::model::Route>),
 }
 
-/// The soft shadow of a note held up: a few widening, fainter copies of its outline.
-fn note_shadow(p: &egui::Painter, c: Pos2, s: f32, a: f32) {
-    let (sn, cs) = a.sin_cos();
-    for (grow, alpha) in [(14.0, 10u8), (8.0, 14), (3.0, 20)] {
-        let h = s / 2.0 + grow;
-        let r = |x: f32, y: f32| c + vec2(x * cs - y * sn, x * sn + y * cs);
-        p.add(egui::Shape::convex_polygon(vec![r(-h, -h), r(h, -h), r(h, h), r(-h, h)], Color32::from_black_alpha(alpha), Stroke::NONE));
-    }
+/// The soft shadow of a note held up off the board.
+fn note_shadow(p: &egui::Painter, c: Pos2, s: f32, _a: f32) {
+    let r = Rect::from_center_size(c, vec2(s * 0.94, s * 0.94));
+    p.add(egui::epaint::Shadow { offset: [0, 10], blur: 34, spread: 0, color: Color32::from_black_alpha(60) }.as_shape(r, 6.0));
 }
 
 /// FigJam's pad of sticky notes: a click picks the note tool; dragged, the top note peels off

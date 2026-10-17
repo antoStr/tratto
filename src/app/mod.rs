@@ -738,6 +738,23 @@ mod picture {
             }
             screen.as_mut().unwrap().ui(ui, &mut toasts, &mut dialogs);
         });
+        // TRATTO_PEEL=1: a note torn off the pad, being carried over the board.
+        if std::env::var_os("TRATTO_PEEL").is_some() {
+            harness.run_steps(20);
+            let bar = harness.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("toolbar-rect"))).unwrap();
+            let (a, b) = (egui::pos2(bar.center().x - 80.0, bar.center().y), egui::pos2(bar.center().x + 60.0, bar.min.y - 260.0));
+            harness.event(egui::Event::PointerMoved(a));
+            harness.event(egui::Event::PointerButton { pos: a, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+            harness.run_steps(1);
+            super::toolbar::start_drag(&harness.ctx, super::toolbar::Payload::Sticky, "Nota", "sticky-note");
+            for k in 1..=10 {
+                harness.event(egui::Event::PointerMoved(a + (b - a) * (k as f32 / 10.0)));
+                harness.run_steps(1);
+            }
+            harness.run_steps(8);
+            harness.render().unwrap().save(&path).unwrap();
+            return;
+        }
         // TRATTO_POINTER=x,y: the pointer resting there (hover effects); TRATTO_CLICK too: clicked.
         if let Some((x, y)) = std::env::var("TRATTO_POINTER").ok().and_then(|v| v.split_once(',').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))) {
             harness.run_steps(20);
