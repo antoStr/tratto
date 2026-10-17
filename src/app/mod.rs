@@ -76,7 +76,7 @@ pub fn apply_theme(ctx: &egui::Context, p: &Prefs, applied: &mut Option<(Theme, 
     let dark = match p.theme {
         prefs::Theme::Dark => true,
         prefs::Theme::Light => false,
-        prefs::Theme::System => ctx.input(|i| i.raw.system_theme) == Some(egui::Theme::Dark),
+        prefs::Theme::System => crate::platform::system_dark(ctx),
     };
     let theme = Theme::new(dark, p.accent(), p.high_contrast);
     let key = (theme, p.text_scale);
@@ -147,6 +147,8 @@ impl App {
             println!("T app_new {:.0}", crate::platform::now_ms());
         }
         ui::install_fonts(&cc.egui_ctx);
+        #[cfg(target_os = "linux")]
+        crate::platform::watch_color_scheme(cc.egui_ctx.clone());
         // A new version shows up on the home screen (and in Settings ▸ Updates).
         if std::env::var_os("TRATTO_BENCH").is_none() {
             crate::updates::check(&cc.egui_ctx);
@@ -470,6 +472,75 @@ mod picture {
         assert_eq!(total, Some(90_000.0));
     }
 
+    /// "Modelli" at the top right opens the templates; clicked again, it closes them.
+    #[test]
+    fn the_templates_button_opens_and_closes_them() {
+        use egui_kittest::kittest::Queryable;
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let id = store.create("Prova", None).unwrap();
+        let shared: std::rc::Rc<std::cell::RefCell<Option<board::BoardScreen>>> = Default::default();
+        let inner = shared.clone();
+        let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui(move |ui| {
+            let ctx = ui.ctx().clone();
+            let mut screen = inner.borrow_mut();
+            if screen.is_none() {
+                ui::install_fonts(&ctx);
+                ui::setup(&ctx, Theme::new(false, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), 1.0);
+                *screen = Some(board::BoardScreen::open(&ctx, &store, &id, Prefs { music_volume: 0.0, ..Prefs::default() }, None).unwrap());
+                return;
+            }
+            screen.as_mut().unwrap().ui(ui, &mut toasts, &mut dialogs);
+        });
+        harness.run_steps(5);
+        let shown = |h: &egui_kittest::Harness<'_>| h.ctx.data(|d| d.get_temp::<(bool, bool)>(egui::Id::new("panels-shown"))).is_some_and(|s| s.0);
+        assert!(!shown(&harness));
+        harness.get_by_label("Modelli").click();
+        harness.run_steps(5);
+        assert!(shown(&harness) && shared.borrow().as_ref().unwrap().ui.left_tab == board::LeftTab::Templates);
+        harness.get_by_label("Chiudi i modelli").click();
+        harness.run_steps(5);
+        assert!(!shown(&harness));
+    }
+
+    /// The text tool: a click where the text goes, then the keys write in it straight away.
+    #[test]
+    fn a_text_placed_takes_the_keys_at_once() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let id = store.create("Testo", None).unwrap();
+        let shared: std::rc::Rc<std::cell::RefCell<Option<board::BoardScreen>>> = Default::default();
+        let inner = shared.clone();
+        let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui(move |ui| {
+            let ctx = ui.ctx().clone();
+            let mut screen = inner.borrow_mut();
+            if screen.is_none() {
+                ui::install_fonts(&ctx);
+                ui::setup(&ctx, Theme::new(false, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), 1.0);
+                *screen = Some(board::BoardScreen::open(&ctx, &store, &id, Prefs { music_volume: 0.0, ..Prefs::default() }, None).unwrap());
+                return;
+            }
+            screen.as_mut().unwrap().ui(ui, &mut toasts, &mut dialogs);
+        });
+        harness.run_steps(5);
+        shared.borrow_mut().as_mut().unwrap().editor.set_tool(crate::editor::Tool::Text);
+        let at = egui::pos2(700.0, 420.0);
+        harness.event(egui::Event::PointerMoved(at));
+        harness.run_steps(2);
+        harness.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        harness.run_steps(1);
+        harness.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+        harness.run_steps(3);
+        for c in ["C", "i", "a", "o"] {
+            harness.event(egui::Event::Text(c.into()));
+            harness.run_steps(1);
+        }
+        harness.run_steps(3);
+        let mut b = shared.borrow_mut();
+        let texts: Vec<String> = b.as_mut().unwrap().editor.board.all().iter().filter_map(|e| e.text().map(|t| t.text.clone())).collect();
+        assert_eq!(texts, ["Ciao"]);
+    }
+
     /// Hold E, point at an emoji of the wheel, let go: it floats up from there. With
     /// `TRATTO_SHOT=x.png` the wheel open is saved as a picture.
     #[test]
@@ -692,6 +763,8 @@ mod picture {
                     Ok("arrow") => b.editor.set_tool(crate::editor::Tool::Arrow),
                     Ok("eraser") => b.editor.set_tool(crate::editor::Tool::Eraser),
                     Ok("table") => b.editor.set_tool(crate::editor::Tool::Table),
+                    Ok("pen") => b.editor.set_tool(crate::editor::Tool::Pen),
+                    Ok("lasso") => b.editor.set_tool(crate::editor::Tool::Lasso),
                     _ => {}
                 }
                 // TRATTO_VOTES=1: a vote just ended, with a few votes cast.
@@ -1016,7 +1089,7 @@ mod picture {
     }
 
     /// The timer and music panel, open, while a timer runs and music plays (TRATTO_PAUSED=1 for
-    /// a paused timer): `TRATTO_SHOT=out.png cargo test timer_picture`.
+    /// a paused timer, TRATTO_IDLE=1 for none): `TRATTO_SHOT=out.png cargo test timer_picture`.
     #[test]
     fn timer_picture() {
         let Ok(path) = std::env::var("TRATTO_SHOT") else { return };
@@ -1054,6 +1127,16 @@ mod picture {
         use egui_kittest::kittest::Queryable;
         harness.get_by_label_contains("Timer:").click();
         harness.run_steps(30);
+        // TRATTO_TYPE=34: those digits typed on the time.
+        if let Ok(d) = std::env::var("TRATTO_TYPE") {
+            harness.ctx.memory_mut(|m| m.request_focus(egui::Id::new("timer-field")));
+            harness.run_steps(2);
+            for c in d.chars() {
+                harness.event(egui::Event::Text(c.to_string()));
+                harness.run_steps(1);
+            }
+            harness.run_steps(2);
+        }
         // TRATTO_TRACKS=1: the list of the pieces open.
         if std::env::var_os("TRATTO_TRACKS").is_some() {
             harness.get_by_label_contains("Brano:").click();

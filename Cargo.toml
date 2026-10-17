@@ -89,6 +89,8 @@ axum = { version = "0.8.9", features = ["ws"] }
 dirs = "7.0.0"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 getrandom = "0.4.3"
+# The invitation link as a QR code, for a phone's camera.
+qrcodegen = "1.8.0"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "net", "sync", "time", "macros", "process", "io-util"] }
 webbrowser = "1.2.4"
@@ -104,6 +106,9 @@ web-sys = { version = "0.3.106", features = ["WebSocket", "MessageEvent", "Binar
 # The timer's music: ALSA loaded at run time on Linux (nothing to install to build), cpal elsewhere.
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading = "0.8.9"
+# The desktop's light or dark preference (winit doesn't read it on Linux); already built for
+# eframe's accessibility, only its blocking calls added.
+zbus = { version = "5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
 
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 cpal = "0.18.2"

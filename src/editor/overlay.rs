@@ -238,7 +238,9 @@ impl Editor {
                 }
             }
         }
-        if let Some(Gesture::Create { el, .. }) = &self.gesture {
+        if let Some(Gesture::Create { el, moved, spawn, .. }) = &self.gesture
+            && (*moved || spawn.is_none())
+        {
             let b = frame_box(el);
             let bottom = self.sp(b.x + b.w / 2.0, b.bottom());
             self.label(painter, &mut out, format!("{} × {}", b.w.round(), b.h.round()), bottom.x, bottom.y + 18.0, accent);

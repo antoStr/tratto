@@ -37,3 +37,69 @@ pub fn now_ms() -> f64 {
 pub fn now_ms() -> f64 {
     js_sys::Date::now()
 }
+
+/// Light or dark as a Linux desktop prefers (GNOME, KDE… tell it through their portal, which
+/// winit doesn't read): 0 not known, 1 dark, 2 light.
+#[cfg(target_os = "linux")]
+static SCHEME: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+#[cfg(target_os = "linux")]
+fn scheme(v: &zbus::zvariant::Value) -> u8 {
+    match v {
+        zbus::zvariant::Value::U32(n @ 1..=2) => *n as u8,
+        // The older `Read` wraps it once more.
+        zbus::zvariant::Value::Value(v) => scheme(v),
+        _ => 0,
+    }
+}
+
+/// Reads the desktop's colour scheme and follows it as it changes, waking `ctx` each time.
+#[cfg(target_os = "linux")]
+pub fn watch_color_scheme(ctx: egui::Context) {
+    use zbus::zvariant::{OwnedValue, Value};
+    let set = move |v: &Value| {
+        SCHEME.store(scheme(v), std::sync::atomic::Ordering::Relaxed);
+        ctx.request_repaint();
+    };
+    std::thread::spawn(move || -> zbus::Result<()> {
+        let conn = zbus::blocking::Connection::session()?;
+        let portal = zbus::blocking::Proxy::new(&conn, "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Settings")?;
+        let changes = portal.receive_signal("SettingChanged")?;
+        let key = ("org.freedesktop.appearance", "color-scheme");
+        let now: OwnedValue = portal.call("ReadOne", &key).or_else(|_| portal.call("Read", &key))?;
+        set(&now);
+        for m in changes {
+            if let Ok((ns, name, v)) = m.body().deserialize::<(String, String, OwnedValue)>()
+                && (ns.as_str(), name.as_str()) == key
+            {
+                set(&v);
+            }
+        }
+        Ok(())
+    });
+}
+
+/// Whether the system asks for the dark theme.
+pub fn system_dark(ctx: &egui::Context) -> bool {
+    #[cfg(target_os = "linux")]
+    match SCHEME.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => return true,
+        2 => return false,
+        _ => {}
+    }
+    ctx.input(|i| i.raw.system_theme) == Some(egui::Theme::Dark)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use zbus::zvariant::Value;
+
+    #[test]
+    fn the_desktop_scheme_is_read_plain_or_wrapped() {
+        assert_eq!(super::scheme(&Value::U32(1)), 1);
+        assert_eq!(super::scheme(&Value::Value(Box::new(Value::U32(2)))), 2);
+        // No preference, or something unexpected: not known.
+        assert_eq!(super::scheme(&Value::U32(0)), 0);
+        assert_eq!(super::scheme(&Value::from("dark")), 0);
+    }
+}

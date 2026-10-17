@@ -243,7 +243,8 @@ pub fn layout(el: &El, c: &Code) -> Layout {
 
 pub fn fit(el: &mut El) {
     let Some(c) = el.code() else { return };
-    el.h = layout(el, c).height;
+    let lines = layout(el, c).height;
+    el.h = if c.fixed_height { el.h.max(lines) } else { lines };
 }
 
 pub fn prims(el: &El, c: &Code, alpha: f64, editing: bool, out: &mut Vec<Prim>) {

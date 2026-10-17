@@ -311,7 +311,7 @@ fn settings_section(ui: &mut egui::Ui, tab: SettingsTab, p: &mut Prefs, host: bo
                 ui::segmented(ui, &mut p.toolbar_pos, &[(ToolbarPos::Bottom, "In basso"), (ToolbarPos::Top, "In alto")], 200.0);
             });
             row(ui, "Controlli dello zoom", None, |ui| {
-                ui::segmented(ui, &mut p.zoom_full, &[(false, "− +"), (true, "Con percentuale e minimappa")], 270.0);
+                ui::segmented(ui, &mut p.zoom_full, &[(false, "− +"), (true, "Con percentuale")], 270.0);
             });
             row(ui, "Dimensione della barra", None, |ui| {
                 let mut v = (p.toolbar_size * 100.0).round() as i32;

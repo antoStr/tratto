@@ -46,6 +46,9 @@ pub struct BoardUi {
     pub text_for: Option<String>,
     /// That text as the board last had it: when the board's changes, someone else typed there.
     pub text_seen: String,
+    /// A text box just opened under the pointer: it keeps the keys while the button that made
+    /// it is still down (letting go over the board would take them away).
+    pub text_grab: bool,
     pub scroll_to: Option<String>,
     /// In a narrow window, a panel opened from its pill anyway.
     pub peek_left: bool,
@@ -80,6 +83,7 @@ impl Default for BoardUi {
             text: String::new(),
             text_for: None,
             text_seen: String::new(),
+            text_grab: false,
             scroll_to: None,
             peek_left: false,
             peek_right: false,
@@ -812,6 +816,7 @@ impl BoardScreen {
             self.ui.text_seen = written;
             ed.board.stop_capturing();
             ctx.memory_mut(|m| m.request_focus(Id::new("board-text")));
+            self.ui.text_grab = true;
         } else if written != self.ui.text_seen {
             // Someone else typed here meanwhile (both started at once): their text, with the
             // cursor kept by the same letters.
@@ -973,6 +978,10 @@ impl BoardScreen {
                 finish = true;
             }
         });
+        if self.ui.text_grab {
+            ctx.memory_mut(|m| m.request_focus(Id::new("board-text")));
+            self.ui.text_grab = ctx.input(|i| i.pointer.any_down());
+        }
         if changed {
             let text = self.ui.text.clone();
             self.editor.set_text(&id, text);

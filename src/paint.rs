@@ -1103,11 +1103,11 @@ pub mod picture {
         }
         t.cells[2][2].fill = Some("#C9F2C7".into());
         add(20.0, 20.0, 0.0, Kind::Table(t));
-        add(20.0, 250.0, 460.0, Kind::Code(Code { code: "// Somma dei primi n numeri\nfn somma(n: u64) -> u64 {\n    (1..=n).sum() // 1 + 2 + … + n\n}\n\nlet totale = somma(10);\nprintln!(\"{totale}\");".into(), language: "rust".into(), light: false, font_size: 14.0, radius: None }));
+        add(20.0, 250.0, 460.0, Kind::Code(Code { code: "// Somma dei primi n numeri\nfn somma(n: u64) -> u64 {\n    (1..=n).sum() // 1 + 2 + … + n\n}\n\nlet totale = somma(10);\nprintln!(\"{totale}\");".into(), language: "rust".into(), light: false, font_size: 14.0, radius: None, fixed_height: false }));
         add(520.0, 20.0, 300.0, Kind::Widget(Widget::Poll { question: "Dove andiamo a pranzo?".into(), options: vec![PollOption { text: "Pizzeria".into(), votes: vec!["a".into(), "b".into()] }, PollOption { text: "Sushi".into(), votes: vec!["c".into()] }, PollOption { text: "Insalate".into(), votes: vec![] }] }));
         add(520.0, 330.0, 300.0, Kind::Widget(Widget::Checklist { title: "Prima della riunione".into(), items: vec![CheckItem { text: "Preparare le slide".into(), done: true }, CheckItem { text: "Prenotare la sala".into(), done: false }, CheckItem { text: String::new(), done: false }] }));
         add(860.0, 20.0, 220.0, Kind::Widget(Widget::Counter { label: "Idee raccolte".into(), value: 12 }));
-        add(860.0, 260.0, 300.0, Kind::Code(Code { code: "SELECT nome, COUNT(*)\nFROM idee\nWHERE voti > 3 -- le migliori\nGROUP BY nome;".into(), language: "sql".into(), light: true, font_size: 13.0, radius: None }));
+        add(860.0, 260.0, 300.0, Kind::Code(Code { code: "SELECT nome, COUNT(*)\nFROM idee\nWHERE voti > 3 -- le migliori\nGROUP BY nome;".into(), language: "sql".into(), light: true, font_size: 13.0, radius: None, fixed_height: false }));
         for (i, k) in [ShapeKind::Pill, ShapeKind::Process, ShapeKind::Document, ShapeKind::Cylinder, ShapeKind::Speech, ShapeKind::Chevron, ShapeKind::Trapezoid].into_iter().enumerate() {
             let shape = Shape { shape: k, fill: "#E3F1FF".into(), stroke: "#1971C2".into(), stroke_width: 2.0, text: Some(["Inizio", "Calcolo", "Report", "Dati", "Ciao!", "Fase", "Filtro"][i].into()), ..Default::default() };
             let mut el = El::new(Kind::Shape(shape));
@@ -1127,6 +1127,22 @@ pub mod picture {
             let mut el = El::new(Kind::Line(line));
             (el.x, el.y, el.w, el.h) = (860.0, y, 300.0, 40.0);
             els.push(Arc::new(el));
+        }
+        // TRATTO_BIG=1: the counter grown whole from a corner, the SQL block made taller.
+        if std::env::var_os("TRATTO_BIG").is_some() {
+            for el in els.iter_mut() {
+                let mut e = (**el).clone();
+                if e.widget().is_some_and(|w| matches!(w, Widget::Counter { .. })) {
+                    (e.scale, e.w, e.h) = (1.4, e.w * 1.4, e.h * 1.4);
+                } else if let Kind::Code(c) = &mut e.kind
+                    && c.light
+                {
+                    c.fixed_height = true;
+                    e.h += 120.0;
+                    e.y += 60.0;
+                }
+                *el = Arc::new(e);
+            }
         }
         let meta = BoardMeta::default();
         let mut painter = Painter::new(Images::new(None));

@@ -558,8 +558,9 @@ impl Editor {
             Tool::Sticky => return self.start_sticky(p),
             Tool::Table => return self.insert_table(Some(p)),
             Tool::Stamp => {
-                // Clicking an existing element picks it up instead of stacking another stamp on it.
-                if let Some(hit) = self.hit_element(p, 6.0) {
+                // Clicking a stamp picks it up instead of stacking another one on it; on anything
+                // else (a drawing, a sticky, a picture) the stamp goes on top.
+                if let Some(hit) = self.hit_element(p, 6.0).filter(|e| matches!(e.kind, Kind::Stamp { .. })) {
                     self.selection = vec![hit.id.clone()];
                     if !ro {
                         self.start_move(p, s, m.alt);

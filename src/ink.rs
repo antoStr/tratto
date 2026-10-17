@@ -54,19 +54,40 @@ pub fn stroke_path(pts: &[f32], size: f64, highlighter: bool) -> Path {
             (dab[i], dab[i + 1]) = (true, true);
             continue;
         }
-        bands.push((w[0], w[1], d, s));
+        bands.push((i, d, s));
     }
     for (&[x, y, r], _) in c.iter().zip(&dab).filter(|(_, d)| **d) {
         circle(&mut path, x, y, r);
     }
-    for ([x0, y0, r0], [x1, y1, r1], d, s) in bands {
+    let left = |i: usize| {
+        let (dx, dy) = (c[i + 1][0] - c[i][0], c[i + 1][1] - c[i][1]);
+        let d = dx.hypot(dy);
+        (-dy / d, dx / d)
+    };
+    // A point without a dab: the bands either side end on the same cross-section, along the
+    // bisector (each square to its own way, they left a thin wedge open outside the turn).
+    let shared = |i: usize| {
+        let ((ax, ay), (bx, by)) = (left(i - 1), left(i));
+        let (mx, my) = (ax + bx, ay + by);
+        let k = c[i][2] / (mx * ax + my * ay);
+        [c[i][0] - mx * k, c[i][1] - my * k, c[i][0] + mx * k, c[i][1] + my * k]
+    };
+    for (i, d, s) in bands {
         // The two lines touching both dabs, and the band between them (turning the same way
         // as the dabs, or the union would have holes).
+        let ([x0, y0, r0], [x1, y1, r1]) = (c[i], c[i + 1]);
         let (ux, uy) = ((x1 - x0) / d, (y1 - y0) / d);
         let k = (1.0 - s * s).sqrt();
         let (ax, ay) = (-uy * k + ux * s, ux * k + uy * s);
         let (bx, by) = (uy * k + ux * s, -ux * k + uy * s);
-        path.add_polygon(&[x0 + r0 * bx, y0 + r0 * by, x1 + r1 * bx, y1 + r1 * by, x1 + r1 * ax, y1 + r1 * ay, x0 + r0 * ax, y0 + r0 * ay]);
+        let mut ends = [[x0 + r0 * bx, y0 + r0 * by, x0 + r0 * ax, y0 + r0 * ay], [x1 + r1 * bx, y1 + r1 * by, x1 + r1 * ax, y1 + r1 * ay]];
+        for (e, j) in ends.iter_mut().zip([i, i + 1]) {
+            if !dab[j] {
+                *e = shared(j);
+            }
+        }
+        let [a, b] = ends;
+        path.add_polygon(&[a[0], a[1], b[0], b[1], b[2], b[3], a[2], a[3]]);
     }
     path
 }
@@ -695,6 +716,28 @@ mod tests {
             y += 5.0;
         }
         assert_eq!((holes, hairs), (0, 0));
+    }
+
+    #[test]
+    fn a_gentle_curve_has_no_cracks_along_its_edge() {
+        // A wide mouse arc turning too little at each point for a dab: the bands either side of
+        // a point used to leave a thin wedge open on the outer edge, showing the board.
+        let big = 3000.0;
+        let pts: Vec<f32> = (0..=60).flat_map(|i| {
+            let a = -0.6 + i as f64 * 0.02;
+            [(big * a.sin()) as f32, (big - big * a.cos()) as f32, -1.0]
+        }).collect();
+        let mesh = crate::paint::fill_mesh(&stroke_path(&pts, 300.0, false), egui::Color32::WHITE);
+        let inside = |x: f64, y: f64| {
+            mesh.indices.chunks_exact(3).any(|t| {
+                let [a, b, c] = [t[0], t[1], t[2]].map(|i| mesh.vertices[i as usize].pos);
+                let s = |p: egui::Pos2, q: egui::Pos2| (q.x - p.x) as f64 * (y - p.y as f64) - (q.y - p.y) as f64 * (x - p.x as f64);
+                let (d1, d2, d3) = (s(a, b), s(b, c), s(c, a));
+                !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0))
+            })
+        };
+        let cracks = (0..4000).map(|k| -0.5 + k as f64 * 0.00025).filter(|a| !inside((big + 130.0) * a.sin(), big - (big + 130.0) * a.cos())).count();
+        assert_eq!(cracks, 0);
     }
 
     #[test]

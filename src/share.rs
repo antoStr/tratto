@@ -946,6 +946,34 @@ use crate::app::board::BoardScreen;
 use crate::ui::{self, Kind as Btn};
 use egui::RichText;
 
+/// A QR code, black on white whatever the theme (what cameras read), with its quiet margin; each
+/// row's dark runs drawn whole on the pixel grid, so no hairlines show between the squares.
+fn qr_code(ui: &mut egui::Ui, qr: &qrcodegen::QrCode, side: f32) {
+    let n = qr.size();
+    let ppp = ui.ctx().pixels_per_point();
+    let cell = ((side * ppp) / (n + 8) as f32).floor().max(1.0) / ppp;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(cell * (n + 8) as f32, cell * (n + 8) as f32), egui::Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 6.0, egui::Color32::WHITE);
+    let o = egui::emath::GuiRounding::round_to_pixels(rect.min + egui::vec2(cell * 4.0, cell * 4.0), ppp);
+    for y in 0..n {
+        let mut x = 0;
+        while x < n {
+            if !qr.get_module(x, y) {
+                x += 1;
+                continue;
+            }
+            let start = x;
+            while x < n && qr.get_module(x, y) {
+                x += 1;
+            }
+            let r = egui::Rect::from_min_max(o + egui::vec2(start as f32 * cell, y as f32 * cell), o + egui::vec2(x as f32 * cell, (y + 1) as f32 * cell));
+            p.rect_filled(r, 0.0, egui::Color32::BLACK);
+        }
+    }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, "QR code del link di invito"));
+}
+
 fn secure_note(ui: &mut egui::Ui) {
     ui::hint(ui, "Connessione cifrata: il tuo indirizzo IP resta nascosto.");
 }
@@ -1005,6 +1033,10 @@ pub fn dialog(ui: &mut egui::Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
                     let mut shown = url.clone();
                     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), ui::ctl(34.0)), egui::Layout::left_to_right(egui::Align::Center), |ui| ui::text_field(ui, &mut shown, "", 400));
                 });
+                if let Ok(qr) = qrcodegen::QrCode::encode_text(&url, qrcodegen::QrCodeEcc::Medium) {
+                    ui::field_label(ui, "Inquadra col telefono");
+                    qr_code(ui, &qr, 148.0);
+                }
                 ui::field_label(ui, "Chi ha il link");
                 let mut a = v.access;
                 if ui::segmented(ui, &mut a, &[(Access::Edit, "Può modificare"), (Access::View, "Può solo guardare")], ui.available_width()) {

@@ -16,7 +16,7 @@ Per **entrare** in una lavagna condivisa non serve installare niente, su nessun 
 **Condividere una lavagna.**
 1. Apri la lavagna e premi **Condividi**.
 2. Scegli se chi ha il link *può modificare* o *può solo guardare*, poi **Crea link di invito**. In pochi secondi arriva un link come `https://parole-a-caso.trycloudflare.com/#codice`.
-3. Mandalo a chi vuoi (fino a 30 persone insieme). Chi lo apre scrive il proprio nome e **chiede di entrare**: decidi tu con *Fai entrare* o *Rifiuta*. Puoi saltare questo passaggio con *Fai entrare senza chiedermelo*.
+3. Mandalo a chi vuoi (fino a 30 persone insieme); dal telefono basta inquadrare il QR code sotto il link. Chi lo apre scrive il proprio nome e **chiede di entrare**: decidi tu con *Fai entrare* o *Rifiuta*. Puoi saltare questo passaggio con *Fai entrare senza chiedermelo*.
 4. **Rimuovi** toglie l'accesso a una persona. **Nuovo link** invalida quello vecchio. **Termina condivisione** (o chiudere Tratto) spegne tutto: il link smette di funzionare.
 
 Il collegamento passa da un tunnel cifrato di Cloudflare. Il PC si collega solo in uscita: nessuna porta aperta sul router e il tuo indirizzo IP non è visibile agli ospiti. Gli ospiti non vedono nemmeno gli indirizzi l'uno dell'altro.
@@ -27,7 +27,7 @@ Il collegamento passa da un tunnel cifrato di Cloudflare. Il PC si collega solo 
 
 **Modalità zen** (il pulsante *Zen* in alto a destra, `Alt+Z` o `Ctrl+Maiusc+\`): tutto schermo, solo la lavagna; la barra degli strumenti compare avvicinandosi al bordo e si fa da parte mentre disegni; `Esc` per uscire.
 
-**Timer, musica e votazione** (il disco e il tempo accanto a *Condividi*): il tempo si scrive sul display come su un microonde (solo cifre, da destra: `130` è 1:30, fino a 99 ore) e parte con Invio o col pulsante tondo per tutti; *+1 min*, pausa e stop; a 00:00 il tempo trema e suona un campanello. Il giradischi suona per tutti, allo stesso punto, uno dei sei brani di FigJam (Acoustic ambient, Lo-fi hip hop, Button smash, It's Friday, Synthwave, Hero's journey), composti e generati da Tratto stesso, senza file né diritti; il volume è di ognuno. *Nuova votazione* fa votare note, forme e immagini; alla fine un pannello a destra mostra la classifica (chi ospita o ha avviato la votazione la rifà o la toglie per tutti).
+**Timer, musica e votazione** (il disco e il tempo accanto a *Condividi*): il tempo si sceglie con − e + o tra le durate pronte (1, 3, 5, 10 minuti), oppure si scrive come su un microonde (solo cifre, da destra: `130` è 1:30, fino a 99 ore), e parte con Invio o col pulsante tondo per tutti; *+1 min*, pausa e stop; a 00:00 il tempo trema e suona un campanello. Il giradischi suona per tutti, allo stesso punto, uno dei sei brani di FigJam (Acoustic ambient, Lo-fi hip hop, Button smash, It's Friday, Synthwave, Hero's journey), composti e generati da Tratto stesso, senza file né diritti; il volume è di ognuno. *Nuova votazione* fa votare note, forme e immagini; alla fine un pannello a destra mostra la classifica (chi ospita o ha avviato la votazione la rifà o la toglie per tutti).
 
 **Emote**: tieni premuto `E` (un tocco breve resta la gomma) e scegli un'emoji dalla ruota (tenendo premuto il clic ne parte una raffica), o dal menu accanto agli avatar: vola dal cursore e la vedono tutti. Le opzioni dello strumento sopra la barra si chiudono con la freccia, o cliccando di nuovo lo strumento, che resta in uso.
 

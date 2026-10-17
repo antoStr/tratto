@@ -385,7 +385,7 @@ fn shadow_prims(el: &El, sh: crate::model::Shade, alpha: f64, out: &mut Vec<Prim
     };
     if rect_like {
         let r = match &el.kind {
-            Kind::Widget(_) => 16.0,
+            Kind::Widget(_) => 16.0 * el.scale as f32,
             Kind::Image { .. } => 0.0,
             _ => crate::style::radius(el).unwrap_or(0.0) as f32,
         }

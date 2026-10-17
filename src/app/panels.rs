@@ -678,7 +678,6 @@ pub fn right(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
                 share_button(ui, b);
                 ui.add_space(4.0);
                 super::live::timer_button(ui, &mut b.editor);
-                super::live::emote_button(ui, &mut b.editor);
             });
         });
     });
@@ -1691,10 +1690,25 @@ pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
                 }
                 people_menu(ui, &mut b.editor);
                 ui.spacing_mut().item_spacing.x = 4.0;
-                if !is_mobile && !b.editor.read_only && small_icon_button(ui, "layout-template", "Modelli", false).clicked() {
-                    b.editor.prefs.left_panel = true;
-                    b.editor.prefs.focus = false;
-                    b.editor.requests.push(crate::editor::Request::Templates);
+                if !is_mobile && !b.editor.read_only {
+                    // Clicked again, the templates go away: back to the layers if the panel was
+                    // already open, the panel closed if it wasn't.
+                    let shown = ctx.data(|d| d.get_temp::<(bool, bool)>(Id::new("panels-shown"))).is_some_and(|s| s.0);
+                    let open = shown && b.ui.left_tab == LeftTab::Templates;
+                    let back = Id::new("templates-back");
+                    if small_icon_button(ui, "layout-template", if open { "Chiudi i modelli" } else { "Modelli" }, open).clicked() {
+                        if !open {
+                            ctx.data_mut(|d| d.insert_temp(back, shown));
+                            b.editor.prefs.left_panel = true;
+                            b.editor.prefs.focus = false;
+                            b.editor.requests.push(crate::editor::Request::Templates);
+                        } else if ctx.data(|d| d.get_temp::<bool>(back)).unwrap_or(false) {
+                            b.ui.left_tab = LeftTab::Layers;
+                        } else {
+                            b.editor.prefs.left_panel = false;
+                            b.ui.peek_left = false;
+                        }
+                    }
                 }
                 super::live::timer_button(ui, &mut b.editor);
                 share_button(ui, b);

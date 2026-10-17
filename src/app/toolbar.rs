@@ -514,7 +514,7 @@ fn tape_roll(p: &egui::Painter, x: f32, top: f32, c: Color32, t: &Theme, k: f32)
 
 /// Tools with options in a tray over the toolbar.
 fn has_tray(tool: Tool) -> bool {
-    matches!(tool, Tool::Pen | Tool::Highlighter | Tool::Tape | Tool::Eraser | Tool::Shape | Tool::Line | Tool::Arrow | Tool::Text | Tool::Sticky | Tool::Stamp | Tool::Table | Tool::Laser)
+    matches!(tool, Tool::Pen | Tool::Highlighter | Tool::Tape | Tool::Eraser | Tool::Lasso | Tool::Shape | Tool::Line | Tool::Arrow | Tool::Text | Tool::Sticky | Tool::Stamp | Tool::Table | Tool::Laser)
 }
 
 /// How a tool's button looks, as (tinted, solid): solid while the tool is in hand with its
@@ -630,6 +630,12 @@ fn toolbar_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme, id: &
         }
         "more" => more_tools(ui, ed, t, top),
         "laser" => laser_button(ui, ed),
+        "minimap" => {
+            let on = ed.prefs.minimap;
+            if icon_button(ui, "map", if on { "Nascondi la minimappa" } else { "Mostra la minimappa" }, None, vec2(btn(), btn()), icon_px(), on, false).clicked() {
+                ed.prefs.minimap = !on;
+            }
+        }
         _ => {}
     }
 }
@@ -637,9 +643,7 @@ fn toolbar_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme, id: &
 /// Width a toolbar button takes (with the gap after it).
 fn item_width(id: &str, ed: &Editor) -> f32 {
     match id {
-        "pen" | "highlighter" | "tape" => slot_w() + 2.0,
-        "draw" if is_drawing(ed.tool) => drawer_open_width() + 2.0,
-        "draw" => slot_w() + 2.0,
+        "pen" | "highlighter" | "tape" | "draw" => slot_w() + 2.0,
         "sticky" => stack_w() + 2.0,
         "shape" if !ed.prefs.toolbar_hidden.iter().any(|h| h == "draw") => combo_w() + 2.0,
         "shape" => btn() + 14.0 + 4.0,
@@ -665,45 +669,21 @@ fn is_drawing(tool: Tool) -> bool {
     matches!(tool, Tool::Pen | Tool::Highlighter | Tool::Tape | Tool::Eraser | Tool::Lasso)
 }
 
-/// The drawer open: three markers, then eraser, lasso and ruler.
-fn drawer_open_width() -> f32 {
-    3.0 * (slot_w() + 2.0) + 3.0 * (btn() + 2.0)
-}
+/// The drawing tools, side by side in their options.
+const DRAWING: [(Tool, &str, &str, &str); 5] = [
+    (Tool::Pen, "pen", "Penna", "P"),
+    (Tool::Highlighter, "highlighter", "Evidenziatore", "M"),
+    (Tool::Tape, "rectangle-horizontal", "Nastro adesivo", "W"),
+    (Tool::Eraser, "eraser", "Gomma", "E"),
+    (Tool::Lasso, "lasso", "Lazo", "Q"),
+];
 
-/// FigJam's pens: one marker waits in the toolbar; with a drawing tool in hand the drawer slides
-/// open on the pens, the washi tape, the eraser, the lasso and the ruler.
+/// FigJam's pens: one marker in the toolbar, the one in hand (the pen while another tool is).
+/// The toolbar keeps the buttons it was given: the other drawing tools are in the options.
 fn draw_drawer(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
-    let open = is_drawing(ed.tool);
-    let k = ui::motion::spring(ui.ctx(), Id::new("draw-drawer"), if open { 1.0 } else { 0.0 }, 0.3, 0.92).clamp(0.0, 1.0);
-    let closed = slot_w();
-    let w = closed + (drawer_open_width() - 2.0 - closed) * k;
-    let (rect, _) = ui.allocate_exact_size(vec2(w, btn()), Sense::hover());
-    // Room above for the markers standing up; the sides cut the drawer as it slides.
-    let clip = Rect::from_min_max(pos2(rect.min.x, rect.min.y - 12.0), pos2(rect.max.x, rect.max.y + 6.0)).intersect(ui.clip_rect());
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-    child.set_clip_rect(clip);
-    child.spacing_mut().item_spacing = vec2(2.0, 0.0);
-    if k < 0.02 {
-        if drawer_slot(&mut child, ed, t, Tool::Pen).clicked() {
-            pick(ed, Tool::Pen);
-        }
-        return;
-    }
-    for tool in [Tool::Pen, Tool::Highlighter, Tool::Tape] {
-        if drawer_slot(&mut child, ed, t, tool).clicked() {
-            pick(ed, tool);
-        }
-    }
-    child.multiply_opacity(k);
-    for (tool, name, label, kbd) in [(Tool::Eraser, "eraser", "Gomma", "E"), (Tool::Lasso, "lasso", "Lazo", "Q")] {
-        let (tint, solid) = tool_look(ed, tool);
-        if icon_button(&mut child, name, label, Some(kbd), vec2(btn(), btn()), icon_px(), tint, solid).clicked() {
-            pick(ed, tool);
-        }
-    }
-    let on = ed.ruler.visible;
-    if icon_button(&mut child, "ruler", if on { "Nascondi righello" } else { "Mostra righello" }, Some("U"), vec2(btn(), btn()), icon_px(), on, false).clicked() {
-        ed.toggle_ruler();
+    let tool = if matches!(ed.tool, Tool::Highlighter | Tool::Tape) { ed.tool } else { Tool::Pen };
+    if drawer_slot(ui, ed, t, tool).clicked() {
+        pick(ed, tool);
     }
 }
 
@@ -1022,6 +1002,12 @@ fn overflow_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, id: &str) {
                 st.chat = Some(String::new());
             }
         }
+        ("minimap", _) => {
+            let on = ed.prefs.minimap;
+            if ui::menu_item(ui, Some(if on { "check" } else { icon_name }), name, None, false).clicked() {
+                ed.prefs.minimap = !on;
+            }
+        }
         _ => {
             // The "+": its additions one by one.
             for (what, label, ic) in [(Payload::Code, "Blocco di codice", "code"), (Payload::Poll, "Sondaggio", "chart-column"), (Payload::Checklist, "Lista di cose da fare", "list-checks"), (Payload::Counter, "Contatore", "hash")] {
@@ -1064,6 +1050,7 @@ pub fn toolbar_icon(id: &str) -> &'static str {
         "comment" => "message-circle",
         "chat" => "message-square-text",
         "more" => "plus",
+        "minimap" => "map",
         _ => "locate-fixed",
     }
 }
@@ -1077,7 +1064,9 @@ pub fn toolbar(ctx: &egui::Context, stage: Rect, ed: &mut Editor, st: &mut Board
     let items: Vec<String> = crate::prefs::toolbar_items(&ed.prefs.toolbar_order)
         .into_iter()
         .filter(|id| !ed.prefs.toolbar_hidden.contains(id))
-        .filter(|id| !ed.read_only || matches!(id.as_str(), "select" | "hand" | "laser" | "chat"))
+        .filter(|id| !ed.read_only || matches!(id.as_str(), "select" | "hand" | "laser" | "chat" | "minimap"))
+        // A phone has no minimap.
+        .filter(|id| id != "minimap" || stage.width() >= 600.0)
         .collect();
     let group = |id: &str| crate::prefs::TOOLBAR_ITEMS.iter().find(|i| i.0 == id).map_or(0, |i| i.2);
     // A narrow window: the buttons from the end that don't fit go into a "…" menu (the one in
@@ -1124,7 +1113,7 @@ pub fn toolbar(ctx: &egui::Context, stage: Rect, ed: &mut Editor, st: &mut Board
     let away = (1.0 - dock) * 90.0 * if top { -1.0 } else { 1.0 };
     let resp = egui::Area::new(Id::new("toolbar")).anchor(anchor, [cx, dy + away + if top { stage.min.y } else { stage.max.y - ctx.content_rect().max.y }]).interactable(dock > 0.5).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.multiply_opacity(dock);
-        // FigJam's toolbar: a big friendly card with the markers waiting in a drawer.
+        // FigJam's toolbar: a big friendly card.
         let [contact, soft] = ui::card_shadows(&t);
         let under = ui.painter().add(egui::Shape::Noop);
         let card = egui::Frame::new().fill(t.bg).stroke(Stroke::new(1.0, t.border)).corner_radius(16).shadow(soft).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
@@ -1242,6 +1231,22 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
             {
                 ui::wrap_row(ui, h, |ui| {
                 ui.spacing_mut().item_spacing = vec2(6.0, if narrow { 4.0 } else { 0.0 });
+                if is_drawing(tool) {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    for (k, name, label, kbd) in DRAWING {
+                        if icon_button(ui, name, label, Some(kbd), vec2(30.0, 30.0), 16.0, false, tool == k).clicked() {
+                            want = Some(k);
+                        }
+                    }
+                    let on = ed.ruler.visible;
+                    if icon_button(ui, "ruler", if on { "Nascondi righello" } else { "Mostra righello" }, Some("U"), vec2(30.0, 30.0), 16.0, on, false).clicked() {
+                        ed.toggle_ruler();
+                    }
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    if tool != Tool::Lasso {
+                        sep_h(ui, t, h);
+                    }
+                }
                 let p = &mut ed.prefs;
                 match tool {
                     Tool::Pen => {

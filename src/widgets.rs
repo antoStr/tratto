@@ -53,8 +53,15 @@ pub fn kind_name(w: &Widget) -> &'static str {
     }
 }
 
+/// How many times as big as at first (see `El::scale`).
+fn scale(el: &El) -> f64 {
+    el.scale.clamp(0.05, 50.0)
+}
+
+/// Where everything goes, in the widget's own units: as at first, `scale` times smaller than on
+/// the board.
 pub fn layout(el: &El, w: &Widget) -> Layout {
-    let width = el.w.max(160.0);
+    let width = (el.w / scale(el)).max(160.0);
     let face = text::font(FontKind::Sans, true, false).face;
     let title_top = PAD + KICKER * LINE_HEIGHT + 4.0;
     let title_lines = layout_text(title_of(w), face, TITLE, Some(width - PAD * 2.0)).lines;
@@ -87,17 +94,35 @@ pub fn layout(el: &El, w: &Widget) -> Layout {
 }
 
 pub fn fit(el: &mut El) {
-    if el.w < 160.0 {
-        el.w = WIDGET_W;
+    let k = scale(el);
+    if el.w < 160.0 * k {
+        el.w = WIDGET_W * k;
     }
     let Some(w) = el.widget() else { return };
-    el.h = layout(el, w).height;
+    el.h = layout(el, w).height * k;
 }
 
-/// The clickable part under a point in the widget's own coordinates.
+/// The clickable part under a point in the element's coordinates.
 pub fn hot_at(el: &El, x: f64, y: f64) -> Option<Hot> {
     let w = el.widget()?;
+    let (x, y) = (x / scale(el), y / scale(el));
     layout(el, w).parts.into_iter().find(|p| x >= p.x && y >= p.y && x <= p.x + p.w && y <= p.y + p.h).map(|p| p.hot)
+}
+
+/// A primitive drawn in the widget's own units, `k` times as big.
+fn scaled(p: Prim, k: f32) -> Prim {
+    match p {
+        Prim::Fill { path, color } => Prim::Fill { path: path.mapped(|x, y| (x * k, y * k)), color },
+        Prim::Stroke { path, width, color, round, dash } => Prim::Stroke { path: path.mapped(|x, y| (x * k, y * k)), width: width * k, color, round, dash: dash.map(|d| d.map(|v| v * k)) },
+        Prim::Text { mut placed, color } => {
+            placed.k *= k;
+            for g in &mut placed.glyphs {
+                (g.1, g.2) = (g.1 * k, g.2 * k);
+            }
+            Prim::Text { placed, color }
+        }
+        other => other,
+    }
 }
 
 /// Applies a click; `voter` is this device. Returns false when nothing changed.
@@ -187,6 +212,14 @@ fn partial(pts: &[(f32, f32)], k: f32) -> Path {
 /// `before`: the widget as it was before its last change and how far (0 to 1) the change has
 /// played, so ticks, bars and counts move into their new state instead of jumping.
 pub fn prims(el: &El, w: &Widget, alpha: f64, before: Option<(&Widget, f32)>, out: &mut Vec<Prim>) {
+    let k = scale(el);
+    if k != 1.0 {
+        // Drawn as at first, then made as big as it is.
+        let mut own = Vec::new();
+        prims(&El { w: el.w / k, h: el.h / k, scale: 1.0, ..el.clone() }, w, alpha, before, &mut own);
+        out.extend(own.into_iter().map(|p| scaled(p, k as f32)));
+        return;
+    }
     let (ew, eh) = (el.w as f32, el.h as f32);
     let l = layout(el, w);
     out.push(Prim::Fill { path: Path::round_rect(0.0, 0.0, ew, eh, [16.0; 4]), color: with_alpha(Color32::WHITE, alpha) });

@@ -397,6 +397,10 @@ pub struct Code {
     /// Corner radius (None: a little under the text size).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub radius: Option<f64>,
+    /// Made taller by hand: at least that tall, even with fewer lines (otherwise as tall as
+    /// its lines).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fixed_height: bool,
 }
 
 fn code_font_size() -> f64 {
@@ -480,6 +484,9 @@ pub struct El {
     /// Its shadow, when chosen; None leaves the usual one (notes, code and widgets have one).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow: Option<Shade>,
+    /// A widget grown whole from a corner: its letters and buttons this many times as big.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub scale: f64,
     #[serde(flatten)]
     pub kind: Kind,
 }
@@ -498,9 +505,13 @@ fn one() -> f64 {
     1.0
 }
 
+fn is_one(v: &f64) -> bool {
+    *v == 1.0
+}
+
 impl El {
     pub fn new(kind: Kind) -> Self {
-        El { id: uid(), x: 0.0, y: 0.0, w: 0.0, h: 0.0, rotation: 0.0, z: 0.0, opacity: 1.0, locked: false, hidden: false, name: None, group_id: None, erase: Vec::new(), shadow: None, kind }
+        El { id: uid(), x: 0.0, y: 0.0, w: 0.0, h: 0.0, rotation: 0.0, z: 0.0, opacity: 1.0, locked: false, hidden: false, name: None, group_id: None, erase: Vec::new(), shadow: None, scale: 1.0, kind }
     }
 
     pub fn type_name(&self) -> &'static str {
@@ -620,7 +631,7 @@ impl El {
         if ![self.x, self.y].into_iter().all(far) || !self.z.is_finite() || ![self.w, self.h, self.rotation, self.opacity].into_iter().all(num) || self.w < 0.0 || self.h < 0.0 {
             return false;
         }
-        if self.shadow.is_some_and(|s| ![s.opacity, s.blur, s.y].into_iter().all(num)) {
+        if self.shadow.is_some_and(|s| ![s.opacity, s.blur, s.y].into_iter().all(num)) || !(0.05..=50.0).contains(&self.scale) {
             return false;
         }
         if self.erase.len() > 4000 || !self.erase.iter().all(|m| m.p.len() >= 2 && m.p.len() <= 20_000 && num(m.s) && num(m.a) && m.p.iter().all(|v| num(*v as f64))) {

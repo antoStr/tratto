@@ -463,6 +463,9 @@ pub fn segmented<T: PartialEq + Clone>(ui: &mut Ui, value: &mut T, options: &[(T
     let t = theme(ui.ctx());
     let s = sizes(ui.ctx());
     let ctx = ui.ctx().clone();
+    // Each part as wide as the longest label, if there is room: a label cut off reads as nothing.
+    let longest = options.iter().filter(|o| !o.1.starts_with("icon:")).map(|o| ui.painter().layout_no_wrap(o.1.to_string(), medium(s.fs), t.text).size().x).fold(0.0, f32::max);
+    let width = width.max(options.len() as f32 * (longest + 16.0) + 2.0);
     // Never wider than the room there is; on a phone as wide as it.
     let width = if narrow(&ctx) { ui.available_width().max(120.0) } else { width.min(ui.available_width().max(120.0)) };
     let h = if narrow(&ctx) { ctl(32.0) } else { ctl(24.0) };

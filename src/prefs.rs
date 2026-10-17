@@ -211,7 +211,7 @@ pub struct ToolbarProfile {
 
 /// Every button the toolbar can have: id, name, and the group it sits with (a thin line
 /// separates groups).
-pub const TOOLBAR_ITEMS: [(&str, &str, u8); 21] = [
+pub const TOOLBAR_ITEMS: [(&str, &str, u8); 22] = [
     ("select", "Seleziona", 0),
     ("hand", "Mano", 0),
     ("draw", "Penne e gomma", 1),
@@ -232,6 +232,7 @@ pub const TOOLBAR_ITEMS: [(&str, &str, u8); 21] = [
     ("comment", "Commento", 2),
     ("chat", "Chat del cursore", 2),
     ("laser", "Puntatore laser", 2),
+    ("minimap", "Minimappa", 3),
     ("more", "Altri strumenti", 3),
 ];
 
@@ -271,8 +272,8 @@ pub const DEFAULT_ACCENT: &str = "#9747FF";
 
 /// The current default layout. 2: side panels and minimap closed (before, both panels and the
 /// minimap were open, which made the board feel crowded). 3: FigJam's violet in place of the
-/// old default blue.
-const LAYOUT: u32 = 3;
+/// old default blue. 4: the minimap shown again (it has its own button in the toolbar).
+const LAYOUT: u32 = 4;
 
 impl Default for Prefs {
     fn default() -> Self {
@@ -300,10 +301,10 @@ impl Default for Prefs {
             accent: DEFAULT_ACCENT.into(),
             toolbar_pos: ToolbarPos::Bottom,
             // FigJam's layout: the board, the toolbar and the dark bar over the selection; the
-            // side panels and the minimap open from their buttons.
+            // side panels open from their buttons. The minimap shows (its button hides it).
             left_panel: false,
             right_panel: false,
-            minimap: false,
+            minimap: true,
             focus: false,
             text_scale: 1.0,
             new_board: BoardMeta::default(),
@@ -385,6 +386,9 @@ impl Prefs {
             p.toolbar_order = toolbar_default();
             p.toolbar_hidden = toolbar_hidden_default();
         }
+        if p.layout < 4 {
+            p.minimap = true;
+        }
         p.layout = LAYOUT;
         p
     }
@@ -431,8 +435,10 @@ mod tests {
 
     #[test]
     fn older_preferences_move_once_to_the_clean_layout() {
-        let old = Prefs::from_json(r#"{"leftPanel":true,"rightPanel":true,"minimap":true}"#);
-        assert!(!old.left_panel && !old.right_panel && !old.minimap);
+        let old = Prefs::from_json(r#"{"leftPanel":true,"rightPanel":true,"minimap":false}"#);
+        assert!(!old.left_panel && !old.right_panel && old.minimap);
+        let hidden = Prefs { minimap: false, ..old.clone() };
+        assert!(!Prefs::from_json(&hidden.to_json()).minimap, "the minimap closed afterwards stays closed");
         let reopened = Prefs { left_panel: true, ..old };
         assert!(Prefs::from_json(&reopened.to_json()).left_panel, "a panel opened afterwards stays open");
         // The old default blue becomes FigJam's violet, once; a colour chosen stays.

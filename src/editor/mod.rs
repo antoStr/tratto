@@ -490,8 +490,11 @@ impl Editor {
     pub fn paint_list(&mut self) -> Vec<Arc<El>> {
         let order = self.board.paint_order();
         let mut out: Vec<Arc<El>> = if self.preview.is_empty() { order.to_vec() } else { order.iter().map(|el| self.preview.get(&el.id).cloned().unwrap_or_else(|| el.clone())).collect() };
-        // A section being drawn goes behind everything, anything else on top.
-        if let Some(Gesture::Create { el, .. }) = &self.gesture {
+        // A section being drawn goes behind everything, anything else on top. Pressed on a "+",
+        // nothing until it is dragged: a click adds a note or a shape, not this connector.
+        if let Some(Gesture::Create { el, moved, spawn, .. }) = &self.gesture
+            && (*moved || spawn.is_none())
+        {
             let el = Arc::new(el.clone());
             if el.is_section() { out.insert(0, el) } else { out.push(el) }
         }
@@ -1733,7 +1736,12 @@ impl Editor {
                 top -= dy;
             }
         }
-        let lock = shift || els.iter().any(|e| matches!(e.kind, Kind::Image { .. } | Kind::Stamp { .. })) || (els.len() == 1 && (els[0].text().is_some() || els[0].code().is_some()) && h.corner());
+        // Pictures keep their shape; text and code too from a corner; a widget from anywhere but
+        // its sides (it grows whole, letters and buttons too).
+        let lock = shift
+            || els.iter().any(|e| matches!(e.kind, Kind::Image { .. } | Kind::Stamp { .. }))
+            || (els.len() == 1 && (els[0].text().is_some() || els[0].code().is_some()) && h.corner())
+            || (els.len() == 1 && els[0].widget().is_some() && h != Handle::E && h != Handle::W);
         let min = 1.0 / self.cam.z;
         let mut w = (right - left).max(min);
         let mut hh = (bottom - top).max(min);
@@ -1775,6 +1783,11 @@ impl Editor {
                 }
                 if el.code().is_some() {
                     next = resize_code(el, next, h, to);
+                }
+                if el.widget().is_some() && el.rotation == 0.0 {
+                    // The side or corner across from the one dragged stays put.
+                    next.x = if h.w() { to.right() - next.w } else if h.e() { to.x } else { el.x + (el.w - next.w) / 2.0 };
+                    next.y = if h.n() { to.bottom() - next.h } else { to.y };
                 }
                 next
             } else {
@@ -2379,7 +2392,7 @@ impl Editor {
 
     pub fn insert_code(&mut self, at: Option<Pt>) {
         let k = self.world_size(1.0);
-        let mut el = El::new(Kind::Code(Code { code: String::new(), language: self.prefs.code_language.clone(), light: false, font_size: 14.0 * k, radius: None }));
+        let mut el = El::new(Kind::Code(Code { code: String::new(), language: self.prefs.code_language.clone(), light: false, font_size: 14.0 * k, radius: None, fixed_height: false }));
         el.w = 520.0 * k;
         self.insert_here(el, at, true);
     }
@@ -2466,26 +2479,34 @@ fn resize_text(orig: &El, mut next: El, h: Handle) -> El {
 }
 
 /// A code block from a corner grows or shrinks whole, letters too; from a side it only gets
-/// wider or narrower. Its height always fits its lines, from the side that stays put.
+/// wider or narrower; from the top or the bottom, taller (never shorter than its lines). The
+/// side that stays put is the one across from the one dragged.
 fn resize_code(orig: &El, mut next: El, h: Handle, to: BBox) -> El {
     let Kind::Code(o) = &orig.kind else { return next };
-    if !h.corner() && h != Handle::E && h != Handle::W {
-        return orig.clone();
-    }
     if let Kind::Code(c) = &mut next.kind {
         if h.corner() {
             let k = (to.w / orig.w.max(0.01)).clamp(MIN_SIZE / o.font_size.max(MIN_SIZE), 400.0 / o.font_size.max(MIN_SIZE));
             c.font_size = o.font_size * k;
             c.radius = o.radius.map(|r| r * k);
             next.w = orig.w * k;
-        } else {
+            next.h = orig.h * k;
+        } else if h == Handle::E || h == Handle::W {
             next.w = to.w.max(c.font_size * 10.0);
+            next.h = orig.h;
+        } else {
+            c.fixed_height = true;
+            next.w = orig.w;
+            next.h = to.h;
         }
     }
     crate::code::fit(&mut next);
     if orig.rotation == 0.0 {
         next.x = if h.w() { to.right() - next.w } else { to.x };
         next.y = if h.n() { orig.y + orig.h - next.h } else { orig.y };
+    } else {
+        // Turned: about the middle of the box dragged.
+        let c = to.center();
+        (next.x, next.y) = (c.x - next.w / 2.0, c.y - next.h / 2.0);
     }
     next
 }
@@ -2506,9 +2527,9 @@ mod tests {
     }
 
     #[test]
-    fn a_code_block_grows_whole_from_a_corner_and_only_wider_from_a_side() {
+    fn a_code_block_grows_whole_from_a_corner_wider_from_a_side_and_taller_from_the_bottom() {
         let mut ed = editor();
-        let mut el = El::new(Kind::Code(Code { code: "fn main() {\n    println!(\"ciao\");\n}".into(), language: "rust".into(), light: false, font_size: 14.0, radius: None }));
+        let mut el = El::new(Kind::Code(Code { code: "fn main() {\n    println!(\"ciao\");\n}".into(), language: "rust".into(), light: false, font_size: 14.0, radius: None, fixed_height: false }));
         (el.id, el.x, el.y, el.w) = ("c".into(), 100.0, 100.0, 400.0);
         crate::code::fit(&mut el);
         let h0 = el.h;
@@ -2530,6 +2551,63 @@ mod tests {
         let wide = drag(&mut ed, Handle::E, pt(500.0, 120.0), pt(700.0, 160.0));
         assert_eq!((wide.x, wide.y, wide.code().unwrap().font_size), (100.0, 100.0, 14.0));
         assert!((wide.w - 600.0).abs() < 1e-6);
+        // The bottom: taller, right to the pointer, and it stays so; never shorter than its lines.
+        let tall = drag(&mut ed, Handle::S, pt(300.0, 100.0 + h0), pt(300.0, 100.0 + h0 + 150.0));
+        assert_eq!((tall.x, tall.y, tall.w), (100.0, 100.0, 400.0));
+        assert!((tall.h - (h0 + 150.0)).abs() < 1e-6 && tall.code().unwrap().fixed_height);
+        let mut kept = tall.clone();
+        crate::code::fit(&mut kept);
+        assert_eq!(kept.h, tall.h);
+        let short = drag(&mut ed, Handle::S, pt(300.0, 100.0 + h0), pt(300.0, 120.0));
+        assert!((short.h - h0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_widget_grows_whole_from_a_corner_and_follows_the_pointer() {
+        let mut ed = editor();
+        let mut el = El::new(Kind::Widget(Widget::Counter { label: "Idee".into(), value: 7 }));
+        (el.id, el.x, el.y) = ("w".into(), 100.0, 100.0);
+        crate::widgets::fit(&mut el);
+        let (w0, h0) = (el.w, el.h);
+        ed.board.put([el.clone()]);
+        let drag = |ed: &mut Editor, handle: Handle, from: Pt, to: Pt| {
+            let orig = ed.board.get("w").unwrap();
+            let frame = BBox { x: orig.x, y: orig.y, w: orig.w, h: orig.h };
+            ed.gesture = Some(Gesture::Resize { handle, start: from, orig: vec![(**orig).clone()], frame, rotation: 0.0 });
+            ed.resize_to(to, false, false);
+            ed.preview.get("w").map(|e| (**e).clone()).unwrap()
+        };
+        // The bottom-right corner to twice the size: all of it twice as big, the top left where it was.
+        let big = drag(&mut ed, Handle::Se, pt(100.0 + w0, 100.0 + h0), pt(100.0 + w0 * 2.0, 100.0 + h0 * 2.0));
+        assert_eq!((big.x, big.y, big.scale), (100.0, 100.0, 2.0));
+        assert!((big.w - w0 * 2.0).abs() < 1e-6 && (big.h - h0 * 2.0).abs() < 1e-6);
+        // Its "+" is where it is drawn, twice as far in.
+        let plus = crate::widgets::layout(&el, el.widget().unwrap()).parts.into_iter().find(|p| p.hot == crate::widgets::Hot::Add(1)).unwrap();
+        let at = |k: f64| crate::widgets::hot_at(&big, (plus.x + plus.w / 2.0) * k, (plus.y + plus.h / 2.0) * k);
+        assert_eq!(at(2.0), Some(crate::widgets::Hot::Add(1)));
+        // The bottom: as tall as dragged, as much wider about its middle, the top where it was.
+        let tall = drag(&mut ed, Handle::S, pt(100.0 + w0 / 2.0, 100.0 + h0), pt(100.0 + w0 / 2.0, 100.0 + h0 * 1.5));
+        assert!((tall.h - h0 * 1.5).abs() < 1e-6 && (tall.scale - 1.5).abs() < 1e-9 && tall.y == 100.0);
+        assert!((tall.x + tall.w / 2.0 - (100.0 + w0 / 2.0)).abs() < 1e-6);
+        // The right side: only wider, the same size of letters, the top where it was.
+        let wide = drag(&mut ed, Handle::E, pt(100.0 + w0, 120.0), pt(100.0 + w0 + 80.0, 160.0));
+        assert_eq!((wide.x, wide.y, wide.scale, wide.h), (100.0, 100.0, 1.0, h0));
+        assert!((wide.w - (w0 + 80.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_plus_pressed_shows_its_arrow_only_once_dragged() {
+        let mut ed = editor();
+        let mut note = El::new(Kind::Sticky(Sticky { text: "a".into(), ..Default::default() }));
+        (note.id, note.w, note.h) = ("n".into(), 200.0, 200.0);
+        ed.board.put([note.clone()]);
+        let el = ed.connector(pt(220.0, 100.0), Some("n".into()), true);
+        ed.gesture = Some(Gesture::Create { el, start: pt(220.0, 100.0), moved: false, spawn: Some(note) });
+        assert_eq!(ed.paint_list().len(), 1, "a click adds a note, not this arrow");
+        if let Some(Gesture::Create { moved, .. }) = &mut ed.gesture {
+            *moved = true;
+        }
+        assert_eq!(ed.paint_list().len(), 2, "dragged: a connector");
     }
 
     #[test]

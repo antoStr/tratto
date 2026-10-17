@@ -468,8 +468,8 @@ pub fn scale_element(el: &El, from: BBox, to: BBox) -> El {
             next.x = ncx - s / 2.0;
             next.y = ncy - s / 2.0;
         }
-        // Tables widen their columns; code and widgets take the new width; all of them then
-        // grow or shrink in height to fit what they hold.
+        // Tables widen their columns; code and widgets take the new width (a widget's letters
+        // and buttons grow as tall as the box does); all of them then fit what they hold.
         Kind::Table(t) => {
             let k = if el.w > 0.01 { w / el.w } else { 1.0 };
             for c in &mut t.cols {
@@ -479,8 +479,15 @@ pub fn scale_element(el: &El, from: BBox, to: BBox) -> El {
             next.y = ncy - next.h / 2.0;
             next.x = ncx - next.w / 2.0;
         }
-        Kind::Code(_) | Kind::Widget(_) => {
+        Kind::Code(_) => {
             next.w = w.max(160.0);
+            crate::text::fit_text(&mut next);
+            next.y = ncy - next.h / 2.0;
+            next.x = ncx - next.w / 2.0;
+        }
+        Kind::Widget(_) => {
+            next.scale = (el.scale * ey).clamp(0.05, 50.0);
+            next.w = w.max(160.0 * next.scale);
             crate::text::fit_text(&mut next);
             next.y = ncy - next.h / 2.0;
             next.x = ncx - next.w / 2.0;
@@ -920,7 +927,7 @@ pub mod tests {
     }
 
     pub fn base(kind: Kind) -> El {
-        El { id: "a".into(), x: 0.0, y: 0.0, w: 0.0, h: 0.0, rotation: 0.0, z: 0.0, opacity: 1.0, locked: false, hidden: false, name: None, group_id: None, erase: vec![], shadow: None, kind }
+        El { id: "a".into(), x: 0.0, y: 0.0, w: 0.0, h: 0.0, rotation: 0.0, z: 0.0, opacity: 1.0, locked: false, hidden: false, name: None, group_id: None, erase: vec![], shadow: None, scale: 1.0, kind }
     }
     pub fn rect(id: &str, x: f64, w: f64, h: f64, shape: ShapeKind) -> El {
         let mut el = base(Kind::Shape(Shape { shape, fill: "transparent".into(), stroke: "#000000".into(), stroke_width: 2.0, ..Default::default() }));

@@ -299,24 +299,36 @@ fn round_button(ui: &mut egui::Ui, name: &str, label: &str, t: &ui::Theme) -> eg
     ui::tip(resp, label, None)
 }
 
-/// The timer: the time on a display (click it and type the digits), +1 min and play; while it
-/// runs, pause or resume and stop.
+/// The timer: the time, large (click it and type the digits, as on a microwave), a minute less
+/// or more, a few lengths ready and play; while it runs, a minute more, pause or resume and stop.
 fn timer_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
     let ro = ed.read_only;
     let tm = read_timer(ed);
     let draft_id = Id::new("timer-draft");
     let mut draft: f64 = ui.data(|d| d.get_temp(draft_id)).unwrap_or(DRAFT_MS);
-    let (card, _) = ui.allocate_exact_size(vec2(ui.available_width(), 92.0), egui::Sense::hover());
+    let (card, _) = ui.allocate_exact_size(vec2(ui.available_width(), 76.0), egui::Sense::hover());
     ui.painter().rect_filled(card, 12.0, t.bg2);
+    if tm.is_none() && !ro {
+        let side = |x: f32| Rect::from_center_size(pos2(x, card.center().y), vec2(32.0, 32.0));
+        let minus = ui.put(side(card.min.x + 26.0), |ui: &mut egui::Ui| ui::icon_button(ui, "minus", "Un minuto in meno", None, vec2(32.0, 32.0), 16.0, false, false));
+        if minus.clicked() {
+            draft = (draft - 60_000.0).max(60_000.0f64.min(draft));
+        }
+        let plus = ui.put(side(card.max.x - 26.0), |ui: &mut egui::Ui| ui::icon_button(ui, "plus", "Un minuto in più", None, vec2(32.0, 32.0), 16.0, false, false));
+        if plus.clicked() {
+            draft = (draft + 60_000.0).min(MAX_MS);
+        }
+    }
     let digits_id = Id::new("timer-digits");
     let mut digits: String = ui.data(|d| d.get_temp(digits_id)).unwrap_or_default();
     let mut editing = false;
     let shown = match tm {
         Some(tm) => clock(tm.remaining()),
         None if !ro => {
-            // Typed straight onto the display: an invisible field over it takes the digits
-            // (a phone opens its number keyboard), and only digits.
-            let field = ui.put(card, egui::TextEdit::singleline(&mut digits).id(Id::new("timer-field")).frame(egui::Frame::NONE).text_color(Color32::TRANSPARENT).char_limit(6).desired_width(card.width()).horizontal_align(egui::Align::Center).font(egui::FontId::proportional(1.0)));
+            // Typed straight onto the time: an invisible field over it takes the digits (a phone
+            // opens its number keyboard), and only digits.
+            let over = Rect::from_center_size(card.center(), vec2(card.width() - 112.0, card.height() - 12.0));
+            let field = ui.put(over, egui::TextEdit::singleline(&mut digits).id(Id::new("timer-field")).frame(egui::Frame::NONE).text_color(Color32::TRANSPARENT).char_limit(6).desired_width(over.width()).font(egui::FontId::proportional(1.0)));
             digits.retain(|c| c.is_ascii_digit());
             editing = field.has_focus();
             if field.gained_focus() {
@@ -341,13 +353,19 @@ fn timer_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
         None => t.text,
     };
     let dx = shake(ui.ctx());
-    let disp = Rect::from_center_size(card.center() + vec2(dx, 0.0), vec2(card.width() - 32.0, 58.0));
-    lcd(ui.painter(), disp, &shown, color, t.text.gamma_multiply(0.06));
-    if editing && (crate::platform::now_ms() / 530.0) as i64 % 2 == 0 {
-        ui.painter().rect_filled(Rect::from_min_size(pos2(disp.max.x + 2.0, disp.min.y + 6.0), vec2(2.0, disp.height() - 12.0)), 1.0, t.brand);
-    }
+    let time = big_time(ui.painter(), card.center() + vec2(dx, 0.0), &shown, 40.0, color);
     if editing {
+        if (crate::platform::now_ms() / 530.0) as i64 % 2 == 0 {
+            ui.painter().rect_filled(Rect::from_min_size(pos2(time.max.x + 3.0, time.min.y + 4.0), vec2(2.0, time.height() - 8.0)), 1.0, t.brand);
+        }
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+    }
+    // While it runs, a thin bar along the bottom empties.
+    if let Some(tm) = &tm {
+        let k = (tm.remaining() / tm.total).clamp(0.0, 1.0) as f32;
+        let bar = Rect::from_min_size(pos2(card.min.x + 16.0, card.max.y - 10.0), vec2(card.width() - 32.0, 3.0));
+        ui.painter().rect_filled(bar, 1.5, t.bg3);
+        ui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * k, bar.height())), 1.5, if tm.done() { t.danger } else { t.brand });
     }
     ui.add_space(12.0);
     if ro {
@@ -357,10 +375,17 @@ fn timer_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
     // One row as tall as the round button, everything centred on it.
     ui.allocate_ui_with_layout(vec2(ui.available_width(), 36.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        if ui::button(ui, "1 min", Btn::Secondary, Some("plus"), true, true).clicked() {
-            match &tm {
-                Some(tm) => add_minute(ed, tm),
-                None => draft = (draft + 60_000.0).min(MAX_MS),
+        match &tm {
+            None => {
+                let mut secs = (draft / 1000.0).round() as i64;
+                if ui::segmented(ui, &mut secs, &[(60, "1 min"), (180, "3 min"), (300, "5 min"), (600, "10 min")], ui.available_width() - 44.0) {
+                    draft = secs as f64 * 1000.0;
+                }
+            }
+            Some(tm) => {
+                if ui::button(ui, "1 min", Btn::Secondary, Some("plus"), true, true).clicked() {
+                    add_minute(ed, tm);
+                }
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -396,54 +421,24 @@ fn timer_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
     ui.data_mut(|d| d.insert_temp(draft_id, draft));
 }
 
-/// Digits on a seven-segment display, the unlit segments faintly there (as on FigJam's).
-fn lcd(p: &egui::Painter, rect: Rect, text: &str, on: Color32, off: Color32) {
-    let h = rect.height();
-    let dw = h * 0.5;
-    let gap = h * 0.12;
-    let colon = h * 0.22;
-    let width: f32 = text.chars().map(|c| if c == ':' { colon } else { dw + gap }).sum::<f32>() - gap;
-    let mut x = rect.center().x - width / 2.0;
-    for c in text.chars() {
-        if c == ':' {
-            let cx = x + colon / 2.0 - gap / 2.0;
-            for y in [rect.min.y + h * 0.32, rect.min.y + h * 0.7] {
-                p.circle_filled(pos2(cx + (rect.center().y - y) * 0.08, y), h * 0.05, on);
-            }
-            x += colon;
-            continue;
-        }
-        let lit = match c {
-            '0' => "abcdef",
-            '1' => "bc",
-            '2' => "abged",
-            '3' => "abgcd",
-            '4' => "fgbc",
-            '5' => "afgcd",
-            '6' => "afgedc",
-            '7' => "abc",
-            '8' => "abcdefg",
-            '9' => "abcdfg",
-            _ => "",
-        };
-        seven(p, Rect::from_min_size(pos2(x, rect.min.y), vec2(dw, h)), lit, on, off);
-        x += dw + gap;
+/// The time in large figures, centred on `c`, each digit in a cell of the same width so the
+/// time doesn't shift as it counts; where it went.
+fn big_time(p: &egui::Painter, c: egui::Pos2, text: &str, size: f32, color: Color32) -> Rect {
+    let font = ui::medium(size);
+    let glyph = |ch: char| p.layout_no_wrap(ch.to_string(), font.clone(), color);
+    let cell = ('0'..='9').map(|d| glyph(d).size().x).fold(0.0, f32::max);
+    let width = |ch: char| if ch == ':' { glyph(':').size().x + size * 0.06 } else { cell };
+    let w: f32 = text.chars().map(width).sum();
+    let h = glyph('0').size().y;
+    let mut x = c.x - w / 2.0;
+    for ch in text.chars() {
+        let g = glyph(ch);
+        // The colon up level with the middle of the digits, as on a clock.
+        let lift = if ch == ':' { size * 0.07 } else { 0.0 };
+        p.galley(pos2(x + (width(ch) - g.size().x) / 2.0, c.y - h / 2.0 - lift), g, color);
+        x += width(ch);
     }
-}
-
-/// One digit: segments a–g (a on top, going round clockwise, g in the middle), slanted a little.
-fn seven(p: &egui::Painter, r: Rect, lit: &str, on: Color32, off: Color32) {
-    let s = r.height() * 0.11;
-    let g = s * 0.18;
-    let slant = |q: egui::Pos2| pos2(q.x + (r.center().y - q.y) * 0.08, q.y);
-    let hseg = |x0: f32, x1: f32, y: f32| vec![pos2(x0 + g, y), pos2(x0 + g + s / 2.0, y - s / 2.0), pos2(x1 - g - s / 2.0, y - s / 2.0), pos2(x1 - g, y), pos2(x1 - g - s / 2.0, y + s / 2.0), pos2(x0 + g + s / 2.0, y + s / 2.0)];
-    let vseg = |x: f32, y0: f32, y1: f32| vec![pos2(x, y0 + g), pos2(x + s / 2.0, y0 + g + s / 2.0), pos2(x + s / 2.0, y1 - g - s / 2.0), pos2(x, y1 - g), pos2(x - s / 2.0, y1 - g - s / 2.0), pos2(x - s / 2.0, y0 + g + s / 2.0)];
-    let (l, rr, top, mid, bot) = (r.min.x + s / 2.0, r.max.x - s / 2.0, r.min.y + s / 2.0, r.center().y, r.max.y - s / 2.0);
-    let segs = [('a', hseg(l, rr, top)), ('b', vseg(rr, top, mid)), ('c', vseg(rr, mid, bot)), ('d', hseg(l, rr, bot)), ('e', vseg(l, mid, bot)), ('f', vseg(l, top, mid)), ('g', hseg(l, rr, mid))];
-    for (name, pts) in segs {
-        let pts: Vec<egui::Pos2> = pts.into_iter().map(slant).collect();
-        p.add(egui::Shape::convex_polygon(pts, if lit.contains(name) { on } else { off }, Stroke::NONE));
-    }
+    Rect::from_center_size(c, vec2(w, h * 0.72))
 }
 
 /// The colour of a piece's cover.
@@ -738,40 +733,6 @@ fn emoji(ui: &egui::Ui, ed: &mut Editor, e: &str, rect: Rect) {
     if let Some(Ok(tex)) = ed.painter.images.texture(ui.ctx(), &crate::prims::ImageKey::Stamp(e.to_string())) {
         ui.painter().image(tex, rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
-}
-
-/// Emotes without a keyboard (with one: hold E): a feeling that floats up for everyone from
-/// the middle of the view.
-pub fn emote_button(ui: &mut egui::Ui, ed: &mut Editor) {
-    let t = ui::theme(ui.ctx());
-    let s = ui::hit(ui.ctx(), 24.0);
-    let (r, resp) = ui.allocate_exact_size(vec2(s, s), egui::Sense::click());
-    ui::hover_fill(ui, resp.id, r, resp.hovered(), ui::RADIUS as f32, t.hover);
-    emoji(ui, ed, "❤️", Rect::from_center_size(r.center(), vec2(17.0, 17.0)));
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Emote"));
-    ui::focus_ring(ui, &resp, r);
-    let resp = ui::tip(resp, "Emote", Some("tieni premuto E"));
-    egui::Popup::from_toggle_button_response(&resp)
-        .frame(ui::float_frame(&t).inner_margin(egui::Margin::same(6)))
-        .align(egui::RectAlign::BOTTOM_END)
-        .gap(8.0)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                for e in crate::editor::EMOTES {
-                    let (r, b) = ui.allocate_exact_size(vec2(36.0, 36.0), egui::Sense::click());
-                    let h = ui::motion::hover(ui.ctx(), b.id, b.hovered());
-                    ui.painter().rect_filled(r, 8.0, t.hover.gamma_multiply(h));
-                    emoji(ui, ed, e, Rect::from_center_size(r.center(), vec2(26.0 + 4.0 * h, 26.0 + 4.0 * h)));
-                    b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, crate::assets::stamp(e).map_or(e, |s| s.name)));
-                    if b.clicked() {
-                        let at = ed.viewport_center();
-                        ed.send_emote(e, at);
-                    }
-                }
-            });
-        });
 }
 
 /* ---------------- voting ---------------- */
