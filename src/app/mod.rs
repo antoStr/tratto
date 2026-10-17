@@ -381,7 +381,56 @@ mod picture {
             dialogs::settings(&ctx, &mut dialogs.settings, &mut prefs, true);
         });
         harness.run_steps(60);
+        // TRATTO_DRAG=x0,y0,x1,y1: a drag from one point to the other, still held.
+        if let Some(v) = std::env::var("TRATTO_DRAG").ok() {
+            let n: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+            let (a, b) = (egui::pos2(n[0], n[1]), egui::pos2(n[2], n[3]));
+            harness.event(egui::Event::PointerMoved(a));
+            harness.run_steps(2);
+            harness.event(egui::Event::PointerButton { pos: a, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+            harness.run_steps(2);
+            for k in 1..=12 {
+                harness.event(egui::Event::PointerMoved(a + (b - a) * (k as f32 / 12.0)));
+                harness.run_steps(1);
+            }
+            harness.run_steps(6);
+        }
         harness.render().unwrap().save(path).unwrap();
+    }
+
+    /// The toolbar list in the settings: a row dragged three places down and let go lands there.
+    #[test]
+    fn a_toolbar_button_dragged_in_the_settings_moves_there() {
+        let shared: std::rc::Rc<std::cell::RefCell<Prefs>> = Default::default();
+        let inner = shared.clone();
+        let mut dialogs = dialogs::Dialogs::default();
+        let mut first = true;
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui(move |ui| {
+            let ctx = ui.ctx().clone();
+            if first {
+                first = false;
+                ui::install_fonts(&ctx);
+                ui::setup(&ctx, Theme::new(false, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), 1.0);
+                dialogs.settings = true;
+                dialogs::open_settings_tab(&ctx, 3);
+                return;
+            }
+            dialogs::settings(&ctx, &mut dialogs.settings, &mut inner.borrow_mut(), true);
+        });
+        harness.run_steps(30);
+        let (a, b) = (egui::pos2(700.0, 358.0), egui::pos2(700.0, 462.0));
+        harness.event(egui::Event::PointerMoved(a));
+        harness.run_steps(2);
+        harness.event(egui::Event::PointerButton { pos: a, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        harness.run_steps(2);
+        for k in 1..=12 {
+            harness.event(egui::Event::PointerMoved(a + (b - a) * (k as f32 / 12.0)));
+            harness.run_steps(1);
+        }
+        harness.event(egui::Event::PointerButton { pos: b, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+        harness.run_steps(4);
+        let order = crate::prefs::toolbar_items(&shared.borrow().toolbar_order);
+        assert_eq!(&order[..5], &["select", "draw", "pen", "highlighter", "hand"].map(String::from));
     }
 
     /// Hold E, point at an emoji of the wheel, let go: it floats up from there. With

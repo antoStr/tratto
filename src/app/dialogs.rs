@@ -521,44 +521,82 @@ pub fn shortcuts(ctx: &egui::Context, open: &mut bool) {
 
 /// The toolbar as you want it: drag the buttons into order, show or hide each one, and keep
 /// toolbars under a name to switch between them.
+/// One row of the toolbar list: grip, icon and name on `fill`.
+fn draw_toolbar_row(ui: &mut egui::Ui, row: Rect, id: &str, name: &str, hidden: bool, fill: Color32, t: &ui::Theme) {
+    let r = row.shrink2(vec2(0.0, 2.0));
+    ui.painter().rect_filled(r, ui::RADIUS, fill);
+    ui::icon(ui, "grip-vertical", pos2(r.min.x + 12.0, r.center().y), 14.0, t.icon2);
+    ui::icon(ui, super::toolbar::toolbar_icon(id), pos2(r.min.x + 36.0, r.center().y), 16.0, if hidden { t.text3 } else { t.icon });
+    ui.painter().text(pos2(r.min.x + 56.0, r.center().y), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(ui::px(11.0)), if hidden { t.text3 } else { t.text });
+}
+
 fn toolbar_settings(ui: &mut egui::Ui, p: &mut Prefs) {
     let t = ui::theme(ui.ctx());
     ui::heading(ui, "Barra degli strumenti");
     ui::hint(ui, "Trascina per riordinare.");
     let mut items = crate::prefs::toolbar_items(&p.toolbar_order);
     let mut moved: Option<(usize, usize)> = None;
-    let dragging = egui::DragAndDrop::has_payload_of_type::<usize>(ui.ctx());
+    // Dragged like a list on a phone: the row taken lifts and follows the pointer, the others
+    // slide out of its way on a spring.
+    let drag_id = ui.id().with("toolbar-drag");
+    let mut drag: Option<(usize, f32)> = ui.data(|d| d.get_temp(drag_id));
+    let dragging = drag.is_some();
     ui.spacing_mut().item_spacing.y = 0.0;
     let n = items.len();
+    let row_h = ui::ctl(34.0);
+    let (list, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_h * n as f32), Sense::hover());
+    let pointer_y = ui.ctx().input(|i| i.pointer.interact_pos()).map(|q| q.y);
+    let target = match (drag, pointer_y) {
+        (Some((_, grab)), Some(y)) => Some((((y - grab - list.min.y) / row_h).round().clamp(0.0, n as f32 - 1.0)) as usize),
+        _ => None,
+    };
+    let mut lifted: Option<(usize, Rect)> = None;
     for (i, id) in items.clone().iter().enumerate() {
         let name = crate::prefs::TOOLBAR_ITEMS.iter().find(|x| x.0 == id).map_or("", |x| x.1);
-        let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ui::ctl(34.0)), Sense::click_and_drag());
-        let hidden = p.toolbar_hidden.contains(id);
-        let h = ui::motion::hover(ui.ctx(), resp.id.with("h"), resp.hovered() && !dragging);
-        let being_dragged = resp.dragged();
-        if being_dragged {
-            resp.dnd_set_drag_payload(i);
+        // Where this row goes while another is dragged over the list.
+        let slot = match (drag, target) {
+            (Some((from, _)), Some(to)) if i != from => {
+                if from < i && i <= to {
+                    i - 1
+                } else if to <= i && i < from {
+                    i + 1
+                } else {
+                    i
+                }
+            }
+            _ => i,
+        };
+        let y = ui::motion::spring(ui.ctx(), drag_id.with(("y", id.as_str())), list.min.y + slot as f32 * row_h, 0.28, 0.92);
+        let held = drag.is_some_and(|(from, _)| from == i);
+        let row = if held {
+            let top = pointer_y.map_or(y, |py| (py - drag.unwrap().1).clamp(list.min.y - row_h * 0.5, list.max.y - row_h * 0.5));
+            ui::motion::hold(ui.ctx(), drag_id.with(("y", id.as_str())), top);
+            Rect::from_min_size(pos2(list.min.x, top), vec2(list.width(), row_h))
+        } else {
+            Rect::from_min_size(pos2(list.min.x, y), vec2(list.width(), row_h))
+        };
+        let resp = ui.interact(row, drag_id.with(("row", id.as_str())), Sense::click_and_drag());
+        if resp.drag_started()
+            && let Some(q) = resp.interact_pointer_pos()
+        {
+            drag = Some((i, q.y - row.min.y));
+        }
+        if held {
+            lifted = Some((i, row));
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-        } else if resp.hovered() {
+            continue;
+        }
+        if resp.hovered() && !dragging {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
         }
-        let r = row.shrink2(vec2(0.0, 2.0));
-        ui.painter().rect_filled(r, ui::RADIUS, if being_dragged { t.selected } else { t.hover.gamma_multiply(h) });
-        ui::icon(ui, "grip-vertical", pos2(r.min.x + 12.0, r.center().y), 14.0, t.icon2);
-        ui::icon(ui, super::toolbar::toolbar_icon(id), pos2(r.min.x + 36.0, r.center().y), 16.0, if hidden { t.text3 } else { t.icon });
-        ui.painter().text(pos2(r.min.x + 56.0, r.center().y), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(ui::px(11.0)), if hidden { t.text3 } else { t.text });
-        // Where a dragged button would go: a line above or below this row.
-        if let Some(from) = resp.dnd_hover_payload::<usize>() {
-            let below = ui.ctx().input(|i| i.pointer.hover_pos()).is_some_and(|q| q.y > r.center().y);
-            let y = if below { row.max.y } else { row.min.y };
-            ui.painter().hline(r.x_range(), y, Stroke::new(2.0, t.brand));
-            if let Some(f) = resp.dnd_release_payload::<usize>() {
-                let to = if below { i + 1 } else { i };
-                moved = Some((*f, to));
-            }
-            let _ = from;
+        let h = ui::motion::hover(ui.ctx(), resp.id.with("h"), resp.hovered() && !dragging);
+        draw_toolbar_row(ui, row, id, name, p.toolbar_hidden.contains(id), t.hover.gamma_multiply(h), &t);
+        if dragging {
+            continue;
         }
         // Up, down, and shown or not.
+        let r = row.shrink2(vec2(0.0, 2.0));
+        let hidden = p.toolbar_hidden.contains(id);
         let mut x = r.max.x - 4.0;
         let mut button = |ui: &mut egui::Ui, name: &str, label: &str, on: bool| {
             let b = Rect::from_min_size(pos2(x - 24.0, r.center().y - 12.0), vec2(24.0, 24.0));
@@ -574,7 +612,7 @@ fn toolbar_settings(ui: &mut egui::Ui, p: &mut Prefs) {
             }
         }
         // The arrows show under the pointer only, so the list stays calm.
-        let over = ui.rect_contains_pointer(row) && !dragging;
+        let over = ui.rect_contains_pointer(row);
         if over && i + 1 < n && button(ui, "arrow-down", "Sposta più a destra", false) {
             moved = Some((i, i + 2));
         }
@@ -582,6 +620,35 @@ fn toolbar_settings(ui: &mut egui::Ui, p: &mut Prefs) {
             moved = Some((i, i - 1));
         }
     }
+    // The row being moved, over the others: lifted on a soft shadow.
+    if let Some((i, row)) = lifted {
+        let id = &items[i];
+        let name = crate::prefs::TOOLBAR_ITEMS.iter().find(|x| x.0 == id).map_or("", |x| x.1);
+        let layer = egui::LayerId::new(egui::Order::Tooltip, drag_id.with("lifted"));
+        let painter = ui.ctx().layer_painter(layer);
+        let r = row.shrink2(vec2(0.0, 2.0));
+        painter.add(egui::epaint::Shadow { offset: [0, 6], blur: 18, spread: 0, color: Color32::from_black_alpha(40) }.as_shape(r, ui::RADIUS));
+        painter.rect_filled(r, ui::RADIUS, t.bg);
+        let mut child = ui.new_child(egui::UiBuilder::new().layer_id(layer).max_rect(row));
+        draw_toolbar_row(&mut child, row, id, name, p.toolbar_hidden.contains(id), t.selected, &t);
+    }
+    // Let go: it stays where it was shown.
+    if let Some((from, _)) = drag
+        && !ui.ctx().input(|i| i.pointer.any_down())
+    {
+        if let Some(to) = target
+            && to != from
+        {
+            moved = Some((from, if to > from { to + 1 } else { to }));
+        }
+        drag = None;
+    }
+    ui.data_mut(|d| match drag {
+        Some(v) => {
+            d.insert_temp(drag_id, v);
+        }
+        None => d.remove::<(usize, f32)>(drag_id),
+    });
     if let Some((from, to)) = moved
         && from < items.len()
     {
