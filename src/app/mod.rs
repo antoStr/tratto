@@ -433,6 +433,43 @@ mod picture {
         assert_eq!(&order[..5], &["select", "draw", "pen", "highlighter", "hand"].map(String::from));
     }
 
+    /// The timer's display takes digits like a microwave: 1, 3, 0 and Enter start 1:30 for
+    /// everyone; letters are ignored.
+    #[test]
+    fn digits_typed_on_the_timer_start_it() {
+        use egui_kittest::kittest::Queryable;
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let id = store.create("Timer", None).unwrap();
+        let shared: std::rc::Rc<std::cell::RefCell<Option<board::BoardScreen>>> = Default::default();
+        let inner = shared.clone();
+        let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui(move |ui| {
+            let ctx = ui.ctx().clone();
+            let mut screen = inner.borrow_mut();
+            if screen.is_none() {
+                ui::install_fonts(&ctx);
+                ui::setup(&ctx, Theme::new(false, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), 1.0);
+                *screen = Some(board::BoardScreen::open(&ctx, &store, &id, Prefs { music_volume: 0.0, ..Prefs::default() }, None).unwrap());
+                return;
+            }
+            screen.as_mut().unwrap().ui(ui, &mut toasts, &mut dialogs);
+        });
+        harness.run_steps(5);
+        harness.get_by_label_contains("Timer:").click();
+        harness.run_steps(5);
+        harness.ctx.memory_mut(|m| m.request_focus(egui::Id::new("timer-field")));
+        harness.run_steps(2);
+        for s in ["1", "x", "3", "0"] {
+            harness.event(egui::Event::Text(s.into()));
+            harness.run_steps(1);
+        }
+        harness.event(egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+        harness.run_steps(3);
+        let b = shared.borrow();
+        let total = b.as_ref().unwrap().editor.board.timer_field("total").and_then(|v| v.as_f64());
+        assert_eq!(total, Some(90_000.0));
+    }
+
     /// Hold E, point at an emoji of the wheel, let go: it floats up from there. With
     /// `TRATTO_SHOT=x.png` the wheel open is saved as a picture.
     #[test]
@@ -995,8 +1032,13 @@ mod picture {
         });
         harness.run_steps(10);
         use egui_kittest::kittest::Queryable;
-        harness.get_by_label_contains(if std::env::var_os("TRATTO_IDLE").is_some() { "Timer e musica" } else { "Timer:" }).click();
+        harness.get_by_label_contains("Timer:").click();
         harness.run_steps(30);
+        // TRATTO_TRACKS=1: the list of the pieces open.
+        if std::env::var_os("TRATTO_TRACKS").is_some() {
+            harness.get_by_label_contains("Brano:").click();
+            harness.run_steps(20);
+        }
         harness.render().unwrap().save(path).unwrap();
     }
 

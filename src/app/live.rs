@@ -17,8 +17,11 @@ fn now() -> f64 {
 
 /* ---------------- timer and music ---------------- */
 
-/// The longest timer, as in FigJam: 99:59.
-const MAX_MS: f64 = (99.0 * 60.0 + 59.0) * 1000.0;
+/// The longest timer: 99 hours, 59 minutes and 59 seconds.
+const MAX_MS: f64 = (99.0 * 3600.0 + 59.0 * 60.0 + 59.0) * 1000.0;
+
+/// The time a new timer starts at, as in FigJam.
+const DRAFT_MS: f64 = 3.0 * 60_000.0;
 
 /// `end`: when it reaches zero (shared clock), None while paused; `left`: ms left when paused.
 #[derive(Clone, Copy, PartialEq)]
@@ -77,10 +80,29 @@ fn stop_timer(ed: &mut Editor) {
     });
 }
 
-/// `mm:ss`, as FigJam shows it.
+/// `mm:ss`, as FigJam shows it; `h:mm:ss` from an hour up.
 fn clock(ms: f64) -> String {
     let s = (ms / 1000.0).ceil().max(0.0) as i64;
-    format!("{:02}:{:02}", s / 60, s % 60)
+    if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{:02}:{:02}", s / 60, s % 60) }
+}
+
+/// Digits typed into the timer, read like a microwave's from the right: "130" is 1:30,
+/// "13000" 1:30:00; minutes or seconds past 59 carry over ("90" is 1:30). Only digits count.
+fn digits_ms(d: &str) -> Option<f64> {
+    let d: String = d.chars().filter(|c| c.is_ascii_digit()).collect();
+    if d.is_empty() || d.len() > 6 {
+        return None;
+    }
+    let n: u64 = d.parse().ok()?;
+    let (h, m, sec) = (n / 10_000, n / 100 % 100, n % 100);
+    let ms = ((h * 3600 + m * 60 + sec) * 1000) as f64;
+    (ms > 0.0).then(|| ms.min(MAX_MS))
+}
+
+/// What the display shows while digits are typed: right-aligned into hh:mm:ss.
+fn digits_shown(d: &str) -> String {
+    let p = format!("{d:0>6}");
+    if p.starts_with("00") { format!("{}:{}", &p[2..4], &p[4..6]) } else { format!("{}:{}:{}", &p[0..2], &p[2..4], &p[4..6]) }
 }
 
 /// The piece playing for everyone on this board, and when it started (shared clock).
@@ -157,187 +179,514 @@ fn ring(p: &egui::Painter, c: egui::Pos2, r: f32, k: f32, color: Color32, track:
     }
 }
 
-/// Three little bars dancing while music plays.
-fn eq_bars(ui: &egui::Ui, c: egui::Pos2, h: f32, color: Color32) {
-    let t = crate::platform::now_ms() / 1000.0;
-    let still = ui::motion::reduced(ui.ctx());
-    for i in 0..3 {
-        let k = if still { 0.6 } else { 0.35 + 0.65 * ((t * (5.0 + i as f64 * 1.7) + i as f64).sin().abs() as f32) };
-        let x = c.x + (i as f32 - 1.0) * 4.0;
-        let bh = h * k;
-        ui.painter().rect_filled(Rect::from_min_max(pos2(x - 1.25, c.y + h / 2.0 - bh), pos2(x + 1.25, c.y + h / 2.0)), 1.0, color);
-    }
-    if !still {
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(80));
-    }
-}
 
-/// FigJam's "Timer, voting and music" button: the countdown with its ring while a timer runs,
-/// dancing bars while music plays, or the timer's icon; it opens the timer and music panel.
-/// Everyone sees it, also who can only look (they change only their own volume).
+/// FigJam's timer chip by the share button: a little record (turning while music plays) and the
+/// time, grey until a timer runs; it opens the panel of the timer, the music and the vote.
 pub fn timer_button(ui: &mut egui::Ui, ed: &mut Editor) {
     let t = ui::theme(ui.ctx());
     let tm = read_timer(ed);
     let music = read_music(ed);
-    let resp = match tm {
-        Some(tm) => {
-            let font = ui::medium(ui::px(12.0));
-            let text = clock(tm.remaining());
-            let g = ui.painter().layout_no_wrap(text.clone(), font, Color32::PLACEHOLDER);
-            let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 34.0 + if music.is_some() { 14.0 } else { 0.0 }, ui::hit(ui.ctx(), 24.0)), egui::Sense::click());
-            let dx = shake(ui.ctx());
-            let r = rect.translate(vec2(dx, 0.0));
-            let bg = if tm.done() { t.danger.gamma_multiply(0.12) } else { t.selected };
-            ui.painter().rect_filled(r, 12.0, ui::blend(bg, t.hover, ui::motion::hover(ui.ctx(), resp.id, resp.hovered()) * 0.5));
-            ring(ui.painter(), pos2(r.min.x + 13.0, r.center().y), 6.0, (tm.remaining() / tm.total) as f32, if tm.done() { t.danger } else { t.brand }, t.bg3);
-            let color = time_look(ui.ctx(), &tm, &t);
-            ui.painter().galley(pos2(r.min.x + 25.0, r.center().y - g.size().y / 2.0), g, color);
-            if music.is_some() {
-                eq_bars(ui, pos2(r.max.x - 12.0, r.center().y), 10.0, t.brand);
-            }
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Timer: {text}")));
-            ui::focus_ring(ui, &resp, rect);
-            ui::tip(resp, "Timer e musica", None)
-        }
-        None => {
-            let s = ui::hit(ui.ctx(), 24.0);
-            let r = ui::icon_button(ui, if music.is_some() { "" } else { "timer" }, "Timer e musica", None, vec2(s, s), 16.0, music.is_some(), false);
-            if music.is_some() {
-                eq_bars(ui, r.rect.center(), 11.0, t.brand);
-            }
-            r
-        }
+    let draft: f64 = ui.data(|d| d.get_temp(Id::new("timer-draft"))).unwrap_or(DRAFT_MS);
+    let text = tm.map_or_else(|| clock(draft), |tm| clock(tm.remaining()));
+    let font = egui::FontId::new(ui::px(12.5), egui::FontFamily::Name(if tm.is_some() { "ui-medium" } else { "sans-italic" }.into()));
+    let g = ui.painter().layout_no_wrap(text.clone(), font, Color32::PLACEHOLDER);
+    let h = ui::hit(ui.ctx(), 26.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 40.0, h), egui::Sense::click());
+    let dx = shake(ui.ctx());
+    let r = rect.translate(vec2(dx, 0.0));
+    let hv = ui::motion::hover(ui.ctx(), resp.id, resp.hovered());
+    let done = tm.is_some_and(|tm| tm.done());
+    let fill = if done { t.danger.gamma_multiply(0.12) } else { ui::blend(t.bg, t.hover, hv) };
+    ui.painter().rect(r, 8.0, fill, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+    let disc = pos2(r.min.x + 15.0, r.center().y);
+    record_icon(ui, disc, 8.0, music.map(|m| m.0), &t);
+    let color = match tm {
+        Some(tm) => time_look(ui.ctx(), &tm, &t),
+        None => t.text3,
     };
+    ui.painter().galley(pos2(r.min.x + 28.0, r.center().y - g.size().y / 2.0), g, color);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Timer: {text}")));
+    ui::focus_ring(ui, &resp, rect);
+    let resp = ui::tip(resp, "Timer, musica e votazione", None);
     egui::Popup::from_toggle_button_response(&resp)
-        .frame(ui::float_frame(&t).inner_margin(egui::Margin::same(14)))
+        .frame(ui::float_frame(&t).corner_radius(16).inner_margin(egui::Margin::ZERO))
         .align(egui::RectAlign::BOTTOM_END)
         .gap(8.0)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| timer_panel(ui, ed));
 }
 
-/// The panel: the timer (time to set, or the countdown and its controls) and the music.
+/// A small record: black, a label in the colour of the piece playing (grey when none), and a
+/// glint going round while it plays.
+fn record_icon(ui: &egui::Ui, c: egui::Pos2, r: f32, playing: Option<Track>, t: &ui::Theme) {
+    let p = ui.painter();
+    p.circle_filled(c, r, Color32::from_gray(0x1E));
+    p.circle_stroke(c, r * 0.72, Stroke::new(0.8, Color32::from_gray(0x3A)));
+    let label = playing.map_or(t.text3, cover_color);
+    p.circle_filled(c, r * 0.38, label);
+    if playing.is_some() && !ui::motion::reduced(ui.ctx()) {
+        let a = (crate::platform::now_ms() / 1000.0 * 3.0) as f32;
+        let (sa, ca) = a.sin_cos();
+        p.line_segment([c + vec2(ca, sa) * r * 0.5, c + vec2(ca, sa) * r * 0.92], Stroke::new(1.2, Color32::from_white_alpha(90)));
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+    }
+}
+
+/// The panel: the volume, the timer on a display, the record player and the vote.
 fn timer_panel(ui: &mut egui::Ui, ed: &mut Editor) {
     let t = ui::theme(ui.ctx());
-    ui.set_width(292.0);
-    ui.spacing_mut().item_spacing.y = 10.0;
-    let ro = ed.read_only;
-    ui::heading(ui, "Timer");
-    match read_timer(ed) {
-        None => {
-            // The time to start with: big, with − and + (Maiusc: 5 minutes), the arrow keys
-            // too, and Invio to start; or one of the quick picks.
-            let draft_id = Id::new("timer-draft");
-            let mut draft: f64 = ui.data(|d| d.get_temp(draft_id)).unwrap_or(5.0 * 60_000.0);
-            let step = if ui.input(|i| i.modifiers.shift) { 5.0 * 60_000.0 } else { 60_000.0 };
-            let typing = ui.ctx().egui_wants_keyboard_input();
-            if !ro && !typing {
-                let (up, down, enter) = ui.input(|i| (i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::Enter)));
-                if up {
-                    draft += step;
-                }
-                if down {
-                    draft -= step;
-                }
-                if enter {
-                    start_timer(ed, draft);
+    let w = 300.0;
+    // A popup lays out in last frame's size: give it the room it may take, or it stays cut.
+    let room = (ui.ctx().content_rect().height() - 90.0).max(240.0);
+    ui.set_max_size(vec2(w, room));
+    ui.set_width(w);
+    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+    let line = |ui: &mut egui::Ui| {
+        let (r, _) = ui.allocate_exact_size(vec2(w, 1.0), egui::Sense::hover());
+        ui.painter().hline(r.x_range(), r.center().y, Stroke::new(1.0, t.border));
+    };
+    egui::Frame::new().inner_margin(egui::Margin { left: 16, right: 10, top: 12, bottom: 10 }).show(ui, |ui| {
+        ui::row(ui, 28.0, |ui| {
+            ui.label(RichText::new("Timer, musica e votazione").font(ui::medium(ui::px(13.0))).color(t.text));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui::small_icon_button(ui, "x", "Chiudi", false).clicked() {
                     egui::Popup::close_all(ui.ctx());
                 }
-            }
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                let w = ui.available_width();
-                ui.add_space((w - 228.0).max(0.0) / 2.0);
-                if ui::icon_button(ui, "minus", "Un minuto in meno (Maiusc: cinque)", Some("↓"), vec2(36.0, 36.0), 18.0, false, false).clicked() && !ro {
-                    draft -= step;
-                }
-                let edit_id = Id::new("timer-draft-edit");
-                let mut text: String = ui.data(|d| d.get_temp(edit_id)).unwrap_or_else(|| clock(draft));
-                let resp = ui.add_sized(vec2(140.0, 44.0), egui::TextEdit::singleline(&mut text).font(ui::medium(ui::px(32.0))).horizontal_align(egui::Align::Center).frame(egui::Frame::NONE).interactive(!ro).id(edit_id));
-                if resp.has_focus() {
-                    ui.data_mut(|d| d.insert_temp(edit_id, text.clone()));
-                } else {
-                    ui.data_mut(|d| d.remove::<String>(edit_id));
-                }
-                if resp.lost_focus() {
-                    if let Some(ms) = parse_time(&text) {
-                        draft = ms;
-                        if ui.input(|i| i.key_pressed(egui::Key::Enter)) && !ro {
-                            start_timer(ed, draft);
-                            egui::Popup::close_all(ui.ctx());
-                        }
-                    }
-                    ui.data_mut(|d| d.remove::<String>(edit_id));
-                }
-                if ui::icon_button(ui, "plus", "Un minuto in più (Maiusc: cinque)", Some("↑"), vec2(36.0, 36.0), 18.0, false, false).clicked() && !ro {
-                    draft += step;
-                }
             });
-            draft = draft.clamp(60_000.0, MAX_MS);
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-                for m in [1, 5, 10, 15, 25] {
-                    let on = (draft - m as f64 * 60_000.0).abs() < 1.0;
-                    if chip(ui, &format!("{m} min"), on, &t).clicked() && !ro {
-                        draft = m as f64 * 60_000.0;
-                    }
-                }
-            });
-            ui.data_mut(|d| d.insert_temp(draft_id, draft));
-            if ro {
-                ui::hint(ui, "Solo chi modifica può avviarlo.");
-            } else if ui::full_button(ui, "Avvia per tutti", Btn::Primary, Some("play")).clicked() {
-                start_timer(ed, draft);
-                egui::Popup::close_all(ui.ctx());
+        });
+    });
+    line(ui);
+    let max_h = room - 52.0;
+    egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
+        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+        egui::Frame::new().inner_margin(egui::Margin::symmetric(16, 10)).show(ui, |ui| volume_row(ui, ed, &t));
+        line(ui);
+        egui::Frame::new().inner_margin(egui::Margin::same(16)).show(ui, |ui| timer_card(ui, ed, &t));
+        line(ui);
+        egui::Frame::new().inner_margin(egui::Margin::same(16)).show(ui, |ui| music_card(ui, ed, &t));
+        line(ui);
+        egui::Frame::new().inner_margin(egui::Margin::same(16)).show(ui, |ui| vote_card(ui, ed, &t));
+    });
+}
+
+/// This person's volume: the speaker silences, the slider sets it.
+fn volume_row(ui: &mut egui::Ui, ed: &mut Editor, _t: &ui::Theme) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let p = &mut ed.prefs;
+        let muted = p.music_muted || p.music_volume <= 0.001;
+        if ui::icon_button(ui, if muted { "volume-x" } else { "volume-2" }, if muted { "Riattiva l'audio" } else { "Silenzia (solo per te)" }, None, vec2(28.0, 28.0), 16.0, false, false).clicked() {
+            p.music_muted = !p.music_muted;
+            if !p.music_muted && p.music_volume <= 0.001 {
+                p.music_volume = 0.6;
             }
         }
-        Some(tm) => {
-            let left = tm.remaining();
-            let color = time_look(ui.ctx(), &tm, &t);
-            let dx = shake(ui.ctx());
-            ui.vertical_centered(|ui| {
-                let g = ui.painter().layout_no_wrap(clock(left), ui::medium(ui::px(36.0)), color);
-                let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), g.size().y + 4.0), egui::Sense::hover());
-                ui.painter().galley(pos2(r.center().x - g.size().x / 2.0 + dx, r.min.y), g, color);
-                let label = if tm.done() { "Tempo scaduto" } else if tm.paused() { "In pausa" } else { "Per tutti sulla lavagna" };
-                ui.label(RichText::new(label).size(ui::px(11.0)).color(if tm.done() { t.danger_text } else { t.text2 }));
-            });
-            let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), egui::Sense::hover());
-            ui.painter().rect_filled(bar, 2.0, t.bg3);
-            ui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * (left / tm.total).clamp(0.0, 1.0) as f32, 4.0)), 2.0, if tm.done() { t.danger } else { t.brand_fill });
-            if !ro {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    if !tm.done() {
-                        match tm.end {
-                            Some(end) => {
-                                if ui::button(ui, "Pausa", Btn::Secondary, Some("pause"), false, true).clicked() {
-                                    set_timer(ed, &[("left", json!((end - shared_now()).max(0.0))), ("end", Value::Null)]);
-                                }
-                            }
-                            None => {
-                                if ui::button(ui, "Riprendi", Btn::Primary, Some("play"), false, true).clicked() {
-                                    set_timer(ed, &[("end", json!(shared_now() + tm.left))]);
-                                }
-                            }
+        let mut v = if muted { 0.0 } else { p.music_volume as f64 };
+        if ui::slider_inline(ui, "", &mut v, 0.0, 1.0, 0.05, false, |_| String::new(), ui.available_width()) {
+            p.music_volume = v as f32;
+            p.music_muted = false;
+        }
+    });
+}
+
+/// A round button in the brand colour (play, pause): FigJam's.
+fn round_button(ui: &mut egui::Ui, name: &str, label: &str, t: &ui::Theme) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(vec2(36.0, 36.0), egui::Sense::click());
+    let h = ui::motion::hover(ui.ctx(), resp.id, resp.hovered());
+    ui.painter().circle_filled(r.center(), 18.0, ui::blend(t.brand_fill, t.brand_fill_hover, h));
+    icon(ui, name, r.center() + if name == "play" { vec2(1.0, 0.0) } else { vec2(0.0, 0.0) }, 16.0, Color32::WHITE);
+    ui::focus_ring(ui, &resp, r);
+    ui::tip(resp, label, None)
+}
+
+/// The timer: the time on a display (click it and type the digits), +1 min and play; while it
+/// runs, pause or resume and stop.
+fn timer_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
+    let ro = ed.read_only;
+    let tm = read_timer(ed);
+    let draft_id = Id::new("timer-draft");
+    let mut draft: f64 = ui.data(|d| d.get_temp(draft_id)).unwrap_or(DRAFT_MS);
+    let (card, _) = ui.allocate_exact_size(vec2(ui.available_width(), 92.0), egui::Sense::hover());
+    ui.painter().rect_filled(card, 12.0, t.bg2);
+    let digits_id = Id::new("timer-digits");
+    let mut digits: String = ui.data(|d| d.get_temp(digits_id)).unwrap_or_default();
+    let mut editing = false;
+    let shown = match tm {
+        Some(tm) => clock(tm.remaining()),
+        None if !ro => {
+            // Typed straight onto the display: an invisible field over it takes the digits
+            // (a phone opens its number keyboard), and only digits.
+            let field = ui.put(card, egui::TextEdit::singleline(&mut digits).id(Id::new("timer-field")).frame(egui::Frame::NONE).text_color(Color32::TRANSPARENT).char_limit(6).desired_width(card.width()).horizontal_align(egui::Align::Center).font(egui::FontId::proportional(1.0)));
+            digits.retain(|c| c.is_ascii_digit());
+            editing = field.has_focus();
+            if field.gained_focus() {
+                digits.clear();
+            }
+            if field.lost_focus() {
+                if let Some(ms) = digits_ms(&digits) {
+                    draft = ms;
+                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        start_timer(ed, draft);
+                    }
+                }
+                digits.clear();
+            }
+            if editing { digits_shown(&digits) } else { clock(draft) }
+        }
+        None => clock(draft),
+    };
+    ui.data_mut(|d| d.insert_temp(digits_id, digits.clone()));
+    let color = match &tm {
+        Some(tm) => time_look(ui.ctx(), tm, t),
+        None => t.text,
+    };
+    let dx = shake(ui.ctx());
+    let disp = Rect::from_center_size(card.center() + vec2(dx, 0.0), vec2(card.width() - 32.0, 58.0));
+    lcd(ui.painter(), disp, &shown, color, t.text.gamma_multiply(0.06));
+    if editing && (crate::platform::now_ms() / 530.0) as i64 % 2 == 0 {
+        ui.painter().rect_filled(Rect::from_min_size(pos2(disp.max.x + 2.0, disp.min.y + 6.0), vec2(2.0, disp.height() - 12.0)), 1.0, t.brand);
+    }
+    if editing {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+    }
+    ui.add_space(12.0);
+    if ro {
+        ui.data_mut(|d| d.insert_temp(draft_id, draft));
+        return;
+    }
+    // One row as tall as the round button, everything centred on it.
+    ui.allocate_ui_with_layout(vec2(ui.available_width(), 36.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        if ui::button(ui, "1 min", Btn::Secondary, Some("plus"), true, true).clicked() {
+            match &tm {
+                Some(tm) => add_minute(ed, tm),
+                None => draft = (draft + 60_000.0).min(MAX_MS),
+            }
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            match &tm {
+                None => {
+                    if round_button(ui, "play", "Avvia per tutti", t).clicked() {
+                        start_timer(ed, draft);
+                    }
+                }
+                Some(tm) if tm.done() => {
+                    if round_button(ui, "rotate-ccw", "Di nuovo", t).clicked() {
+                        start_timer(ed, tm.total);
+                    }
+                    if ui::icon_button(ui, "square", "Ferma", None, vec2(32.0, 32.0), 14.0, false, false).clicked() {
+                        stop_timer(ed);
+                    }
+                }
+                Some(tm) => {
+                    let pause = tm.end;
+                    if round_button(ui, if pause.is_some() { "pause" } else { "play" }, if pause.is_some() { "Pausa" } else { "Riprendi" }, t).clicked() {
+                        match pause {
+                            Some(end) => set_timer(ed, &[("left", json!((end - shared_now()).max(0.0))), ("end", Value::Null)]),
+                            None => set_timer(ed, &[("end", json!(shared_now() + tm.left))]),
                         }
                     }
-                    // Time can be added, not taken away (as in FigJam), up to 99:59.
-                    if ui::button(ui, "+1 min", Btn::Secondary, None, false, true).clicked() {
-                        add_minute(ed, &tm);
+                    if ui::icon_button(ui, "square", "Ferma", None, vec2(32.0, 32.0), 14.0, false, false).clicked() {
+                        stop_timer(ed);
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui::button(ui, "Ferma", Btn::DangerText, Some("square"), false, true).clicked() {
-                            stop_timer(ed);
-                        }
-                    });
-                });
+                }
+            }
+        });
+    });
+    ui.data_mut(|d| d.insert_temp(draft_id, draft));
+}
+
+/// Digits on a seven-segment display, the unlit segments faintly there (as on FigJam's).
+fn lcd(p: &egui::Painter, rect: Rect, text: &str, on: Color32, off: Color32) {
+    let h = rect.height();
+    let dw = h * 0.5;
+    let gap = h * 0.12;
+    let colon = h * 0.22;
+    let width: f32 = text.chars().map(|c| if c == ':' { colon } else { dw + gap }).sum::<f32>() - gap;
+    let mut x = rect.center().x - width / 2.0;
+    for c in text.chars() {
+        if c == ':' {
+            let cx = x + colon / 2.0 - gap / 2.0;
+            for y in [rect.min.y + h * 0.32, rect.min.y + h * 0.7] {
+                p.circle_filled(pos2(cx + (rect.center().y - y) * 0.08, y), h * 0.05, on);
+            }
+            x += colon;
+            continue;
+        }
+        let lit = match c {
+            '0' => "abcdef",
+            '1' => "bc",
+            '2' => "abged",
+            '3' => "abgcd",
+            '4' => "fgbc",
+            '5' => "afgcd",
+            '6' => "afgedc",
+            '7' => "abc",
+            '8' => "abcdefg",
+            '9' => "abcdfg",
+            _ => "",
+        };
+        seven(p, Rect::from_min_size(pos2(x, rect.min.y), vec2(dw, h)), lit, on, off);
+        x += dw + gap;
+    }
+}
+
+/// One digit: segments a–g (a on top, going round clockwise, g in the middle), slanted a little.
+fn seven(p: &egui::Painter, r: Rect, lit: &str, on: Color32, off: Color32) {
+    let s = r.height() * 0.11;
+    let g = s * 0.18;
+    let slant = |q: egui::Pos2| pos2(q.x + (r.center().y - q.y) * 0.08, q.y);
+    let hseg = |x0: f32, x1: f32, y: f32| vec![pos2(x0 + g, y), pos2(x0 + g + s / 2.0, y - s / 2.0), pos2(x1 - g - s / 2.0, y - s / 2.0), pos2(x1 - g, y), pos2(x1 - g - s / 2.0, y + s / 2.0), pos2(x0 + g + s / 2.0, y + s / 2.0)];
+    let vseg = |x: f32, y0: f32, y1: f32| vec![pos2(x, y0 + g), pos2(x + s / 2.0, y0 + g + s / 2.0), pos2(x + s / 2.0, y1 - g - s / 2.0), pos2(x, y1 - g), pos2(x - s / 2.0, y1 - g - s / 2.0), pos2(x - s / 2.0, y0 + g + s / 2.0)];
+    let (l, rr, top, mid, bot) = (r.min.x + s / 2.0, r.max.x - s / 2.0, r.min.y + s / 2.0, r.center().y, r.max.y - s / 2.0);
+    let segs = [('a', hseg(l, rr, top)), ('b', vseg(rr, top, mid)), ('c', vseg(rr, mid, bot)), ('d', hseg(l, rr, bot)), ('e', vseg(l, mid, bot)), ('f', vseg(l, top, mid)), ('g', hseg(l, rr, mid))];
+    for (name, pts) in segs {
+        let pts: Vec<egui::Pos2> = pts.into_iter().map(slant).collect();
+        p.add(egui::Shape::convex_polygon(pts, if lit.contains(name) { on } else { off }, Stroke::NONE));
+    }
+}
+
+/// The colour of a piece's cover.
+fn cover_color(track: Track) -> Color32 {
+    crate::music::TRACKS.iter().find(|x| x.0 == track).and_then(|x| crate::model::parse_color(x.3)).unwrap_or(Color32::GRAY)
+}
+
+/// A piece's cover: its colour and a little line drawing (a bird, a face with headphones, a
+/// burst, a swirl, a sunset over a grid, a sailboat).
+fn cover(p: &egui::Painter, r: Rect, track: Track) {
+    p.rect_filled(r, r.width() * 0.12, cover_color(track));
+    let k = r.width() / 24.0;
+    let at = |x: f32, y: f32| r.min + vec2(x * k, y * k);
+    let ink = Color32::from_gray(0x1A);
+    let st = Stroke::new(1.3 * k.max(0.7), ink);
+    let curve = |pts: [egui::Pos2; 4]| egui::Shape::CubicBezier(egui::epaint::CubicBezierShape::from_points_stroke(pts, false, Color32::TRANSPARENT, st));
+    match track {
+        Track::Acoustic => {
+            p.add(curve([at(4.0, 13.0), at(8.0, 17.0), at(15.0, 17.0), at(19.0, 11.0)]));
+            p.add(curve([at(4.0, 13.0), at(8.0, 9.0), at(12.0, 9.0), at(14.0, 12.0)]));
+            p.add(curve([at(10.0, 11.0), at(11.0, 6.0), at(15.0, 5.0), at(18.0, 6.0)]));
+            p.line_segment([at(19.0, 11.0), at(21.0, 10.0)], st);
+            p.circle_filled(at(17.0, 11.5), 0.9 * k, ink);
+        }
+        Track::Lofi => {
+            p.circle_stroke(at(12.0, 13.0), 6.0 * k, st);
+            p.add(curve([at(5.5, 13.0), at(5.0, 4.0), at(19.0, 4.0), at(18.5, 13.0)]));
+            p.rect_filled(Rect::from_center_size(at(5.5, 14.0), vec2(2.4 * k, 4.0 * k)), k, ink);
+            p.rect_filled(Rect::from_center_size(at(18.5, 14.0), vec2(2.4 * k, 4.0 * k)), k, ink);
+            p.circle_filled(at(10.0, 12.5), 0.8 * k, ink);
+            p.circle_filled(at(14.0, 12.5), 0.8 * k, ink);
+            p.add(curve([at(10.0, 15.5), at(11.0, 16.8), at(13.0, 16.8), at(14.0, 15.5)]));
+        }
+        Track::Smash => {
+            let pts: Vec<egui::Pos2> = (0..24).map(|i| {
+                let a = i as f32 / 24.0 * std::f32::consts::TAU;
+                let rr = if i % 2 == 0 { 8.5 } else { 4.5 };
+                at(12.0 + a.cos() * rr, 12.0 + a.sin() * rr)
+            }).collect();
+            p.add(egui::Shape::closed_line(pts.clone(), Stroke::new(0.5, ink)));
+            for w in 0..12 {
+                p.add(egui::Shape::convex_polygon(vec![at(12.0, 12.0), pts[w * 2 + 1], pts[(w * 2 + 2) % 24], pts[(w * 2 + 3) % 24]], ink, Stroke::NONE));
+            }
+        }
+        Track::Friday => {
+            let spiral: Vec<egui::Pos2> = (0..60).map(|i| {
+                let a = i as f32 * 0.32;
+                let rr = 1.0 + i as f32 * 0.13;
+                at(12.0 + a.cos() * rr, 12.0 + a.sin() * rr)
+            }).collect();
+            p.add(egui::Shape::line(spiral, st));
+            p.circle_filled(at(19.5, 5.5), 1.2 * k, ink);
+            p.circle_filled(at(5.0, 19.0), 0.9 * k, ink);
+        }
+        Track::Synthwave => {
+            let sun = at(12.0, 10.0);
+            p.circle_filled(sun, 5.5 * k, Color32::from_rgb(0xFF, 0xD0, 0x5A));
+            for (i, y) in [10.5f32, 12.5, 14.0].iter().enumerate() {
+                p.rect_filled(Rect::from_min_max(at(5.0, *y), at(19.0, *y + 0.6 + i as f32 * 0.3)), 0.0, cover_color(track));
+            }
+            p.line_segment([at(3.0, 16.0), at(21.0, 16.0)], st);
+            for x in [3.0f32, 8.0, 12.0, 16.0, 21.0] {
+                p.line_segment([at(12.0 + (x - 12.0) * 0.4, 16.0), at(x, 21.0)], st);
+            }
+            p.line_segment([at(2.0, 18.5), at(22.0, 18.5)], st);
+        }
+        Track::Hero => {
+            p.add(egui::Shape::closed_line(vec![at(11.5, 4.0), at(11.5, 15.0), at(5.5, 15.0)], st));
+            p.add(egui::Shape::closed_line(vec![at(12.5, 6.0), at(12.5, 15.0), at(18.0, 15.0)], st));
+            p.add(curve([at(4.0, 16.5), at(7.0, 20.0), at(17.0, 20.0), at(20.0, 16.5)]));
+            p.line_segment([at(4.0, 16.5), at(20.0, 16.5)], st);
+        }
+    }
+}
+
+/// The record player: the record turning under its arm while the piece plays, the speaker
+/// beside it; under it the piece to pick and play or stop it (for everyone).
+fn music_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
+    let playing = read_music(ed).map(|m| m.0);
+    let pick_id = Id::new("music-pick");
+    let mut pick: Track = playing.or_else(|| ui.data(|d| d.get_temp(pick_id))).unwrap_or(Track::Acoustic);
+    let (card, _) = ui.allocate_exact_size(vec2(ui.available_width(), 120.0), egui::Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(card, 12.0, t.bg2);
+    let still = ui::motion::reduced(ui.ctx());
+    let spin = ui::motion::spring(ui.ctx(), Id::new("record-spin"), if playing.is_some() { 1.0 } else { 0.0 }, 0.2, 0.95);
+    let c = pos2(card.min.x + 62.0, card.center().y);
+    let r = 50.0;
+    p.circle_filled(c + vec2(0.0, 2.0), r + 1.0, Color32::from_black_alpha(30));
+    p.circle_filled(c, r, Color32::from_gray(0x16));
+    for k in [0.9f32, 0.78, 0.66, 0.55] {
+        p.circle_stroke(c, r * k, Stroke::new(0.8, Color32::from_gray(0x2C)));
+    }
+    let angle = if still { 0.0 } else { (crate::platform::now_ms() / 1000.0 * 2.2) as f32 * spin };
+    for off in [0.0f32, std::f32::consts::PI] {
+        let a = angle + off;
+        let pts: Vec<egui::Pos2> = (0..10).map(|i| {
+            let b = a + i as f32 * 0.06;
+            c + vec2(b.cos(), b.sin()) * r * 0.82
+        }).collect();
+        p.add(egui::Shape::line(pts, Stroke::new(2.0, Color32::from_white_alpha(28))));
+    }
+    let label = Rect::from_center_size(c, vec2(r * 0.62, r * 0.62));
+    p.circle_filled(c, r * 0.36, cover_color(playing.unwrap_or(pick)));
+    cover(p, label.shrink(r * 0.09), playing.unwrap_or(pick));
+    p.circle_filled(c, 2.2, Color32::from_gray(0xE0));
+    if playing.is_some() && !still {
+        ui.ctx().request_repaint();
+    }
+    // The arm: off the record at rest, on its edge while it plays.
+    let pivot = pos2(card.min.x + 140.0, card.min.y + 20.0);
+    let rest = 0.18f32;
+    let play = 0.62f32;
+    let a = rest + (play - rest) * spin;
+    let dir = vec2(-a.sin(), a.cos());
+    let head = pivot + dir * 72.0;
+    p.line_segment([pivot, head], Stroke::new(3.0, Color32::from_gray(0xC8)));
+    p.line_segment([pivot, head], Stroke::new(1.5, Color32::from_gray(0xF4)));
+    p.circle_filled(pivot, 7.0, Color32::from_gray(0xD4));
+    p.circle_filled(pivot, 3.0, Color32::from_gray(0x9A));
+    p.add(egui::Shape::convex_polygon(vec![head + vec2(-4.0, -2.0), head + vec2(4.0, -2.0), head + vec2(5.0, 6.0), head + vec2(-3.0, 6.0)], Color32::from_gray(0xB0), Stroke::NONE));
+    // The speaker.
+    let sc = pos2(card.max.x - 52.0, card.center().y);
+    for i in -6..=6 {
+        for j in -6..=6 {
+            let q = sc + vec2(i as f32 * 5.0, j as f32 * 5.0);
+            if q.distance(sc) <= 31.0 {
+                p.circle_filled(q, 1.5, t.text.gamma_multiply(0.35));
             }
         }
     }
-    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), egui::Sense::hover());
-    ui.painter().hline(r.x_range(), r.center().y, Stroke::new(1.0, t.border));
-    music_section(ui, ed, &t);
+    ui.add_space(12.0);
+    ui.allocate_ui_with_layout(vec2(ui.available_width(), 36.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let name = crate::music::TRACKS.iter().find(|x| x.0 == pick).map_or("", |x| x.2);
+        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width() - 44.0, 36.0), egui::Sense::click());
+        let h = ui::motion::hover(ui.ctx(), resp.id, resp.hovered());
+        ui.painter().rect(r, 8.0, ui::blend(t.bg, t.hover, h), Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+        cover(ui.painter(), Rect::from_center_size(pos2(r.min.x + 18.0, r.center().y), vec2(20.0, 20.0)), pick);
+        ui.painter().text(pos2(r.min.x + 36.0, r.center().y), egui::Align2::LEFT_CENTER, name, ui::medium(ui::px(12.0)), t.text);
+        icon(ui, "chevron-down", pos2(r.max.x - 14.0, r.center().y), 14.0, t.icon2);
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, format!("Brano: {name}")));
+        // Open on its own (egui keeps one menu open at a time: this one would close the panel).
+        let open_id = Id::new("music-list-open");
+        let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+        if resp.clicked() {
+            open = !open;
+        }
+        egui::Popup::from_response(&resp).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClick).frame(ui::menu_frame(t).inner_margin(egui::Margin::same(6))).width(r.width()).show(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for (track, _, title, _) in crate::music::TRACKS {
+                let (row, rr) = ui.allocate_exact_size(vec2(r.width() - 12.0, 40.0), egui::Sense::click());
+                let on = track == pick;
+                let hv = ui::motion::hover(ui.ctx(), rr.id, rr.hovered());
+                if hv > 0.0 {
+                    ui.painter().rect_filled(row, 6.0, t.brand_fill.gamma_multiply(hv));
+                }
+                if on {
+                    icon(ui, "check", pos2(row.min.x + 12.0, row.center().y), 14.0, t.menu_text);
+                }
+                cover(ui.painter(), Rect::from_center_size(pos2(row.min.x + 40.0, row.center().y), vec2(30.0, 30.0)), track);
+                ui.painter().text(pos2(row.min.x + 64.0, row.center().y), egui::Align2::LEFT_CENTER, title, ui::medium(ui::px(12.5)), t.menu_text);
+                if rr.clicked() {
+                    pick = track;
+                    if playing.is_some() && !ed.read_only {
+                        set_music(ed, Some(track));
+                    }
+                }
+            }
+        });
+        ui.data_mut(|d| d.insert_temp(open_id, open));
+        if !ed.read_only {
+            let on = playing.is_some();
+            if round_button(ui, if on { "pause" } else { "play" }, if on { "Ferma la musica" } else { "Fai partire la musica per tutti" }, t).clicked() {
+                set_music(ed, if on { None } else { Some(pick) });
+            }
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(pick_id, pick));
+}
+
+/// The vote: a little picture and the button that sets one up (votes each, then start); while
+/// one runs, how it is going.
+fn vote_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
+    let (card, _) = ui.allocate_exact_size(vec2(ui.available_width(), 96.0), egui::Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(card, 12.0, t.bg2);
+    // A note with stickers on it.
+    let n = Rect::from_center_size(card.center() + vec2(-34.0, 6.0), vec2(70.0, 70.0));
+    let (sn, cs) = (-0.12f32).sin_cos();
+    let rot = |q: egui::Pos2| n.center() + vec2((q.x - n.center().x) * cs - (q.y - n.center().y) * sn, (q.x - n.center().x) * sn + (q.y - n.center().y) * cs);
+    let yellow = Color32::from_rgb(0xFF, 0xD9, 0x66);
+    p.add(egui::Shape::convex_polygon(vec![rot(n.left_top()), rot(n.right_top()), rot(n.right_bottom() - vec2(0.0, 14.0)), rot(n.right_bottom() - vec2(14.0, 0.0)), rot(n.left_bottom())], yellow, Stroke::NONE));
+    p.add(egui::Shape::convex_polygon(vec![rot(n.right_bottom() - vec2(0.0, 14.0)), rot(n.right_bottom() - vec2(14.0, 0.0)), rot(n.right_bottom() - vec2(14.0, 14.0))], ui::mix(yellow, 0.82, Color32::BLACK), Stroke::NONE));
+    for (e, at) in [("❤️", card.center() + vec2(26.0, -18.0)), ("👍", card.center() + vec2(46.0, 16.0)), ("💯", card.center() + vec2(8.0, 22.0))] {
+        emoji(ui, ed, e, Rect::from_center_size(at, vec2(30.0, 30.0)));
+    }
+    ui.add_space(12.0);
+    if ed.read_only {
+        return;
+    }
+    let setup_id = Id::new("vote-setup");
+    let mut setup: bool = ui.data(|d| d.get_temp(setup_id)).unwrap_or(false);
+    match ed.board.voting() {
+        Some((per, false)) => {
+            let used: u32 = ed.board.tally(Some(&ed.voter)).values().sum();
+            ui.vertical_centered(|ui| {
+                ui.label(RichText::new(format!("Votazione in corso · ti restano {} voti su {per}", per.saturating_sub(used))).size(ui::px(12.0)).color(t.text2));
+            });
+        }
+        Some((_, true)) => {
+            ui.vertical_centered(|ui| {
+                if ui::button(ui, "Risultati", Btn::Secondary, Some("vote"), false, true).clicked() {
+                    ui.ctx().data_mut(|d| d.remove::<bool>(Id::new("vote-results-hidden")));
+                    egui::Popup::close_all(ui.ctx());
+                }
+            });
+        }
+        None if setup => {
+            let id = Id::new("vote-per");
+            let mut per: u32 = ui.data(|d| d.get_temp(id)).unwrap_or(3);
+            ui.label(RichText::new("Voti per persona").font(ui::medium(ui::px(12.0))).color(t.text));
+            ui.add_space(6.0);
+            ui::segmented(ui, &mut per, &[(1, "1"), (3, "3"), (5, "5"), (10, "10")], ui.available_width());
+            ui.data_mut(|d| d.insert_temp(id, per));
+            ui.add_space(8.0);
+            if ui::full_button(ui, "Inizia la votazione", Btn::Primary, None).clicked() {
+                let me = ed.voter.clone();
+                ed.board.start_voting(per, &me);
+                ed.set_tool(Tool::Select);
+                setup = false;
+                egui::Popup::close_all(ui.ctx());
+            }
+        }
+        None => {
+            ui.vertical_centered(|ui| {
+                if ui::button(ui, "Nuova votazione", Btn::Primary, None, false, true).clicked() {
+                    setup = true;
+                }
+            });
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(setup_id, setup));
 }
 
 fn add_minute(ed: &mut Editor, tm: &Timer) {
@@ -348,88 +697,6 @@ fn add_minute(ed: &mut Editor, tm: &Timer) {
     match tm.end {
         Some(end) => set_timer(ed, &[("total", json!(tm.total + room)), ("end", json!(end.max(shared_now()) + room))]),
         None => set_timer(ed, &[("total", json!(tm.total + room)), ("left", json!(tm.left + room))]),
-    }
-}
-
-/// "5", "5:30", "05:30" or "90s" as a time.
-fn parse_time(s: &str) -> Option<f64> {
-    let s = s.trim().trim_end_matches("min").trim();
-    let ms = if let Some(sec) = s.strip_suffix('s') {
-        sec.trim().parse::<f64>().ok()? * 1000.0
-    } else if let Some((m, sec)) = s.split_once([':', '.', ',']) {
-        (m.trim().parse::<f64>().ok()? * 60.0 + sec.trim().parse::<f64>().ok()?) * 1000.0
-    } else {
-        s.parse::<f64>().ok()? * 60_000.0
-    };
-    (ms.is_finite() && ms > 0.0).then(|| ms.min(MAX_MS))
-}
-
-fn chip(ui: &mut egui::Ui, label: &str, on: bool, t: &ui::Theme) -> egui::Response {
-    let g = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::proportional(ui::px(11.0)), Color32::PLACEHOLDER);
-    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 18.0, 26.0), egui::Sense::click());
-    let h = ui::motion::hover(ui.ctx(), resp.id, resp.hovered());
-    ui.painter().rect_filled(r, 13.0, if on { t.selected } else { ui::blend(t.bg2, t.hover, h) });
-    if on {
-        ui.painter().rect_stroke(r, 13.0, Stroke::new(1.0, t.brand), egui::StrokeKind::Inside);
-    }
-    ui.painter().galley(r.center() - g.size() / 2.0, g, if on { t.text } else { t.text2 });
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, label));
-    ui::focus_ring(ui, &resp, r);
-    resp
-}
-
-/// A button as wide as the panel.
-/// The music: one piece for everyone (anyone who can edit picks or stops it) and this
-/// person's own volume.
-fn music_section(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
-    let playing = read_music(ed).map(|m| m.0);
-    ui.horizontal(|ui| {
-        ui::heading(ui, "Musica");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new("la sentono tutti").size(ui::px(10.0)).color(t.text2));
-        });
-    });
-    ui.spacing_mut().item_spacing.y = 2.0;
-    for (track, _, name, about, icon_name) in crate::music::TRACKS {
-        let on = playing == Some(track);
-        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), egui::Sense::click());
-        let h = ui::motion::hover(ui.ctx(), resp.id, resp.hovered() && !ed.read_only);
-        ui.painter().rect_filled(r, 8.0, if on { t.selected } else { t.hover.gamma_multiply(h) });
-        let tile = Rect::from_min_size(r.min + vec2(6.0, 6.0), vec2(32.0, 32.0));
-        ui.painter().rect_filled(tile, 8.0, if on { t.brand_fill } else { t.bg2 });
-        icon(ui, icon_name, tile.center(), 16.0, if on { Color32::WHITE } else { t.icon2 });
-        ui.painter().text(pos2(tile.max.x + 10.0, r.center().y - 7.0), egui::Align2::LEFT_CENTER, name, ui::medium(ui::px(12.0)), t.text);
-        ui.painter().text(pos2(tile.max.x + 10.0, r.center().y + 8.0), egui::Align2::LEFT_CENTER, about, egui::FontId::proportional(ui::px(10.5)), t.text2);
-        if on {
-            eq_bars(ui, pos2(r.max.x - 18.0, r.center().y), 12.0, t.brand);
-        } else if resp.hovered() && !ed.read_only {
-            icon(ui, "play", pos2(r.max.x - 18.0, r.center().y), 14.0, t.icon2);
-        }
-        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, !ed.read_only, on, name));
-        ui::focus_ring(ui, &resp, r);
-        if resp.clicked() && !ed.read_only {
-            set_music(ed, if on { None } else { Some(track) });
-        }
-    }
-    ui.spacing_mut().item_spacing.y = 10.0;
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        let p = &mut ed.prefs;
-        let muted = p.music_muted || p.music_volume <= 0.001;
-        if ui::icon_button(ui, if muted { "volume-x" } else { "volume-2" }, if muted { "Riattiva l'audio" } else { "Silenzia (solo per te)" }, None, vec2(28.0, 28.0), 16.0, muted, false).clicked() {
-            p.music_muted = !p.music_muted;
-            if !p.music_muted && p.music_volume <= 0.001 {
-                p.music_volume = 0.6;
-            }
-        }
-        let mut v = p.music_volume as f64;
-        if ui::slider_inline(ui, "Volume", &mut v, 0.0, 1.0, 0.05, false, |v| format!("{}%", (v * 100.0).round()), ui.available_width()) {
-            p.music_volume = v as f32;
-            p.music_muted = false;
-        }
-    });
-    if playing.is_some() && !ed.read_only && ui::full_button(ui, "Ferma la musica", Btn::Secondary, Some("square")).clicked() {
-        set_music(ed, None);
     }
 }
 
@@ -973,11 +1240,15 @@ mod tests {
     fn times_are_typed_and_shown_as_in_figjam() {
         assert_eq!(super::clock(5.0 * 60_000.0), "05:00");
         assert_eq!(super::clock(61_001.0), "01:02", "a second just begun still counts");
-        assert_eq!(super::parse_time("5"), Some(300_000.0));
-        assert_eq!(super::parse_time("2:30"), Some(150_000.0));
-        assert_eq!(super::parse_time(" 90s "), Some(90_000.0));
-        assert_eq!(super::parse_time("200"), Some(super::MAX_MS), "at most 99:59");
-        assert_eq!(super::parse_time("dieci"), None);
-        assert_eq!(super::parse_time("0"), None);
+        assert_eq!(super::clock(90.0 * 60_000.0), "1:30:00", "hours from an hour up");
+        // Digits typed like a microwave's: from the right, carrying over past 59.
+        assert_eq!(super::digits_ms("5"), Some(5_000.0));
+        assert_eq!(super::digits_ms("130"), Some(90_000.0));
+        assert_eq!(super::digits_ms("90"), Some(90_000.0));
+        assert_eq!(super::digits_ms("13000"), Some(5_400_000.0));
+        assert_eq!(super::digits_ms("999999"), Some(super::MAX_MS));
+        assert_eq!((super::digits_ms("0"), super::digits_ms("")), (None, None));
+        assert_eq!(super::digits_shown("130"), "01:30");
+        assert_eq!(super::digits_shown("13000"), "01:30:00");
     }
 }

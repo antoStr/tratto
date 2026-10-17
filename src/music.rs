@@ -8,18 +8,22 @@ const SR: f32 = RATE as f32;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Track {
+    Acoustic,
     Lofi,
-    Ambient,
-    Piano,
-    Rain,
+    Smash,
+    Friday,
+    Synthwave,
+    Hero,
 }
 
-/// Every piece: id (as stored on the board), name, a line about it, icon.
-pub const TRACKS: [(Track, &str, &str, &str, &str); 4] = [
-    (Track::Lofi, "lofi", "Lo-fi", "Accordi caldi e batteria morbida", "headphones"),
-    (Track::Ambient, "ambient", "Ambient", "Tappeti lenti per concentrarsi", "cloud"),
-    (Track::Piano, "piano", "Pianoforte", "Arpeggi calmi", "music"),
-    (Track::Rain, "rain", "Pioggia", "Pioggia leggera e un accordo lontano", "cloud-rain"),
+/// Every piece, as FigJam's: id (as stored on the board), title, the colour of its cover.
+pub const TRACKS: [(Track, &str, &str, &str); 6] = [
+    (Track::Acoustic, "acoustic", "Acoustic ambient", "#14AE5C"),
+    (Track::Lofi, "lofi", "Lo-fi hip hop", "#FFE24B"),
+    (Track::Smash, "smash", "Button smash", "#5B5BF6"),
+    (Track::Friday, "friday", "It's Friday", "#FF7A1A"),
+    (Track::Synthwave, "synthwave", "Synthwave", "#C04BF2"),
+    (Track::Hero, "hero", "Hero's journey", "#9BD2FF"),
 ];
 
 impl Track {
@@ -27,6 +31,12 @@ impl Track {
         TRACKS.iter().find(|t| t.0 == self).map_or("lofi", |t| t.1)
     }
     pub fn from_id(id: &str) -> Option<Track> {
+        // The pieces of Tratto 2.4 played on as the closest new ones.
+        let id = match id {
+            "ambient" | "piano" => "acoustic",
+            "rain" => "lofi",
+            other => other,
+        };
         TRACKS.iter().find(|t| t.1 == id).map(|t| t.0)
     }
 }
@@ -40,6 +50,8 @@ const TABLE: usize = 4096;
 struct Tables {
     sine: Vec<f32>,
     saw: Vec<f32>,
+    /// A square of seven odd harmonics: the 8-bit sound.
+    square: Vec<f32>,
 }
 
 fn tables() -> &'static Tables {
@@ -48,7 +60,8 @@ fn tables() -> &'static Tables {
         let at = |i: usize| i as f32 / TABLE as f32 * std::f32::consts::TAU;
         let sine = (0..=TABLE).map(|i| at(i).sin()).collect();
         let saw = (0..=TABLE).map(|i| (1..=8).map(|k| (at(i) * k as f32).sin() / k as f32 * (1.0 - k as f32 / 10.0)).sum::<f32>() * 0.6).collect();
-        Tables { sine, saw }
+        let square = (0..=TABLE).map(|i| (0..7).map(|k| (2 * k + 1) as f32).map(|h| (at(i) * h).sin() / h).sum::<f32>() * 0.9).collect();
+        Tables { sine, saw, square }
     })
 }
 
@@ -224,6 +237,113 @@ fn hat(l: &mut Loop, at: f32, gain: f32, rng: &mut Rng) {
     });
 }
 
+/// A plucked string (Karplus–Strong): a burst of noise in a delay the length of the note,
+/// softened on every round: a nylon guitar.
+fn pluck(l: &mut Loop, at: f32, note: f32, gain: f32, rng: &mut Rng) {
+    let f = midi(note);
+    let n = ((SR / f) as usize).max(2);
+    let mut line: Vec<f32> = (0..n).map(|_| rng.noise()).collect();
+    // A first softening of the burst: a rounder attack.
+    for _ in 0..2 {
+        for i in 0..n {
+            line[i] = 0.5 * (line[i] + line[(i + 1) % n]);
+        }
+    }
+    let mut i = 0;
+    let mut fade = Decay::new(2.2);
+    l.add(at, 3.2, |_| {
+        let j = (i + 1) % n;
+        let y = line[i];
+        line[i] = 0.4985 * (line[i] + line[j]);
+        i = j;
+        gain * y * fade.next()
+    });
+}
+
+/// An 8-bit square note, short and bright, with a quick vibrato after a moment.
+fn chip(l: &mut Loop, at: f32, note: f32, len: f32, gain: f32) {
+    let f = midi(note);
+    let sq = &tables().square;
+    let mut rel = Decay::new(0.03);
+    l.add(at, len + 0.1, |t| {
+        let env = attack(t, 0.003) * if t > len { rel.next() } else { 1.0 } * (1.0 - 0.25 * (t / len.max(0.01)).min(1.0));
+        let vib = 1.0 + if t > 0.12 { 0.006 * sine(6.0 * t) } else { 0.0 };
+        gain * env * read(sq, f * t * vib)
+    });
+}
+
+/// A synth voice: soft saws whose brightness opens and closes with each note (`cut` 0–1).
+fn synth(l: &mut Loop, at: f32, note: f32, len: f32, gain: f32, cut: f32) {
+    let f = midi(note);
+    let saw = &tables().saw;
+    let (mut env_f, mut rel) = (Decay::new(0.25), Decay::new(0.12));
+    let mut lp = 0.0f32;
+    l.add(at, len + 0.5, |t| {
+        let env = attack(t, 0.008) * if t > len { rel.next() } else { 1.0 };
+        let y = 0.5 * (read(saw, f * t) + read(saw, f * 1.006 * t + 0.4));
+        let k = (cut * (0.15 + 0.85 * env_f.next())).clamp(0.02, 1.0);
+        lp += (y - lp) * k;
+        gain * env * lp
+    });
+}
+
+/// Brass: a saw that swells in and brightens as it does.
+fn brass(l: &mut Loop, at: f32, note: f32, len: f32, gain: f32) {
+    let f = midi(note);
+    let saw = &tables().saw;
+    let mut rel = Decay::new(0.2);
+    let mut lp = 0.0f32;
+    l.add(at, len + 0.8, |t| {
+        let swell = attack(t, 0.12);
+        let env = swell * if t > len { rel.next() } else { 1.0 };
+        let vib = 1.0 + 0.003 * sine(5.2 * t) * attack(t, 0.4);
+        let y = read(saw, f * t * vib);
+        lp += (y - lp) * (0.05 + 0.25 * swell);
+        gain * env * lp * 1.6
+    });
+}
+
+/// Hand claps: three quick bursts of noise and a short tail.
+fn clap(l: &mut Loop, at: f32, gain: f32, rng: &mut Rng) {
+    let mut r = Rng((rng.next() * u32::MAX as f32) as u32 | 1);
+    let (mut bp1, mut bp2) = (0.0f32, 0.0f32);
+    let mut tail = Decay::new(0.06);
+    l.add(at, 0.3, |t| {
+        let n = r.noise();
+        bp1 += (n - bp1) * 0.45;
+        bp2 += (bp1 - bp2) * 0.45;
+        let band = bp1 - bp2;
+        let burst = [0.0, 0.011, 0.022].iter().map(|&s| if t >= s && t < s + 0.009 { 1.0 } else { 0.0 }).sum::<f32>();
+        let env = if t < 0.03 { burst } else { tail.next() * 0.8 };
+        gain * env * band * 2.5
+    });
+}
+
+/// An open hi-hat: like a closed one, ringing longer.
+fn open_hat(l: &mut Loop, at: f32, gain: f32, rng: &mut Rng) {
+    let mut prev = 0.0;
+    let mut r = Rng((rng.next() * u32::MAX as f32) as u32 | 1);
+    let mut d = Decay::new(0.12);
+    l.add(at, 0.4, |_| {
+        let n = r.noise();
+        let hp = n - prev;
+        prev = n;
+        gain * hp * d.next()
+    });
+}
+
+/// A timpani: a low drum with a pitch, and a soft skin noise.
+fn timpani(l: &mut Loop, at: f32, note: f32, gain: f32, rng: &mut Rng) {
+    let f = midi(note);
+    let mut r = Rng((rng.next() * u32::MAX as f32) as u32 | 1);
+    let (mut body, mut skin) = (Decay::new(0.9), Decay::new(0.05));
+    let mut lp = 0.0f32;
+    l.add(at, 2.4, |t| {
+        lp += (r.noise() - lp) * 0.08;
+        gain * (body.next() * (sine(f * t) + 0.3 * sine(f * 1.5 * t)) + 0.6 * skin.next() * lp)
+    });
+}
+
 /* ---------------- effects ---------------- */
 
 /// A small Schroeder reverb (four combs, two all-passes), run twice round the loop so its tail
@@ -289,10 +409,12 @@ fn normalize(buf: &mut [f32], peak: f32) {
 /// The loop of a piece, ready to play over and over.
 pub fn render(track: Track) -> Vec<f32> {
     let mut buf = match track {
+        Track::Acoustic => acoustic(),
         Track::Lofi => lofi(),
-        Track::Ambient => ambient(),
-        Track::Piano => piano_piece(),
-        Track::Rain => rain(),
+        Track::Smash => smash(),
+        Track::Friday => friday(),
+        Track::Synthwave => synthwave(),
+        Track::Hero => hero(),
     };
     normalize(&mut buf, 0.72);
     buf
@@ -362,85 +484,177 @@ fn lofi() -> Vec<f32> {
     l.buf
 }
 
-fn ambient() -> Vec<f32> {
-    let span = 8.0;
-    let mut l = Loop::new(span * 8.0);
-    let mut rng = Rng(0x0bad_cafe);
-    let chords: [&[f32]; 4] = [&[48.0, 55.0, 59.0, 62.0, 64.0], &[45.0, 52.0, 55.0, 59.0, 60.0], &[41.0, 53.0, 57.0, 60.0, 64.0], &[43.0, 50.0, 55.0, 57.0, 62.0]];
-    for c in 0..8 {
-        for &n in chords[c % 4] {
-            pad(&mut l, c as f32 * span, n, span, 0.055);
+/// Acoustic ambient: a nylon guitar picking through open chords, a soft pad and a few bells.
+fn acoustic() -> Vec<f32> {
+    let beat = 60.0 / 84.0;
+    let bar = beat * 4.0;
+    let mut l = Loop::new(bar * 16.0);
+    let mut rng = Rng(0x0a0c_0057);
+    // G – D/F# – Em – C, open voicings.
+    let chords: [[f32; 6]; 4] = [[43.0, 50.0, 55.0, 59.0, 62.0, 67.0], [42.0, 50.0, 54.0, 57.0, 62.0, 66.0], [40.0, 47.0, 52.0, 55.0, 59.0, 64.0], [36.0, 48.0, 52.0, 55.0, 60.0, 64.0]];
+    let order = [0usize, 3, 2, 4, 1, 4, 2, 5];
+    for b in 0..16 {
+        let t0 = b as f32 * bar;
+        let c = chords[b % 4];
+        for (k, &s) in order.iter().enumerate() {
+            pluck(&mut l, t0 + k as f32 * beat * 0.5 + rng.next() * 0.012, c[s], if k == 0 { 0.32 } else { 0.22 }, &mut rng);
+        }
+        for &n in &c[1..4] {
+            pad(&mut l, t0, n + 12.0, bar, 0.018);
+        }
+        if b % 2 == 1 {
+            bell(&mut l, t0 + 2.0 * beat, c[5] + 12.0, 0.035);
         }
     }
-    let penta = [72.0, 74.0, 76.0, 79.0, 81.0, 84.0];
-    let mut t = 1.0;
-    while t < span * 8.0 {
-        let n = penta[(rng.next() * penta.len() as f32) as usize % penta.len()];
-        bell(&mut l, t, n, 0.05 + rng.next() * 0.04);
-        t += 1.6 + rng.next() * 2.4;
-    }
-    warm(&mut l.buf, 0.3);
-    reverb(&mut l.buf, 0.55, 1.4);
+    warm(&mut l.buf, 0.5);
+    reverb(&mut l.buf, 0.35, 1.3);
     l.buf
 }
 
-fn piano_piece() -> Vec<f32> {
-    let beat = 60.0 / 70.0;
+/// Button smash: a fast 8-bit tune, square-wave arpeggios over a bouncing bass and noise drums.
+fn smash() -> Vec<f32> {
+    let beat = 60.0 / 150.0;
     let bar = beat * 4.0;
-    let mut l = Loop::new(bar * 16.0);
-    let mut rng = Rng(0x00c0_ffee);
-    // C – G/B – Am – F, then Dm7 – G – Em – F.
-    let prog: [[f32; 4]; 8] = [[48.0, 55.0, 60.0, 64.0], [47.0, 55.0, 59.0, 62.0], [45.0, 52.0, 57.0, 60.0], [41.0, 48.0, 53.0, 57.0], [50.0, 57.0, 60.0, 65.0], [43.0, 50.0, 55.0, 59.0], [40.0, 47.0, 55.0, 59.0], [41.0, 48.0, 53.0, 57.0]];
-    for b in 0..16 {
+    let mut l = Loop::new(bar * 24.0);
+    let mut rng = Rng(0x0b17_0b17);
+    // Am – F – C – G, quick arpeggios a step at a time.
+    let chords: [[f32; 3]; 4] = [[69.0, 72.0, 76.0], [65.0, 69.0, 72.0], [67.0, 72.0, 76.0], [67.0, 71.0, 74.0]];
+    let roots = [45.0, 41.0, 48.0, 43.0];
+    let tune = [76.0, 79.0, 81.0, 79.0, 76.0, 74.0, 72.0, 74.0, 76.0, 76.0, 72.0, 69.0, 71.0, 72.0, 74.0, 71.0];
+    for b in 0..24 {
         let t0 = b as f32 * bar;
-        let c = prog[b % 8];
-        // Left hand: a broken chord in eighths.
-        let pattern = [c[0], c[1], c[2], c[3], c[2] + 12.0, c[3], c[2], c[1]];
-        for (i, n) in pattern.iter().enumerate() {
-            piano(&mut l, t0 + i as f32 * beat * 0.5, *n, if i == 0 { 0.16 } else { 0.1 });
+        let c = chords[b % 4];
+        for k in 0..16 {
+            chip(&mut l, t0 + k as f32 * beat * 0.25, c[k % 3] - 12.0, beat * 0.2, 0.05);
         }
-        // Right hand: a simple line on the chord's notes, an octave up.
-        if b % 2 == 1 || b >= 8 {
-            let tones = [c[1] + 12.0, c[2] + 12.0, c[3] + 12.0, c[2] + 24.0];
-            let mut at = 0.0;
-            while at < 4.0 {
-                let n = tones[(rng.next() * 4.0) as usize % 4];
-                piano(&mut l, t0 + at * beat, n, 0.09);
-                at += if rng.next() < 0.6 { 1.0 } else { 2.0 };
+        for k in 0..8 {
+            chip(&mut l, t0 + k as f32 * beat * 0.5, roots[b % 4] - if k % 2 == 1 { 0.0 } else { 12.0 }, beat * 0.4, 0.09);
+        }
+        if b >= 8 {
+            let start = (b % 4) * 4;
+            for k in 0..4 {
+                chip(&mut l, t0 + k as f32 * beat, tune[start + k], beat * 0.85, 0.07);
+            }
+        }
+        if b >= 4 {
+            for k in 0..4 {
+                kick(&mut l, t0 + k as f32 * beat, if k % 2 == 0 { 0.4 } else { 0.0 });
+                if k % 2 == 1 {
+                    snare(&mut l, t0 + k as f32 * beat, 0.2, &mut rng);
+                }
+                hat(&mut l, t0 + (k as f32 + 0.5) * beat, 0.05, &mut rng);
             }
         }
     }
-    reverb(&mut l.buf, 0.3, 1.2);
+    reverb(&mut l.buf, 0.1, 0.8);
     l.buf
 }
 
-fn rain() -> Vec<f32> {
-    let secs = 48.0;
-    let mut l = Loop::new(secs);
-    let mut rng = Rng(0x5eed_1234);
-    // A far, quiet chord underneath.
-    for &n in &[36.0, 43.0, 52.0, 55.0] {
-        pad(&mut l, 0.0, n, secs, 0.03);
-    }
-    let n = l.buf.len();
-    let (mut a, mut b) = (0.0f32, 0.0f32);
-    let mut drop = 0.0f32;
-    let mut drop_lp = 0.0f32;
-    for i in 0..n {
-        let t = i as f32 / SR;
-        // Steady rain: noise softened twice, swelling slowly (whole cycles in the loop).
-        a += (rng.noise() - a) * 0.5;
-        b += (a - b) * 0.25;
-        let swell = 0.75 + 0.25 * sine(t * 3.0 / secs) * sine(t * 2.0 / secs + 0.25);
-        // Drops: tiny ticks here and there.
-        if rng.next() < 0.004 {
-            drop = rng.noise() * 0.5;
+/// It's Friday: a disco groove, four on the floor, claps, an octave bass and piano stabs.
+fn friday() -> Vec<f32> {
+    let beat = 60.0 / 118.0;
+    let bar = beat * 4.0;
+    let mut l = Loop::new(bar * 24.0);
+    let mut rng = Rng(0x0f71_da15);
+    // Dm9 – G13 – Cmaj9 – A7: funky and bright.
+    let chords: [(&[f32], f32); 4] = [(&[62.0, 65.0, 69.0, 72.0, 76.0], 38.0), (&[59.0, 64.0, 65.0, 69.0], 43.0), (&[60.0, 64.0, 67.0, 71.0, 74.0], 36.0), (&[61.0, 64.0, 67.0, 69.0], 45.0)];
+    for b in 0..24 {
+        let t0 = b as f32 * bar;
+        let (notes, root) = chords[b % 4];
+        for k in 0..8 {
+            let n = if k % 2 == 0 { root } else { root + 12.0 };
+            bass(&mut l, t0 + k as f32 * beat * 0.5, n, beat * 0.35, 0.3);
         }
-        drop *= 0.72;
-        drop_lp += (drop - drop_lp) * 0.6;
-        l.buf[i] += b * 0.22 * swell + (drop - drop_lp) * 0.25;
+        for at in [0.5f32, 1.75, 2.5, 3.5] {
+            for (i, &n) in notes.iter().enumerate() {
+                ep(&mut l, t0 + at * beat + i as f32 * 0.004, n, beat * 0.25, 0.06);
+            }
+        }
+        if b >= 2 {
+            for k in 0..4 {
+                kick(&mut l, t0 + k as f32 * beat, 0.5);
+                open_hat(&mut l, t0 + (k as f32 + 0.5) * beat, 0.07, &mut rng);
+                if k % 2 == 1 {
+                    clap(&mut l, t0 + k as f32 * beat, 0.25, &mut rng);
+                }
+            }
+        }
+        if b >= 8 && b % 2 == 0 {
+            for (k, n) in [74.0, 76.0, 77.0, 76.0].iter().enumerate() {
+                synth(&mut l, t0 + (2.0 + k as f32 * 0.5) * beat, *n, beat * 0.4, 0.06, 0.35);
+            }
+        }
     }
-    reverb(&mut l.buf, 0.25, 1.0);
+    reverb(&mut l.buf, 0.18, 1.0);
+    l.buf
+}
+
+/// Synthwave: a driving saw bass in eighths, a wide pad, a bright arpeggio and a big snare.
+fn synthwave() -> Vec<f32> {
+    let beat = 60.0 / 96.0;
+    let bar = beat * 4.0;
+    let mut l = Loop::new(bar * 16.0);
+    let mut rng = Rng(0x05e7_5e75);
+    // Am – F – C – G.
+    let chords: [([f32; 3], f32); 4] = [([57.0, 60.0, 64.0], 33.0), ([57.0, 60.0, 65.0], 29.0), ([55.0, 60.0, 64.0], 36.0), ([55.0, 59.0, 62.0], 31.0)];
+    for b in 0..16 {
+        let t0 = b as f32 * bar;
+        let (c, root) = chords[b % 4];
+        for k in 0..8 {
+            synth(&mut l, t0 + k as f32 * beat * 0.5, root + 12.0, beat * 0.4, 0.2, 0.18);
+        }
+        for &n in &c {
+            pad(&mut l, t0, n, bar, 0.04);
+        }
+        if b >= 4 {
+            for k in 0..16 {
+                synth(&mut l, t0 + k as f32 * beat * 0.25, c[k % 3] + 12.0 + if k % 6 >= 3 { 12.0 } else { 0.0 }, beat * 0.2, 0.05, 0.5);
+            }
+            for k in 0..4 {
+                kick(&mut l, t0 + k as f32 * beat, 0.5);
+                hat(&mut l, t0 + (k as f32 + 0.5) * beat, 0.05, &mut rng);
+                if k % 2 == 1 {
+                    snare(&mut l, t0 + k as f32 * beat, 0.32, &mut rng);
+                }
+            }
+        }
+    }
+    reverb(&mut l.buf, 0.32, 1.4);
+    l.buf
+}
+
+/// Hero's journey: strings, a brass call over them and timpani rolls, rising.
+fn hero() -> Vec<f32> {
+    let beat = 60.0 / 80.0;
+    let bar = beat * 4.0;
+    let mut l = Loop::new(bar * 16.0);
+    let mut rng = Rng(0x0e70_0e70);
+    // D – A – Bm – G, then D – G – A – D.
+    let prog: [([f32; 4], f32); 8] = [([50.0, 57.0, 62.0, 66.0], 38.0), ([49.0, 57.0, 61.0, 64.0], 45.0), ([47.0, 54.0, 59.0, 62.0], 35.0), ([43.0, 55.0, 59.0, 62.0], 31.0), ([50.0, 57.0, 62.0, 66.0], 38.0), ([43.0, 55.0, 59.0, 62.0], 31.0), ([45.0, 57.0, 61.0, 64.0], 33.0), ([50.0, 57.0, 62.0, 66.0], 38.0)];
+    let call = [[74.0, 0.0, 1.5], [76.0, 1.5, 0.5], [78.0, 2.0, 2.0], [81.0, 0.0, 3.0], [79.0, 3.0, 1.0], [78.0, 0.0, 4.0]];
+    for b in 0..16 {
+        let t0 = b as f32 * bar;
+        let (c, root) = prog[b % 8];
+        for &n in &c {
+            pad(&mut l, t0, n, bar, 0.045);
+        }
+        bass(&mut l, t0, root, bar * 0.9, 0.22);
+        timpani(&mut l, t0, root + 12.0, 0.3, &mut rng);
+        if b % 4 == 3 {
+            for k in 0..6 {
+                timpani(&mut l, t0 + 3.0 * beat + k as f32 * beat / 6.0, root + 12.0, 0.08 + k as f32 * 0.03, &mut rng);
+            }
+        }
+        if b >= 4 {
+            let phrase = (b % 2) * 3;
+            for k in 0..3 {
+                let [n, at, len] = call[phrase + k];
+                brass(&mut l, t0 + at * beat, n - 12.0, len * beat, 0.1);
+            }
+        }
+    }
+    warm(&mut l.buf, 0.55);
+    reverb(&mut l.buf, 0.42, 1.5);
     l.buf
 }
 
