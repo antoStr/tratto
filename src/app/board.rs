@@ -656,9 +656,17 @@ impl BoardScreen {
                 ctx.data_mut(|d| d.remove::<Rect>(Id::new("bottom-bars")));
             }
         } else {
+            let (left_shown, right_shown) = ctx.data(|d| d.get_temp::<(bool, bool)>(Id::new("panels-shown"))).unwrap_or((true, true));
+            // On a phone a panel takes the whole screen: the bars and pills wait until it is closed
+            // (drawn over it, they covered its fields).
+            let phone_panel = ui::narrow(&ctx) && (left_shown || right_shown);
             ctx.data_mut(|d| d.remove::<Rect>(Id::new("ctx-bar-rect")));
-            super::context_bar::context_bar(&ctx, rect, &mut self.editor);
-            super::toolbar::toolbar(&ctx, rect, &mut self.editor, &mut self.ui);
+            if phone_panel {
+                ctx.data_mut(|d| d.remove::<Rect>(Id::new("bottom-bars")));
+            } else {
+                super::context_bar::context_bar(&ctx, rect, &mut self.editor);
+                super::toolbar::toolbar(&ctx, rect, &mut self.editor, &mut self.ui);
+            }
             let is_mobile = stage.width() < 600.0;
             // Where the minimap is this frame, for what has to keep clear of it (none: not shown).
             ctx.data_mut(|d| {
@@ -672,9 +680,6 @@ impl BoardScreen {
                     super::toolbar::minimap(&ctx, rect, &mut self.editor, &mut self.ui.minimap);
                 }
             }
-            let (left_shown, right_shown) = ctx.data(|d| d.get_temp::<(bool, bool)>(Id::new("panels-shown"))).unwrap_or((true, true));
-            // On a phone a panel takes the whole width: the pills wait until it is closed.
-            let phone_panel = ui::narrow(&ctx) && (left_shown || right_shown);
             if !left_shown && !phone_panel {
                 if let Some(a) = super::panels::focus_pill(&ctx, rect, self, dialogs) {
                     action = Some(a);

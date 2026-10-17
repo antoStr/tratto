@@ -1511,15 +1511,14 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
                 if ui::icon_button(ui, "panel-left-open", if focus { "Mostra i pannelli" } else { "Mostra il pannello dei livelli" }, focus.then_some("Ctrl+\\"), vec2(ui::hit(ui.ctx(), 24.0), ui::hit(ui.ctx(), 24.0)), 16.0, false, false).clicked() {
                     if focus {
                         b.editor.toggle_focus();
-                    } else if b.editor.prefs.left_panel {
-                        // Hidden only because the window is narrow: shown over the board.
+                    } else {
+                        // In a narrow window it shows over the board (a phone has room for one
+                        // panel at a time).
+                        b.editor.prefs.left_panel = true;
                         b.ui.peek_left = true;
-                        // A phone has room for one panel at a time.
                         if ui::narrow(ui.ctx()) {
                             b.ui.peek_right = false;
                         }
-                    } else {
-                        b.editor.prefs.left_panel = true;
                     }
                 }
             });
@@ -1650,11 +1649,9 @@ pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
                 share_button(ui, b);
                 ui.add_space(2.0);
                 if small_icon_button(ui, "panel-right-open", "Mostra il pannello", false).clicked() {
-                    if b.editor.prefs.right_panel {
-                        b.ui.peek_right = true;
-                        if ui::narrow(ui.ctx()) {
-                            b.ui.peek_left = false;
-                        }
+                    b.ui.peek_right = true;
+                    if ui::narrow(ui.ctx()) {
+                        b.ui.peek_left = false;
                     }
                     b.editor.prefs.right_panel = true;
                     b.editor.prefs.focus = false;
