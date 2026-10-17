@@ -84,7 +84,7 @@ impl Editor {
 
     pub fn paint_overlay(&mut self, painter: &Painter, dark_ui: bool) {
         let mut out: Vec<Shape> = Vec::new();
-        let accent = self.prefs.accent();
+        let accent = self.prefs.selection_color();
         let o = self.origin.to_vec2();
         let k = if self.prefs.big_handles { 1.6 } else { 1.0 };
 
@@ -174,7 +174,7 @@ impl Editor {
                 && !single_line
             {
                 let pts: Vec<Pos2> = corners_of(b, rot, 0.0).iter().map(|p| self.sp(p.x, p.y)).collect();
-                out.push(Shape::closed_line(pts, Stroke::new(1.0, accent_in)));
+                out.push(Shape::closed_line(pts, Stroke::new(1.5, accent_in)));
                 if let Some(&(_, r)) = handles.iter().find(|(h, _)| *h == Handle::Rot) {
                     // The knob hangs from the top edge, or from the top-right corner when the "+" take the top.
                     let from = if handles.iter().any(|(h, _)| *h == Handle::AddN) { Handle::Ne } else { Handle::N };
@@ -212,13 +212,15 @@ impl Editor {
                         out.push(Shape::line_segment([p - vec2(0.0, r * 0.45), p + vec2(0.0, r * 0.45)], st));
                         continue;
                     }
-                    let st = Stroke::new(if k > 1.0 { 1.5 } else { 1.0 }, accent);
+                    let st = Stroke::new(1.5, accent);
                     if matches!(h, Handle::Rot | Handle::P0 | Handle::P1) {
                         out.push(circle(p, 4.5 * k, Color32::WHITE, st));
-                    } else {
-                        let r = egui::Rect::from_center_size(pos2(p.x.round(), p.y.round()), vec2(7.0 * k, 7.0 * k));
-                        out.push(Shape::rect_filled(r, 0.0, Color32::WHITE));
-                        out.push(Shape::rect_stroke(r, 0.0, st, egui::StrokeKind::Middle));
+                    } else if matches!(h, Handle::Nw | Handle::Ne | Handle::Se | Handle::Sw) {
+                        // FigJam's handles: white squares with round corners at the corners only;
+                        // the sides still resize, from the line itself.
+                        let r = egui::Rect::from_center_size(pos2(p.x.round(), p.y.round()), vec2(10.0 * k, 10.0 * k));
+                        out.push(Shape::rect_filled(r, 2.5, Color32::WHITE));
+                        out.push(Shape::rect_stroke(r, 2.5, st, egui::StrokeKind::Middle));
                     }
                 }
             }

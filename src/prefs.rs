@@ -394,6 +394,12 @@ impl Prefs {
         serde_json::to_string(self).unwrap_or_default()
     }
 
+    /// The colour of the selection on the board: FigJam's blue with its violet, otherwise the
+    /// colour chosen.
+    pub fn selection_color(&self) -> egui::Color32 {
+        if self.accent.eq_ignore_ascii_case(DEFAULT_ACCENT) { egui::Color32::from_rgb(0x0D, 0x99, 0xFF) } else { self.accent() }
+    }
+
     pub fn accent(&self) -> egui::Color32 {
         crate::model::parse_color(&self.accent).filter(|_| self.accent.len() == 7).unwrap_or(egui::Color32::from_rgb(0x97, 0x47, 0xFF))
     }
