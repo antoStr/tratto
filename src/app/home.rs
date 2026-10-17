@@ -131,7 +131,7 @@ impl Home {
                 }
                 match crate::updates::current() {
                     crate::updates::State::Available { version, download_url, url, .. } => {
-                        if side_button(ui, "download", &format!("Aggiorna a Tratto {version}")).clicked() {
+                        if side_button(ui, "download", &format!("Aggiorna a {version} e riavvia")).clicked() {
                             if download_url.is_some() {
                                 crate::updates::start_download(ui.ctx());
                             } else {
@@ -143,6 +143,12 @@ impl Home {
                         ui.horizontal(|ui| {
                             ui.spinner();
                             ui.label(RichText::new(format!("Scarico {version}…")).color(t.chrome_text));
+                        });
+                    }
+                    crate::updates::State::Installing { version } => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(RichText::new(format!("Installo {version}…")).color(t.chrome_text));
                         });
                     }
                     crate::updates::State::ReadyToInstall { version, .. } => {
