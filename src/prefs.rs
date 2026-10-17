@@ -250,11 +250,13 @@ pub fn toolbar_items(order: &[String]) -> Vec<String> {
     out
 }
 
-pub const DEFAULT_ACCENT: &str = "#0D99FF";
+/// FigJam's violet.
+pub const DEFAULT_ACCENT: &str = "#9747FF";
 
 /// The current default layout. 2: side panels and minimap closed (before, both panels and the
-/// minimap were open, which made the board feel crowded).
-const LAYOUT: u32 = 2;
+/// minimap were open, which made the board feel crowded). 3: FigJam's violet in place of the
+/// old default blue.
+const LAYOUT: u32 = 3;
 
 impl Default for Prefs {
     fn default() -> Self {
@@ -350,10 +352,13 @@ impl Prefs {
         p.toolbar_size = if p.toolbar_size.is_finite() { p.toolbar_size.clamp(0.8, 1.4) } else { 1.0 };
         // Once, preferences saved by an older Tratto move to the new, cleaner layout; the panels
         // reopen from their buttons and stay as chosen afterwards.
-        if p.layout < LAYOUT {
+        if p.layout < 2 {
             (p.left_panel, p.right_panel, p.minimap, p.focus) = (false, false, false, false);
-            p.layout = LAYOUT;
         }
+        if p.layout < 3 && p.accent.eq_ignore_ascii_case("#0D99FF") {
+            p.accent = DEFAULT_ACCENT.into();
+        }
+        p.layout = LAYOUT;
         p
     }
 
@@ -367,7 +372,7 @@ impl Prefs {
     }
 
     pub fn accent(&self) -> egui::Color32 {
-        crate::model::parse_color(&self.accent).filter(|_| self.accent.len() == 7).unwrap_or(egui::Color32::from_rgb(0x0D, 0x99, 0xFF))
+        crate::model::parse_color(&self.accent).filter(|_| self.accent.len() == 7).unwrap_or(egui::Color32::from_rgb(0x97, 0x47, 0xFF))
     }
 }
 
@@ -397,6 +402,13 @@ mod tests {
         assert!(!old.left_panel && !old.right_panel && !old.minimap);
         let reopened = Prefs { left_panel: true, ..old };
         assert!(Prefs::from_json(&reopened.to_json()).left_panel, "a panel opened afterwards stays open");
+        // The old default blue becomes FigJam's violet, once; a colour chosen stays.
+        let blue = Prefs::from_json(r##"{"accent":"#0D99FF","layout":2,"leftPanel":true}"##);
+        assert_eq!((blue.accent.as_str(), blue.left_panel), (DEFAULT_ACCENT, true));
+        let green = Prefs::from_json(r##"{"accent":"#14AE5C","layout":2}"##);
+        assert_eq!(green.accent, "#14AE5C");
+        let chosen = Prefs { accent: "#0D99FF".into(), ..blue };
+        assert_eq!(Prefs::from_json(&chosen.to_json()).accent, "#0D99FF", "blue picked again stays");
     }
 
     #[test]

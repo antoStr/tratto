@@ -39,10 +39,11 @@ fn paint(ui: &Ui, tex: &TextureHandle, center: Pos2, px: u32, color: Color32) {
     ui.painter().add(mesh);
 }
 
-/// Paints a Lucide icon centred on `center`, `size` points wide, in `color`.
+/// Paints a Lucide icon centred on `center`, `size` points wide, in `color`: with FigJam's
+/// finer line (1.5 in 24 rather than Lucide's 2).
 pub fn icon(ui: &Ui, name: &str, center: Pos2, size: f32, color: Color32) {
     let px = pixels(ui, size);
-    let svg = || ICONS.iter().find(|(n, _)| *n == name).map(|(_, s)| s.as_bytes().to_vec());
+    let svg = || ICONS.iter().find(|(n, _)| *n == name).map(|(_, s)| s.replace("stroke-width=\"2\"", "stroke-width=\"1.5\"").into_bytes());
     if let Some(tex) = texture(ui.ctx(), name, px, svg) {
         paint(ui, &tex, center, px, color);
     }

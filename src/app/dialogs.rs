@@ -128,7 +128,7 @@ enum SettingsTab {
     Updates,
 }
 
-pub const ACCENTS: [(&str, &str); 7] = [("#0D99FF", "Blu"), ("#7B61FF", "Viola"), ("#E84393", "Rosa"), ("#E03131", "Rosso"), ("#F76707", "Arancione"), ("#14AE5C", "Verde"), ("#0C8599", "Petrolio")];
+pub const ACCENTS: [(&str, &str); 7] = [("#9747FF", "Viola"), ("#0D99FF", "Blu"), ("#E84393", "Rosa"), ("#E03131", "Rosso"), ("#F76707", "Arancione"), ("#14AE5C", "Verde"), ("#0C8599", "Petrolio")];
 
 /// Opens the settings on a section (0 Accessibilità … 3 Aggiornamenti), for pictures in tests.
 #[cfg(test)]

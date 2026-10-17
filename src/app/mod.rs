@@ -369,7 +369,7 @@ mod picture {
             let ctx = ui.ctx().clone();
             if home.is_none() {
                 ui::install_fonts(&ctx);
-                ui::setup(&ctx, Theme::new(dark, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), text_scale());
+                ui::setup(&ctx, Theme::new(dark, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), text_scale());
                 home = Some(home::Home::new(&store));
                 if let Some(tab) = settings {
                     dialogs.settings = true;
@@ -401,7 +401,7 @@ mod picture {
             let mut screen = inner.borrow_mut();
             if screen.is_none() {
                 ui::install_fonts(&ctx);
-                ui::setup(&ctx, Theme::new(false, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
+                ui::setup(&ctx, Theme::new(false, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), 1.0);
                 *screen = Some(board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), None).unwrap());
                 return;
             }
@@ -453,7 +453,7 @@ mod picture {
             let mut screen = inner.borrow_mut();
             if screen.is_none() {
                 ui::install_fonts(&ctx);
-                ui::setup(&ctx, Theme::new(false, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
+                ui::setup(&ctx, Theme::new(false, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), 1.0);
                 let mut b = board::BoardScreen::open(&ctx, &store, &id, prefs.clone(), None).unwrap();
                 let mut els = Vec::new();
                 for i in 0..400 {
@@ -580,7 +580,7 @@ mod picture {
             let ctx = ui.ctx().clone();
             if screen.is_none() {
                 ui::install_fonts(&ctx);
-                ui::setup(&ctx, Theme::new(dark, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), text_scale());
+                ui::setup(&ctx, Theme::new(dark, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), text_scale());
                 let mut b = board::BoardScreen::open(&ctx, &store, &id, prefs.clone(), Some("flow".into())).unwrap();
                 b.editor.selection = vec![b.editor.board.all().iter().find(|e| e.shape().is_some()).unwrap().id.clone()];
                 b.editor.tool = if std::env::var_os("TRATTO_SELECT").is_some() { crate::editor::Tool::Select } else { crate::editor::Tool::Pen };
@@ -670,7 +670,7 @@ mod picture {
             let ctx = ui.ctx().clone();
             if screen.is_none() {
                 ui::install_fonts(&ctx);
-                ui::setup(&ctx, Theme::new(false, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
+                ui::setup(&ctx, Theme::new(false, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), 1.0);
                 let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), None).unwrap();
                 b.editor.tool = crate::editor::Tool::Pen;
                 // A note to write over.
@@ -757,7 +757,7 @@ mod picture {
                 let ctx = ui.ctx().clone();
                 if screen.is_none() {
                     ui::install_fonts(&ctx);
-                    ui::setup(&ctx, Theme::new(false, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
+                    ui::setup(&ctx, Theme::new(false, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), 1.0);
                     let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), None).unwrap();
                     b.editor.tool = crate::editor::Tool::Pen;
                     screen = Some(b);
@@ -817,7 +817,7 @@ mod picture {
             let ctx = ui.ctx().clone();
             if screen.is_none() {
                 ui::install_fonts(&ctx);
-                ui::setup(&ctx, Theme::new(false, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
+                ui::setup(&ctx, Theme::new(false, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), 1.0);
                 screen = Some(board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), None).unwrap());
                 return;
             }
@@ -857,7 +857,7 @@ mod picture {
             let ctx = ui.ctx().clone();
             if screen.is_none() {
                 ui::install_fonts(&ctx);
-                ui::setup(&ctx, Theme::new(false, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
+                ui::setup(&ctx, Theme::new(false, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), 1.0);
                 let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), None).unwrap();
                 b.editor.tool = crate::editor::Tool::Comment;
                 screen = Some(b);
@@ -899,7 +899,7 @@ mod picture {
             let ctx = ui.ctx().clone();
             if screen.is_none() {
                 ui::install_fonts(&ctx);
-                ui::setup(&ctx, Theme::new(std::env::var("TRATTO_DARK").is_ok(), egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), text_scale());
+                ui::setup(&ctx, Theme::new(std::env::var("TRATTO_DARK").is_ok(), crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), text_scale());
                 let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs { music_volume: 0.0, ..Prefs::default() }, Some("flow".into())).unwrap();
                 let now = crate::platform::shared_now();
                 let paused = std::env::var_os("TRATTO_PAUSED").is_some();
@@ -946,7 +946,7 @@ mod picture {
             frame += 1;
             if screen.is_none() {
                 ui::install_fonts(&ctx);
-                ui::setup(&ctx, Theme::new(dark, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), text_scale());
+                ui::setup(&ctx, Theme::new(dark, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), text_scale());
                 let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), template.clone()).unwrap();
                 b.editor.tool = crate::editor::Tool::Select;
                 if let Ok(bg) = std::env::var("TRATTO_BG") {
