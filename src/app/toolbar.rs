@@ -444,7 +444,7 @@ fn sticky_pad(ui: &Ui, c: Pos2, color: Color32, t: &Theme, lift: f32) {
 
 /// Tools with options in a tray over the toolbar.
 fn has_tray(tool: Tool) -> bool {
-    matches!(tool, Tool::Pen | Tool::Highlighter | Tool::Tape | Tool::Eraser | Tool::Shape | Tool::Line | Tool::Arrow | Tool::Text | Tool::Sticky | Tool::Stamp | Tool::Comment | Tool::Section | Tool::Table | Tool::Laser)
+    matches!(tool, Tool::Pen | Tool::Highlighter | Tool::Tape | Tool::Eraser | Tool::Shape | Tool::Line | Tool::Arrow | Tool::Text | Tool::Sticky | Tool::Stamp | Tool::Table | Tool::Laser)
 }
 
 /// How a tool's button looks, as (tinted, solid): solid while the tool is in hand with its
@@ -826,6 +826,7 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
         _ if narrow => ui::ctl(TRAY_H),
         Tool::Shape => 124.0,
         Tool::Stamp => 96.0,
+        Tool::Table => 76.0,
         _ => ui::ctl(TRAY_H),
     };
     let dock = ctx.data(|d| d.get_temp::<f32>(Id::new("toolbar-dock"))).unwrap_or(1.0).clamp(0.0, 1.0);
@@ -945,19 +946,7 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                             p.stamp = e;
                         }
                     }
-                    Tool::Table => {
-                        let [rows, cols] = p.table_size;
-                        if let Some(v) = ui::Num::new(Id::new("tray-table-rows"), "Righe", "Righe", Some(rows as f64)).width(92.0).range(1.0, 20.0).show(ui) {
-                            p.table_size[0] = v as u8;
-                        }
-                        if let Some(v) = ui::Num::new(Id::new("tray-table-cols"), "Colonne", "Colonne", Some(cols as f64)).width(108.0).range(1.0, 12.0).show(ui) {
-                            p.table_size[1] = v as u8;
-                        }
-                        sep_h(ui, t, h);
-                        ui::hint(ui, "Clicca per inserirla");
-                    }
-                    Tool::Comment => ui::hint(ui, "Clicca per commentare"),
-                    Tool::Section => ui::hint(ui, "Trascina per creare una sezione"),
+                    Tool::Table => table_size_picker(ui, &mut p.table_size, t),
                     Tool::Laser => {
                         ui.label(RichText::new("Colore del laser").color(t.text2));
                         if let Some(c) = ui::swatches(ui, &LASER_COLORS, &p.laser_color, false) {
@@ -986,6 +975,34 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
         ctx.data_mut(|d| d.insert_temp(natural_id, w));
     }
     Some(shown.response.rect)
+}
+
+/// The size of the next table: a grid of cells, those up to the pointer lit, as in Word.
+fn table_size_picker(ui: &mut Ui, size: &mut [u8; 2], t: &Theme) {
+    const COLS: usize = 8;
+    const ROWS: usize = 5;
+    const CELL: f32 = 12.0;
+    const GAP: f32 = 2.0;
+    let (rect, resp) = ui.allocate_exact_size(vec2(COLS as f32 * (CELL + GAP) - GAP, ROWS as f32 * (CELL + GAP) - GAP), Sense::click());
+    let cell_at = |p: Pos2| (((p.y - rect.min.y) / (CELL + GAP)).floor().clamp(0.0, ROWS as f32 - 1.0) as u8 + 1, ((p.x - rect.min.x) / (CELL + GAP)).floor().clamp(0.0, COLS as f32 - 1.0) as u8 + 1);
+    let shown = resp.hover_pos().map(cell_at).unwrap_or((size[0].min(ROWS as u8), size[1].min(COLS as u8)));
+    for r in 0..ROWS {
+        for c in 0..COLS {
+            let cell = Rect::from_min_size(rect.min + vec2(c as f32 * (CELL + GAP), r as f32 * (CELL + GAP)), vec2(CELL, CELL));
+            let on = (r as u8) < shown.0 && (c as u8) < shown.1;
+            ui.painter().rect(cell, 3.0, if on { t.brand.gamma_multiply(0.18) } else { t.bg2 }, Stroke::new(1.0, if on { t.brand } else { t.border }), egui::StrokeKind::Inside);
+        }
+    }
+    if resp.clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        let (r, c) = cell_at(p);
+        *size = [r, c];
+    }
+    ui.add_space(4.0);
+    ui.allocate_ui_with_layout(vec2(44.0, rect.height()), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.label(RichText::new(format!("{} × {}", shown.0, shown.1)).font(ui::medium(ui::px(12.0))).color(t.text));
+    });
 }
 
 /// Every shape, eight to a row: the one picked is what the shape tool draws.

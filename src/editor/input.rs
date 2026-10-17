@@ -181,18 +181,24 @@ impl Editor {
                         }
                         // E let go: a quick press was the eraser; held, the wheel sends what it points at.
                         if key == Key::E
-                            && let Some((at, _)) = self.emote_hold.take()
+                            && let Some((at, _)) = self.emote_hold
                         {
+                            // What the wheel points at, read before it closes.
+                            let pointer = ctx.input(|i| i.pointer.hover_pos());
+                            let under = pointer.and_then(|p| self.emote_under(p));
+                            self.emote_hold = None;
+                            self.emote_spray = None;
                             if now() - at < EMOTE_HOLD_MS {
                                 if !self.read_only {
                                     self.set_tool(Tool::Eraser);
                                 }
-                            } else if let Some(p) = ctx.input(|i| i.pointer.hover_pos())
-                                && let Some(e) = self.emote_under(p)
+                            } else if let (Some(p), Some(e)) = (pointer, under)
+                                && !self.emote_sprayed
                             {
                                 let w = self.to_world(self.screen_pt(p));
                                 self.send_emote(e, w);
                             }
+                            self.emote_sprayed = false;
                         }
                     } else if keys && (!repeat || matches!(key, Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown)) {
                         self.on_key(key, physical_key, modifiers);
@@ -346,13 +352,14 @@ impl Editor {
             self.requests.push(Request::OpenLink(url));
             return;
         }
-        // A click while the emote wheel is open sends the one under the pointer.
+        // A click while the emote wheel is open sends the one under the pointer; held, a stream.
         if let Some((at, _)) = self.emote_hold
             && now() - at >= EMOTE_HOLD_MS
         {
             if let Some(e) = self.emote_under(s + self.origin.to_vec2()) {
                 let w = self.to_world(s);
                 self.send_emote(e, w);
+                (self.emote_spray, self.emote_sprayed) = (Some(now()), true);
             }
             return;
         }

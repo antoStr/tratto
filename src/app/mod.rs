@@ -384,6 +384,57 @@ mod picture {
         harness.render().unwrap().save(path).unwrap();
     }
 
+    /// Hold E, point at an emoji of the wheel, let go: it floats up from there. With
+    /// `TRATTO_SHOT=x.png` the wheel open is saved as a picture.
+    #[test]
+    fn the_emote_wheel_sends_what_it_points_at() {
+        let shot = std::env::var("TRATTO_SHOT").ok();
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let id = store.create("Emote", None).unwrap();
+        let shared: std::rc::Rc<std::cell::RefCell<Option<board::BoardScreen>>> = Default::default();
+        let inner = shared.clone();
+        let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
+        let builder = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0));
+        let builder = if shot.is_some() { builder.wgpu() } else { builder };
+        let mut harness = builder.build_ui(move |ui| {
+            let ctx = ui.ctx().clone();
+            let mut screen = inner.borrow_mut();
+            if screen.is_none() {
+                ui::install_fonts(&ctx);
+                ui::setup(&ctx, Theme::new(false, egui::Color32::from_rgb(0x0D, 0x99, 0xFF), false), 1.0);
+                *screen = Some(board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), None).unwrap());
+                return;
+            }
+            screen.as_mut().unwrap().ui(ui, &mut toasts, &mut dialogs);
+        });
+        harness.run_steps(5);
+        let at = egui::pos2(600.0, 400.0);
+        harness.event(egui::Event::PointerMoved(at));
+        harness.run_steps(2);
+        let key = |pressed| egui::Event::Key { key: egui::Key::E, physical_key: Some(egui::Key::E), pressed, repeat: false, modifiers: Default::default() };
+        harness.event(key(true));
+        harness.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        // The wheel's top slot.
+        let target = at + egui::vec2(0.0, -54.0);
+        for k in 1..=6 {
+            harness.event(egui::Event::PointerMoved(at + (target - at) * (k as f32 / 6.0)));
+            harness.run_steps(1);
+        }
+        harness.run_steps(10);
+        if let Some(path) = &shot {
+            harness.render().unwrap().save(path).unwrap();
+        }
+        assert!(shared.borrow().as_ref().unwrap().editor.floaters.is_empty());
+        harness.event(key(false));
+        harness.run_steps(3);
+        let b = shared.borrow();
+        let ed = &b.as_ref().unwrap().editor;
+        assert_eq!(ed.floaters.len(), 1, "one emote sent");
+        assert_eq!(ed.floaters[0].0, crate::editor::EMOTES[0]);
+        assert!(ed.emote_hold.is_none() && ed.tool != crate::editor::Tool::Eraser);
+    }
+
     /// Frame times (the interface's own work, no drawing on the card) on a heavy board while
     /// panels open and close: `cargo test --release frame_times -- --ignored --nocapture`.
     #[test]
@@ -554,6 +605,7 @@ mod picture {
                     Ok("shape") => b.editor.set_tool(crate::editor::Tool::Shape),
                     Ok("arrow") => b.editor.set_tool(crate::editor::Tool::Arrow),
                     Ok("eraser") => b.editor.set_tool(crate::editor::Tool::Eraser),
+                    Ok("table") => b.editor.set_tool(crate::editor::Tool::Table),
                     _ => {}
                 }
                 // TRATTO_COMMENT=1: a new comment open, being written.

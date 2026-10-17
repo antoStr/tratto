@@ -292,6 +292,10 @@ pub struct Editor {
     pub(crate) input: input::InputState,
     /// E held down: when, and where the emote wheel opens (screen).
     pub(crate) emote_hold: Option<(f64, Pos2)>,
+    /// Mouse held on an emoji of the wheel: when the last of the stream went out.
+    pub(crate) emote_spray: Option<f64>,
+    /// Some were sent with clicks: letting go of E sends no more.
+    pub(crate) emote_sprayed: bool,
     /// Emotes floating up, everyone's: emoji, board point, when it started (ms, this clock).
     pub(crate) floaters: Vec<(String, f64, f64, f64)>,
     emote_n: u64,
@@ -382,6 +386,8 @@ impl Editor {
             cam_dirty: false,
             input: Default::default(),
             emote_hold: None,
+            emote_spray: None,
+            emote_sprayed: false,
             floaters: Vec::new(),
             emote_n: 0,
             seen_emotes: HashMap::new(),

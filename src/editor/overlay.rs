@@ -472,29 +472,46 @@ impl Editor {
         if !self.floaters.is_empty() {
             ctx.request_repaint();
         }
-        let Some((at, c)) = self.emote_hold else { return };
+        let wheel = egui::Id::new("emote-wheel");
+        let Some((at, c)) = self.emote_hold else {
+            crate::ui::motion::reset(&ctx, wheel);
+            return;
+        };
         let held = t - at;
         if held < EMOTE_HOLD_MS {
             ctx.request_repaint_after(std::time::Duration::from_millis((EMOTE_HOLD_MS - held) as u64 + 5));
             return;
         }
         ctx.request_repaint();
-        let k = if still { 1.0 } else { (((held - EMOTE_HOLD_MS) / 140.0) as f32).min(1.0) };
-        let k = 1.0 - (1.0 - k).powi(3);
+        // It opens on a spring from the pointer, each emoji coming out a moment after the one before.
+        let k = crate::ui::motion::appear(&ctx, wheel, true).clamp(0.0, 1.2);
         let pointer = ctx.input(|i| i.pointer.hover_pos());
         let on = pointer.and_then(|p| self.emote_under(p));
-        let r = 84.0 * (0.85 + 0.15 * k);
-        out.push(Shape::circle_filled(c + vec2(0.0, 6.0), r + 2.0, Color32::from_black_alpha((40.0 * k) as u8)));
-        out.push(Shape::circle_filled(c, r, Color32::from_white_alpha((245.0 * k) as u8)));
-        out.push(Shape::circle_stroke(c, r, Stroke::new(1.0, Color32::from_black_alpha((26.0 * k) as u8))));
-        for (i, e) in EMOTES.iter().enumerate() {
-            let a = i as f32 / 8.0 * std::f32::consts::TAU;
-            let at = c + vec2(a.sin(), -a.cos()) * 54.0 * (0.8 + 0.2 * k);
-            let hot = on == Some(*e);
-            if hot {
-                out.push(Shape::circle_filled(at, 22.0, Color32::from_black_alpha(18)));
+        // Held on an emoji: a stream of them, as in FigJam.
+        if let (Some(last), Some(p), Some(e)) = (self.emote_spray, pointer, on) {
+            if !ctx.input(|i| i.pointer.primary_down()) {
+                self.emote_spray = None;
+            } else if t - last >= 140.0 {
+                let w = self.to_world(self.screen_pt(p));
+                self.send_emote(e, w);
+                self.emote_spray = Some(t);
             }
-            self.emoji_shape(&ctx, out, e, at, if hot { 38.0 } else { 30.0 }, k);
+        }
+        let r = 86.0 * (0.6 + 0.4 * k);
+        let a = k.clamp(0.0, 1.0);
+        let disc = egui::Rect::from_center_size(c, vec2(r * 2.0, r * 2.0));
+        out.push(egui::epaint::Shadow { offset: [0, 8], blur: 28, spread: 0, color: Color32::from_black_alpha((46.0 * a) as u8) }.as_shape(disc, r).into());
+        out.push(Shape::circle_filled(c, r, Color32::from_white_alpha((250.0 * a) as u8)));
+        out.push(Shape::circle_stroke(c, r, Stroke::new(1.0, Color32::from_black_alpha((20.0 * a) as u8))));
+        for (i, e) in EMOTES.iter().enumerate() {
+            let ki = crate::ui::motion::spring(&ctx, egui::Id::new(("emote-slot", i)), if k > 0.1 + i as f32 * 0.04 { 1.0 } else { 0.0 }, 0.3, 0.75);
+            let ang = i as f32 / 8.0 * std::f32::consts::TAU;
+            let pos = c + vec2(ang.sin(), -ang.cos()) * 56.0 * (0.5 + 0.5 * ki);
+            let h = crate::ui::motion::hover(&ctx, egui::Id::new(("emote-hot", i)), on == Some(*e));
+            if h > 0.01 {
+                out.push(Shape::circle_filled(pos, 23.0 * (0.8 + 0.2 * h), Color32::from_black_alpha((16.0 * h) as u8)));
+            }
+            self.emoji_shape(&ctx, out, e, pos, (30.0 + 10.0 * h) * ki.clamp(0.0, 1.2), a * ki.clamp(0.0, 1.0));
         }
     }
 }
