@@ -267,6 +267,68 @@ pub fn brush_dabs_tilted(pts: &[f32], size: f64, min_step: f64, tilt: f32) -> Ve
     out
 }
 
+/// A colour (0xRRGGBB) in OKLab, where mixing two colours goes through what the eye sees
+/// between them: red into blue passes through purple, not through a dull grey as in RGB.
+pub fn to_oklab(c: u32) -> [f64; 3] {
+    let lin = |v: u32| {
+        let s = (v & 0xFF) as f64 / 255.0;
+        if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+    };
+    let (r, g, b) = (lin(c >> 16), lin(c >> 8), lin(c));
+    let l = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b).cbrt();
+    let m = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b).cbrt();
+    let s = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b).cbrt();
+    [0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s, 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s, 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s]
+}
+
+/// Back from OKLab to 0xRRGGBB.
+pub fn from_oklab(c: [f64; 3]) -> u32 {
+    let l = (c[0] + 0.3963377774 * c[1] + 0.2158037573 * c[2]).powi(3);
+    let m = (c[0] - 0.1055613458 * c[1] - 0.0638541728 * c[2]).powi(3);
+    let s = (c[0] - 0.0894841775 * c[1] - 1.2914855480 * c[2]).powi(3);
+    let r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+    let g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+    let b = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+    let srgb = |v: f64| {
+        let v = v.clamp(0.0, 1.0);
+        let s = if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+        (s * 255.0).round().clamp(0.0, 255.0) as u32
+    };
+    (srgb(r) << 16) | (srgb(g) << 8) | srgb(b)
+}
+
+/// Two OKLab colours mixed, `k` of the way from `a` to `b`, round the colour wheel (lightness,
+/// colourfulness and hue each in turn) as paints mix: red and blue make purple, yellow and blue
+/// green, and nothing goes grey half way. A grey takes on the hue of the other colour.
+pub fn mix_lab(a: [f64; 3], b: [f64; 3], k: f64) -> [f64; 3] {
+    let (ca, cb) = (a[1].hypot(a[2]), b[1].hypot(b[2]));
+    let (ha, hb) = (a[2].atan2(a[1]), b[2].atan2(b[1]));
+    let (ha, hb) = match (ca < 0.02, cb < 0.02) {
+        (true, false) => (hb, hb),
+        (false, true) => (ha, ha),
+        _ => (ha, hb),
+    };
+    let mut dh = hb - ha;
+    if dh > std::f64::consts::PI {
+        dh -= std::f64::consts::TAU;
+    } else if dh < -std::f64::consts::PI {
+        dh += std::f64::consts::TAU;
+    }
+    let (l, c, h) = (a[0] + (b[0] - a[0]) * k, ca + (cb - ca) * k, ha + dh * k);
+    [l, c * h.cos(), c * h.sin()]
+}
+
+/// Two colours (0xRRGGBB) mixed, `k` of the way from `u` to `v` (see `mix_lab`).
+pub fn mix_colors(u: u32, v: u32, k: f64) -> u32 {
+    if u == v || k <= 0.0 {
+        return u;
+    }
+    if k >= 1.0 {
+        return v;
+    }
+    from_oklab(mix_lab(to_oklab(u), to_oklab(v), k))
+}
+
 /// The sfumino: soft dabs along the stroke, each in the colour it carried there (`colors`, one
 /// a point, 0xRRGGBB), denser and stronger than the airbrush's so it smears what is under it.
 pub fn smudge_dabs(pts: &[f32], colors: &[u32], size: f64, min_step: f64) -> Vec<([f32; 4], u32)> {
@@ -283,22 +345,16 @@ pub fn smudge_dabs(pts: &[f32], colors: &[u32], size: f64, min_step: f64) -> Vec
             cols.push(colors.get(i).or(colors.last()).copied().unwrap_or(0));
         }
     }
-    let flow = |p: f32| if p < 0.0 { 0.5 } else { 0.2 + 0.45 * p.clamp(0.0, 1.0) as f64 };
+    let flow = |p: f32| if p < 0.0 { 0.72 } else { 0.3 + 0.55 * p.clamp(0.0, 1.0) as f64 };
     let c = centre_line(&flat, 0.85, |p, _, _| size / 2.0 * brush_width(Brush::Smudge, p, 0.0, 0.0, size));
     let a = centre_line(&flat, 0.85, |p, _, _| flow(p));
     if c.len() != cols.len() || a.len() != c.len() {
         return out;
     }
-    const STEP: f64 = 0.22;
+    const STEP: f64 = 0.4;
     let least = (size * 0.03).max(min_step);
     let strength = |a: f64, k: f64| if k <= 1.0 { a } else { 1.0 - (1.0 - a).powf(k) };
-    let mix = |u: u32, v: u32, k: f64| {
-        let ch = |s: u32| {
-            let (x, y) = (((u >> s) & 0xFF) as f64, ((v >> s) & 0xFF) as f64);
-            ((x + (y - x) * k).round().clamp(0.0, 255.0) as u32) << s
-        };
-        ch(16) | ch(8) | ch(0)
-    };
+    let mix = mix_colors;
     out.push(([c[0][0] as f32, c[0][1] as f32, c[0][2] as f32, strength(a[0][2], least / (c[0][2] * 2.0 * STEP).max(1e-9)) as f32], cols[0]));
     let mut since = 0.0;
     for i in 1..c.len() {

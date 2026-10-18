@@ -942,6 +942,14 @@ mod picture {
                 }
                 b.editor.tool = if std::env::var_os("TRATTO_SELECT").is_some() { crate::editor::Tool::Select } else { crate::editor::Tool::Pen };
                 b.editor.prefs.focus = std::env::var_os("TRATTO_FOCUS").is_some();
+                // TRATTO_SMUDGE=1: the first pen a sfumino.
+                if std::env::var_os("TRATTO_SMUDGE").is_some() {
+                    b.editor.prefs.pens[0] = crate::prefs::Pen { brush: crate::model::Brush::Smudge, size: 24.0, ..Default::default() };
+                }
+                // TRATTO_PEEK=1: on a phone, the right panel shown over the board.
+                if std::env::var_os("TRATTO_PEEK").is_some() {
+                    (b.editor.prefs.right_panel, b.ui.peek_right) = (true, true);
+                }
                 if crowded {
                     let now = crate::platform::shared_now();
                     b.editor.board.transact_plain(|txn, m| {

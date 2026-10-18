@@ -267,7 +267,8 @@ impl Smear {
         Some(Smear { pic, at: pt(view.x, view.y), k, carried: None, last: None })
     }
 
-    /// The colour under a board point, averaged over a little disc of radius `r` (board units).
+    /// The colour under a board point, averaged over a little disc of radius `r` (board units),
+    /// in OKLab.
     fn sample(&self, p: Pt, r: f64) -> [f64; 3] {
         let mut sum = [0.0; 3];
         let taps = [(0.0, 0.0), (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)];
@@ -276,28 +277,29 @@ impl Smear {
             let y = ((p.y + dy * r * 0.5 - self.at.y) * self.k).floor().clamp(0.0, self.pic.height() as f64 - 1.0) as u32;
             if let Some(c) = self.pic.pixel(x, y) {
                 let c = c.demultiply();
-                sum[0] += c.red() as f64;
-                sum[1] += c.green() as f64;
-                sum[2] += c.blue() as f64;
+                let lab = ink::to_oklab(((c.red() as u32) << 16) | ((c.green() as u32) << 8) | c.blue() as u32);
+                for i in 0..3 {
+                    sum[i] += lab[i];
+                }
             }
         }
         sum.map(|v| v / taps.len() as f64)
     }
 
     /// The colour the sfumino carries at the next point: what it had, with some of what is under
-    /// it there (more the farther it went: it drags colours about a width and a half).
+    /// it there (more the farther it went: it drags colours about a width), mixed as the eye
+    /// sees colours (OKLab).
     fn carry(&mut self, p: Pt, size: f64) -> u32 {
         let under = self.sample(p, size / 2.0);
         let c = match (self.carried, self.last) {
             (Some(c), Some(l)) => {
-                let k = 1.0 - (-(p.x - l.x).hypot(p.y - l.y) / (size * 1.5).max(1e-6)).exp();
-                [0, 1, 2].map(|i| c[i] + (under[i] - c[i]) * k)
+                let k = 1.0 - (-(p.x - l.x).hypot(p.y - l.y) / (size * 1.1).max(1e-6)).exp();
+                ink::mix_lab(c, under, k)
             }
             _ => under,
         };
         (self.carried, self.last) = (Some(c), Some(p));
-        let ch = |v: f64| v.round().clamp(0.0, 255.0) as u32;
-        (ch(c[0]) << 16) | (ch(c[1]) << 8) | ch(c[2])
+        ink::from_oklab(c)
     }
 }
 
@@ -3067,6 +3069,7 @@ mod tests {
         assert_eq!(back.colors, ink.colors);
         // TRATTO_SHOT=out.png: a few more strokes, back and forth, and the picture.
         if let Ok(path) = std::env::var("TRATTO_SHOT") {
+            ed.prefs.pens[0].size = 46.0;
             for (k, y) in [60.0f32, 140.0, 175.0].into_iter().enumerate() {
                 let x0 = if k % 2 == 0 { 360.0 } else { 40.0 };
                 ed.start_draw(pos2(x0, y), false, PointerKind::Mouse, 0);

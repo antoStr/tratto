@@ -949,6 +949,8 @@ pub fn right(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
             ui.label(RichText::new(title).font(ui::medium(ui::px(11.0))).color(t.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.set_min_height(ui.available_height());
+                // The same gap between all of them.
+                ui.spacing_mut().item_spacing.x = 4.0;
                 if small_icon_button(ui, "panel-right-close", "Nascondi il pannello", false).clicked() {
                     b.ui.peek_right = false;
                     b.editor.prefs.right_panel = false;
@@ -977,10 +979,12 @@ pub fn right(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
 fn zoom_menu(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
     let label = format!("{}%", (ed.cam.z * 100.0).round());
     let g = ui.painter().layout_no_wrap(label.clone(), egui::FontId::proportional(ui::px(11.0)), t.text);
-    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 26.0, ui::hit(ui.ctx(), ui::ctl(24.0))), Sense::click());
+    // As tall as the icon buttons beside it, its text and arrow centred together.
+    let s = ui::hit(ui.ctx(), 24.0);
+    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 30.0, s), Sense::click());
     ui::hover_fill(ui, resp.id, r, resp.hovered(), ui::RADIUS as f32, t.hover);
-    ui.painter().galley(pos2(r.min.x + 6.0, r.center().y - g.size().y / 2.0), g, t.text);
-    icon(ui, "chevron-down", pos2(r.max.x - 10.0, r.center().y), 12.0, t.icon2);
+    ui.painter().galley(pos2(r.min.x + 8.0, r.center().y - g.size().y / 2.0), g, t.text);
+    icon(ui, "chevron-down", pos2(r.max.x - 11.0, r.center().y), 12.0, t.icon2);
     let resp = ui::tip(resp, &format!("Zoom {label}"), None);
     egui::Popup::menu(&resp).frame(ui::menu_frame(t)).align(egui::RectAlign::BOTTOM_END).show(|ui| super::toolbar::zoom_items(ui, ed));
 }
@@ -1129,8 +1133,10 @@ fn share_button(ui: &mut Ui, b: &mut BoardScreen) {
         let t = ui::theme(ui.ctx());
         let text = if b.editor.read_only { "Solo visione" } else { "Puoi modificare" };
         if ui::narrow(ui.ctx()) {
+            // In a frame like the timer's beside it, so the two sit as a pair.
             let s = ui::hit(ui.ctx(), ui::ctl(24.0));
             let (r, resp) = ui.allocate_exact_size(vec2(s, s), Sense::hover());
+            ui.painter().rect(r, ui::RADIUS, t.bg, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
             icon(ui, if b.editor.read_only { "eye" } else { "pencil" }, r.center(), 15.0, t.icon2);
             resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
             ui::tip(resp, text, None);
@@ -1256,13 +1262,18 @@ fn pen_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
         let c = if (t.dark && luma < 0.2) || (!t.dark && luma > 0.85) { t.text2 } else { c };
         Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (op.clamp(0.1, 1.0) * 255.0) as u8)
     };
-    // The stroke as it will come out, large.
+    let smudge = ed.prefs.pens[i].brush == Brush::Smudge;
+    // The stroke as it will come out, large (the sfumino: across two colours, blending them).
     section(ui, None, |ui| {
         let pen = &ed.prefs.pens[i];
         let (r, _) = ui.allocate_exact_size(vec2(w, 72.0), Sense::hover());
         ui.painter().rect_filled(r, 10.0, t.bg2);
-        brush_sample(ui, r.shrink2(vec2(10.0, 6.0)), pen.brush, shown_color(&pen.color, pen.opacity), pen.size.clamp(1.0, 26.0));
-        ui.painter().text(r.left_top() + vec2(10.0, 9.0), egui::Align2::LEFT_TOP, format!("{} {}", pen.brush.name(), i + 1), ui::medium(ui::px(10.0)), t.text2);
+        if smudge {
+            smudge_sample(ui, r, pen.size.clamp(6.0, 26.0), pen.opacity);
+        } else {
+            brush_sample(ui, r.shrink2(vec2(10.0, 6.0)), pen.brush, shown_color(&pen.color, pen.opacity), pen.size.clamp(1.0, 26.0));
+        }
+        ui.painter().text(r.left_top() + vec2(10.0, 9.0), egui::Align2::LEFT_TOP, format!("{} {}", pen.brush.name(), i + 1), ui::medium(ui::px(10.0)), if smudge { Color32::WHITE } else { t.text2 });
     });
     section(ui, Some("Pennello"), |ui| {
         let pen = &mut ed.prefs.pens[i];
@@ -1292,28 +1303,34 @@ fn pen_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
             }
         });
     });
-    section(ui, Some("Colore"), |ui| {
-        let pen = &mut ed.prefs.pens[i];
-        if let Some(c) = ui::swatches(ui, &INK_COLORS, &pen.color, false) {
-            pen.color = c;
-        }
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            if let Some(c) = ui::color_well(ui, "Colore personalizzato", color_or(&pen.color, DARK)) {
-                pen.color = hex(c);
+    // The sfumino has no colour of its own: it takes those of the board.
+    if !smudge {
+        section(ui, Some("Colore"), |ui| {
+            let pen = &mut ed.prefs.pens[i];
+            if let Some(c) = ui::swatches(ui, &INK_COLORS, &pen.color, false) {
+                pen.color = c;
             }
-            let on = ed.eyedropper;
-            if ui::button(ui, "Prendi dalla lavagna", if on { Btn::Primary } else { Btn::Secondary }, Some("droplet"), false, true).clicked() {
-                ed.eyedropper = !on;
-            }
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if let Some(c) = ui::color_well(ui, "Colore personalizzato", color_or(&pen.color, DARK)) {
+                    pen.color = hex(c);
+                }
+                let on = ed.eyedropper;
+                if ui::button(ui, "Prendi dalla lavagna", if on { Btn::Primary } else { Btn::Secondary }, Some("droplet"), false, true).clicked() {
+                    ed.eyedropper = !on;
+                }
+            });
         });
-    });
+    }
     let p = &mut ed.prefs;
     section(ui, Some("Tratto"), |ui| {
         let pen = &mut p.pens[i];
         let (lo, hi) = size_range(pen.brush);
         ui::slider(ui, "Spessore", &mut pen.size, lo, hi, 0.5, true, PX, w);
-        ui::slider(ui, "Opacità", &mut pen.opacity, 0.1, 1.0, 0.05, false, PCT, w);
+        ui::slider(ui, if smudge { "Forza" } else { "Opacità" }, &mut pen.opacity, 0.1, 1.0, 0.05, false, PCT, w);
+        if smudge {
+            ui::hint(ui, "Lo sfumino raccoglie i colori che ha sotto e li trascina, mescolandoli.");
+        }
         ui::slider(ui, "Stabilizzatore", &mut p.streamline, 0.0, 1.0, 0.05, false, PCT, w);
     });
     section(ui, Some("Pressione e inclinazione"), |ui| {
@@ -1333,6 +1350,37 @@ fn pen_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
         ui.label(RichText::new("Simmetria").size(ui::px(11.0)).color(t.text2));
         ui::segmented(ui, &mut p.symmetry, &[(prefs::Symmetry::Off, "No"), (prefs::Symmetry::Vertical, "Vert."), (prefs::Symmetry::Horizontal, "Oriz."), (prefs::Symmetry::Quad, "4"), (prefs::Symmetry::Radial, "8")], w);
     });
+}
+
+/// The sfumino's sample: two colours side by side and a stroke across them that blends them,
+/// worked out as on the board.
+fn smudge_sample(ui: &Ui, r: Rect, size: f64, strength: f64) {
+    let (left, right) = (0xE03131u32, 0x1971C2u32);
+    let half = r.width() / 2.0;
+    let rounding = egui::CornerRadius::same(10);
+    ui.painter().rect_filled(Rect::from_min_max(r.min, pos2(r.min.x + half, r.max.y)), egui::CornerRadius { ne: 0, se: 0, ..rounding }, Color32::from_rgb(0xE0, 0x31, 0x31));
+    ui.painter().rect_filled(Rect::from_min_max(pos2(r.min.x + half, r.min.y), r.max), egui::CornerRadius { nw: 0, sw: 0, ..rounding }, Color32::from_rgb(0x19, 0x71, 0xC2));
+    // Left to right: red picked up, carried into the blue a width or so.
+    let (w, h) = (r.width(), r.height());
+    let mut pts = Vec::new();
+    let mut colors = Vec::new();
+    let mut carried = crate::ink::to_oklab(left);
+    let mut last = 0.0f32;
+    for k in 0..=40 {
+        let s = k as f32 / 40.0;
+        let x = w * 0.08 + s * w * 0.84;
+        pts.extend([x, h * 0.55 + (s * std::f32::consts::TAU).sin() * h * 0.12, 0.6]);
+        let under = crate::ink::to_oklab(if x < half { left } else { right });
+        let kk = 1.0 - (-((x - last) as f64) / (size * 1.1)).exp();
+        carried = crate::ink::mix_lab(carried, under, kk);
+        last = x;
+        colors.push(crate::ink::from_oklab(carried));
+    }
+    let color = Color32::from_white_alpha((strength.clamp(0.1, 1.0) * 255.0) as u8);
+    let prims = crate::prims::smudge_prims(&pts, &colors, size, color, None);
+    for m in crate::paint::brush_meshes(ui.ctx(), prims, 1.0, |x, y| r.min + vec2(x, y)) {
+        ui.painter().with_clip_rect(r).add(m);
+    }
 }
 
 /* ---------- nothing selected: the board ---------- */
