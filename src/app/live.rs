@@ -302,6 +302,7 @@ fn round_button(ui: &mut egui::Ui, name: &str, label: &str, t: &ui::Theme) -> eg
     ui.painter().circle_filled(r.center(), 18.0, ui::blend(t.brand_fill, t.brand_fill_hover, h));
     icon(ui, name, r.center() + if name == "play" { vec2(1.0, 0.0) } else { vec2(0.0, 0.0) }, 16.0, Color32::WHITE);
     ui::focus_ring(ui, &resp, r);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     ui::tip(resp, label, None)
 }
 
@@ -448,59 +449,35 @@ fn timer_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
 
 /// The chime sound setting: soft chime choices, preview button, and volume slider.
 fn chime_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
-    ui.spacing_mut().item_spacing = vec2(0.0, 8.0);
+    ui.spacing_mut().item_spacing = vec2(0.0, 10.0);
     let p = &mut ed.prefs;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        let on = p.timer_sound;
-        if ui::icon_button(ui, if on { "bell" } else { "bell-off" }, if on { "Suoneria attiva al termine" } else { "Suoneria disattivata" }, None, vec2(28.0, 28.0), 16.0, on, false).clicked() {
-            p.timer_sound = !on;
-        }
+    ui::row(ui, 24.0, |ui| {
         ui.label(RichText::new("Suoneria a fine timer").font(ui::medium(ui::px(12.0))).color(t.text));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui::small_icon_button(ui, "play", "Ascolta anteprima suoneria", false).clicked() {
-                crate::audio::chime(p.timer_chime, p.timer_volume);
-            }
+            ui::switch(ui, &mut p.timer_sound, "");
         });
     });
-    if p.timer_sound {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            let current = p.timer_chime;
-            let label = current.name();
-            let (r, resp) = ui.allocate_exact_size(vec2(145.0, 26.0), egui::Sense::click());
-            ui.painter().rect_filled(r, 6.0, t.bg2);
-            let k = ui::motion::hover(ui.ctx(), resp.id, resp.hovered());
-            if k > 0.0 {
-                ui.painter().rect_stroke(r, 6.0, Stroke::new(1.0, t.border_strong.gamma_multiply(k)), egui::StrokeKind::Inside);
-            }
-            ui.painter().text(pos2(r.min.x + 8.0, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(ui::px(11.0)), t.text);
-            icon(ui, "chevron-down", pos2(r.max.x - 12.0, r.center().y), 12.0, t.icon2);
-            let resp = ui::tip(resp, "Scegli il suono rilassante", None);
-            egui::Popup::menu(&resp).frame(ui::menu_frame(t)).show(|ui| ui::menu_body(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                for sound in crate::prefs::TIMER_SOUNDS {
-                    let on = sound == current;
-                    let (ir, item) = ui.allocate_exact_size(vec2(160.0, 26.0), egui::Sense::click());
-                    if item.hovered() {
-                        ui.painter().rect_filled(ir, ui::RADIUS, t.hover);
-                    }
-                    if on {
-                        icon(ui, "check", pos2(ir.min.x + 10.0, ir.center().y), 12.0, t.brand);
-                    }
-                    ui.painter().text(pos2(ir.min.x + 24.0, ir.center().y), egui::Align2::LEFT_CENTER, sound.name(), egui::FontId::proportional(ui::px(11.0)), if on { t.brand } else { t.text });
-                    if item.clicked() {
-                        p.timer_chime = sound;
-                        crate::audio::chime(sound, p.timer_volume);
-                    }
-                }
-            }));
-            let mut v = p.timer_volume as f64;
-            if ui::slider_inline(ui, "", &mut v, 0.05, 1.0, 0.05, false, |_| String::new(), ui.available_width()) {
-                p.timer_volume = v as f32;
-            }
-        });
+    if !p.timer_sound {
+        return;
     }
+    // The sounds side by side (a list inside this panel: a menu of its own would close it);
+    // picked, each plays once.
+    let mut sound = p.timer_chime;
+    let options: Vec<(crate::prefs::TimerSound, &str)> = crate::prefs::TIMER_SOUNDS.iter().map(|s| (*s, s.short())).collect();
+    if ui::segmented(ui, &mut sound, &options, ui.available_width()) {
+        p.timer_chime = sound;
+        crate::audio::chime(sound, p.timer_volume);
+    }
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        if ui::small_icon_button(ui, "play", "Ascolta la suoneria", false).clicked() {
+            crate::audio::chime(p.timer_chime, p.timer_volume);
+        }
+        let mut v = p.timer_volume as f64;
+        if ui::slider_inline(ui, "", &mut v, 0.05, 1.0, 0.05, false, |_| String::new(), ui.available_width()) {
+            p.timer_volume = v as f32;
+        }
+    });
 }
 
 /// The time in large figures, centred on `c`, each digit in a cell of the same width so the
@@ -668,6 +645,8 @@ fn music_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
         }
     }
     ui.add_space(12.0);
+    let open_id = Id::new("music-list-open");
+    let open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
     ui.allocate_ui_with_layout(vec2(ui.available_width(), 36.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         let name = crate::music::TRACKS.iter().find(|x| x.0 == pick).map_or("", |x| x.2);
@@ -676,37 +655,13 @@ fn music_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
         ui.painter().rect(r, 8.0, ui::blend(t.bg, t.hover, h), Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
         cover(ui.painter(), Rect::from_center_size(pos2(r.min.x + 18.0, r.center().y), vec2(20.0, 20.0)), pick);
         ui.painter().text(pos2(r.min.x + 36.0, r.center().y), egui::Align2::LEFT_CENTER, name, ui::medium(ui::px(12.0)), t.text);
-        icon(ui, "chevron-down", pos2(r.max.x - 14.0, r.center().y), 14.0, t.icon2);
+        icon(ui, if open { "chevron-up" } else { "chevron-down" }, pos2(r.max.x - 14.0, r.center().y), 14.0, t.icon2);
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, format!("Brano: {name}")));
-        // Open on its own (egui keeps one menu open at a time: this one would close the panel).
-        let open_id = Id::new("music-list-open");
-        let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+        // The list opens inside the panel, under the button: a menu of its own would close it.
         if resp.clicked() {
-            open = !open;
+            ui.data_mut(|d| d.insert_temp(open_id, !open));
+            ui.data_mut(|d| d.insert_temp(Id::new("music-list-show"), !open));
         }
-        egui::Popup::from_response(&resp).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClick).frame(ui::menu_frame(t).inner_margin(egui::Margin::same(6))).width(r.width()).show(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            for (track, _, title, _) in crate::music::TRACKS {
-                let (row, rr) = ui.allocate_exact_size(vec2(r.width() - 12.0, 40.0), egui::Sense::click());
-                let on = track == pick;
-                let hv = ui::motion::hover(ui.ctx(), rr.id, rr.hovered());
-                if hv > 0.0 {
-                    ui.painter().rect_filled(row, 6.0, t.brand_fill.gamma_multiply(hv));
-                }
-                if on {
-                    icon(ui, "check", pos2(row.min.x + 12.0, row.center().y), 14.0, t.menu_text);
-                }
-                cover(ui.painter(), Rect::from_center_size(pos2(row.min.x + 40.0, row.center().y), vec2(30.0, 30.0)), track);
-                ui.painter().text(pos2(row.min.x + 64.0, row.center().y), egui::Align2::LEFT_CENTER, title, ui::medium(ui::px(12.5)), t.menu_text);
-                if rr.clicked() {
-                    pick = track;
-                    if playing.is_some() && !ed.read_only {
-                        set_music(ed, Some(track));
-                    }
-                }
-            }
-        });
-        ui.data_mut(|d| d.insert_temp(open_id, open));
         if !ed.read_only {
             let on = playing.is_some();
             if round_button(ui, if on { "pause" } else { "play" }, if on { "Ferma la musica" } else { "Fai partire la musica per tutti" }, t).clicked() {
@@ -714,6 +669,36 @@ fn music_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
             }
         }
     });
+    if open {
+        ui.add_space(6.0);
+        ui.spacing_mut().item_spacing.y = 2.0;
+        let top = ui.cursor().min;
+        for (track, _, title, _) in crate::music::TRACKS {
+            let (row, rr) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), egui::Sense::click());
+            rr.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
+            let on = track == pick;
+            let hv = ui::motion::hover(ui.ctx(), rr.id, rr.hovered());
+            if on || hv > 0.0 {
+                ui.painter().rect_filled(row, 8.0, if on { t.selected } else { t.hover.gamma_multiply(hv) });
+            }
+            cover(ui.painter(), Rect::from_center_size(pos2(row.min.x + 22.0, row.center().y), vec2(28.0, 28.0)), track);
+            ui.painter().text(pos2(row.min.x + 46.0, row.center().y), egui::Align2::LEFT_CENTER, title, ui::medium(ui::px(12.0)), t.text);
+            if on {
+                icon(ui, "check", pos2(row.max.x - 16.0, row.center().y), 14.0, t.brand);
+            }
+            if rr.clicked() {
+                pick = track;
+                ui.data_mut(|d| d.insert_temp(open_id, false));
+                if playing.is_some() && !ed.read_only {
+                    set_music(ed, Some(track));
+                }
+            }
+        }
+        // Just opened: brought into view (it may open below the panel's edge).
+        if ui.data_mut(|d| d.remove_temp::<bool>(Id::new("music-list-show"))).unwrap_or(false) {
+            ui.scroll_to_rect(Rect::from_min_max(top, ui.cursor().min + vec2(ui.available_width(), 0.0)), Some(egui::Align::BOTTOM));
+        }
+    }
     ui.data_mut(|d| d.insert_temp(pick_id, pick));
 }
 

@@ -938,7 +938,15 @@ pub fn right(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.add_space(4.0);
-            ui.label(RichText::new("Design").font(ui::medium(ui::px(11.0))).color(t.text));
+            let title = match b.editor.tool {
+                _ if b.editor.read_only => "Design",
+                Tool::Pen => "Penna",
+                Tool::Highlighter => "Evidenziatore",
+                Tool::Eraser => "Gomma",
+                Tool::Tape => "Nastro adesivo",
+                _ => "Design",
+            };
+            ui.label(RichText::new(title).font(ui::medium(ui::px(11.0))).color(t.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.set_min_height(ui.available_height());
                 if small_icon_button(ui, "panel-right-close", "Nascondi il pannello", false).clicked() {
@@ -955,6 +963,8 @@ pub fn right(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
         ui.spacing_mut().item_spacing.y = 0.0;
         if b.editor.read_only {
             section(ui, Some("Solo visione"), |ui| ui::hint(ui, "Sola lettura"));
+        } else if inked(b.editor.tool) {
+            tool_props(ui, &mut b.editor, &t);
         } else if b.editor.selected().is_empty() {
             board_props(ui, b);
         } else {
@@ -1170,6 +1180,161 @@ fn section(ui: &mut Ui, title: Option<&str>, body: impl FnOnce(&mut Ui)) {
     ui.painter().hline(r.x_range(), r.center().y, Stroke::new(1.0, t.border));
 }
 
+/* ---------- a drawing tool in hand: how it draws ---------- */
+
+/// The tools whose settings the right panel shows while they are in hand.
+fn inked(tool: Tool) -> bool {
+    matches!(tool, Tool::Pen | Tool::Highlighter | Tool::Eraser | Tool::Tape)
+}
+
+/// A setting with its name on the left and its control on the right, on one line.
+fn setting_row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
+    let t = ui::theme(ui.ctx());
+    ui::row(ui, ui::ctl(28.0), |ui| {
+        ui.label(RichText::new(label).size(ui::px(11.0)).color(t.text2));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), add);
+    });
+}
+
+fn tool_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
+    use super::toolbar::{PCT, PX};
+    let w = ui.available_width() - 32.0;
+    match ed.tool {
+        Tool::Pen => pen_props(ui, ed, t),
+        Tool::Highlighter => {
+            let p = &mut ed.prefs.highlighter;
+            section(ui, Some("Colore"), |ui| {
+                if let Some(c) = ui::swatches(ui, &HIGHLIGHT_COLORS, &p.color, false) {
+                    p.color = c;
+                }
+            });
+            section(ui, Some("Tratto"), |ui| {
+                ui::slider(ui, "Spessore", &mut p.size, 4.0, 96.0, 0.5, true, PX, w);
+                ui::slider(ui, "Opacità", &mut p.opacity, 0.1, 1.0, 0.05, false, PCT, w);
+            });
+        }
+        Tool::Tape => {
+            let p = &mut ed.prefs.tape;
+            section(ui, Some("Colore"), |ui| {
+                if let Some(c) = ui::swatches(ui, &TAPE_COLORS, &p.color, false) {
+                    p.color = c;
+                }
+            });
+            section(ui, Some("Nastro"), |ui| {
+                ui::slider(ui, "Larghezza", &mut p.size, 8.0, 120.0, 0.5, true, PX, w);
+            });
+        }
+        Tool::Eraser => {
+            let p = &mut ed.prefs.eraser;
+            section(ui, Some("Cancella"), |ui| {
+                ui::segmented(ui, &mut p.mode, &[(prefs::EraserMode::Pixel, "Dove passa"), (prefs::EraserMode::Stroke, "Tratto intero")], w);
+                ui::slider(ui, "Dimensione", &mut p.size, 2.0, 240.0, 0.5, true, PX, w);
+                if p.mode == prefs::EraserMode::Pixel {
+                    ui::slider(ui, "Forza", &mut p.strength, 0.1, 1.0, 0.05, false, PCT, w);
+                }
+            });
+        }
+        _ => {}
+    }
+    section(ui, None, |ui| {
+        ui::hint(ui, "Alt + trascina: spessore  ·  col tasto destro: opacità  ·  Alt + clic: prendi un colore  ·  [ e ]: spessore");
+    });
+}
+
+/// The pen in use: how it looks, its brush, colour and stroke, and how it follows the hand.
+fn pen_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
+    use super::toolbar::{PCT, PX, brush_sample, brush_sizes, set_brush, size_range};
+    if ed.prefs.pens.is_empty() {
+        return;
+    }
+    let i = ed.pen.min(ed.prefs.pens.len() - 1);
+    let w = ui.available_width() - 32.0;
+    // In the pen's colour, unless it would hardly show on the panel.
+    let shown_color = |c: &str, op: f64| {
+        let c = color_or(c, DARK);
+        let luma = (0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32) / 255.0;
+        let c = if (t.dark && luma < 0.2) || (!t.dark && luma > 0.85) { t.text2 } else { c };
+        Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (op.clamp(0.1, 1.0) * 255.0) as u8)
+    };
+    // The stroke as it will come out, large.
+    section(ui, None, |ui| {
+        let pen = &ed.prefs.pens[i];
+        let (r, _) = ui.allocate_exact_size(vec2(w, 72.0), Sense::hover());
+        ui.painter().rect_filled(r, 10.0, t.bg2);
+        brush_sample(ui, r.shrink2(vec2(10.0, 6.0)), pen.brush, shown_color(&pen.color, pen.opacity), pen.size.clamp(1.0, 26.0));
+        ui.painter().text(r.left_top() + vec2(10.0, 9.0), egui::Align2::LEFT_TOP, format!("{} {}", pen.brush.name(), i + 1), ui::medium(ui::px(10.0)), t.text2);
+    });
+    section(ui, Some("Pennello"), |ui| {
+        let pen = &mut ed.prefs.pens[i];
+        let gap = 6.0;
+        let tile = vec2(((w - gap) / 2.0).floor(), 50.0);
+        egui::Grid::new("pen-brushes").spacing(vec2(gap, gap)).show(ui, |ui| {
+            for (n, (brush, name)) in BRUSHES.iter().enumerate() {
+                let (r, resp) = ui.allocate_exact_size(tile, Sense::click());
+                let on = pen.brush == *brush;
+                let sel = ui::motion::hover(ui.ctx(), resp.id.with("sel"), on);
+                ui.painter().rect_filled(r, 8.0, ui::blend(t.bg2, t.selected, sel));
+                ui::hover_fill(ui, resp.id, r, resp.hovered() && !on, 8.0, t.hover);
+                if on {
+                    ui.painter().rect_stroke(r, 8.0, Stroke::new(1.5, t.brand), egui::StrokeKind::Inside);
+                }
+                let (_, _, start) = brush_sizes(*brush);
+                let sample = Rect::from_min_max(r.min + vec2(4.0, 2.0), pos2(r.max.x - 4.0, r.max.y - 16.0));
+                brush_sample(ui, sample, *brush, shown_color(&pen.color, 1.0), if *brush == Brush::Airbrush { 12.0 } else { start.min(7.0) });
+                ui.painter().text(pos2(r.center().x, r.max.y - 9.0), egui::Align2::CENTER_CENTER, *name, egui::FontId::proportional(ui::px(10.0)), if on { t.text } else { t.text2 });
+                resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, *name));
+                if ui::tip(resp, name, None).clicked() {
+                    set_brush(pen, *brush);
+                }
+                if n % 2 == 1 {
+                    ui.end_row();
+                }
+            }
+        });
+    });
+    section(ui, Some("Colore"), |ui| {
+        let pen = &mut ed.prefs.pens[i];
+        if let Some(c) = ui::swatches(ui, &INK_COLORS, &pen.color, false) {
+            pen.color = c;
+        }
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            if let Some(c) = ui::color_well(ui, "Colore personalizzato", color_or(&pen.color, DARK)) {
+                pen.color = hex(c);
+            }
+            let on = ed.eyedropper;
+            if ui::button(ui, "Prendi dalla lavagna", if on { Btn::Primary } else { Btn::Secondary }, Some("droplet"), false, true).clicked() {
+                ed.eyedropper = !on;
+            }
+        });
+    });
+    let p = &mut ed.prefs;
+    section(ui, Some("Tratto"), |ui| {
+        let pen = &mut p.pens[i];
+        let (lo, hi) = size_range(pen.brush);
+        ui::slider(ui, "Spessore", &mut pen.size, lo, hi, 0.5, true, PX, w);
+        ui::slider(ui, "Opacità", &mut pen.opacity, 0.1, 1.0, 0.05, false, PCT, w);
+        ui::slider(ui, "Stabilizzatore", &mut p.streamline, 0.0, 1.0, 0.05, false, PCT, w);
+    });
+    section(ui, Some("Pressione e inclinazione"), |ui| {
+        ui::switch(ui, &mut p.pressure, "Lo spessore segue la pressione");
+        if p.pressure {
+            setting_row(ui, "Sensibilità", |ui| {
+                ui::segmented(ui, &mut p.sensitivity, &[(prefs::Sensitivity::Light, "Leggera"), (prefs::Sensitivity::Normal, "Normale"), (prefs::Sensitivity::Firm, "Decisa")], 150.0);
+            });
+        }
+        ui::switch(ui, &mut p.tilt_shading, "Inclinata, la penna sfuma più largo");
+    });
+    section(ui, Some("Aiuti"), |ui| {
+        ui::switch(ui, &mut p.quick_shape, "Forma perfetta tenendo ferma la penna");
+        ui::switch(ui, &mut p.ink_to_shape, "Trasforma i disegni in forme modificabili");
+        ui::switch(ui, &mut p.finger_draw, "Le dita disegnano (non spostano la lavagna)");
+        ui.add_space(2.0);
+        ui.label(RichText::new("Simmetria").size(ui::px(11.0)).color(t.text2));
+        ui::segmented(ui, &mut p.symmetry, &[(prefs::Symmetry::Off, "No"), (prefs::Symmetry::Vertical, "Vert."), (prefs::Symmetry::Horizontal, "Oriz."), (prefs::Symmetry::Quad, "4"), (prefs::Symmetry::Radial, "8")], w);
+    });
+}
+
 /* ---------- nothing selected: the board ---------- */
 
 fn board_props(ui: &mut Ui, b: &mut BoardScreen) {
@@ -1180,10 +1345,17 @@ fn board_props(ui: &mut Ui, b: &mut BoardScreen) {
         b.editor.board.set_meta(&meta);
     }
     section(ui, Some("Esporta"), |ui| {
-        if ui::button(ui, "Esporta lavagna…", Btn::Secondary, Some("download"), false, true).clicked() {
+        ui::hint(ui, "Tutta la lavagna come immagine PNG, SVG o PDF.");
+        if ui::full_button(ui, "Esporta lavagna…", Btn::Secondary, Some("download")).clicked() {
             b.ui.export = Some(false);
         }
     });
+}
+
+/// A small grey title over a group of controls inside a section.
+fn sub_label(ui: &mut Ui, text: &str) {
+    let t = ui::theme(ui.ctx());
+    ui.label(RichText::new(text).size(ui::px(10.5)).color(t.text2));
 }
 
 fn pattern_label(p: Pattern) -> &'static str {
@@ -1200,6 +1372,7 @@ fn pattern_label(p: Pattern) -> &'static str {
 /// Board colour, pattern and spacing. Also the default of new boards in Settings.
 pub fn background_fields(ui: &mut Ui, meta: &mut BoardMeta) {
     let t = ui::theme(ui.ctx());
+    sub_label(ui, "Colore");
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
         for (name, value) in BACKGROUNDS {
@@ -1218,7 +1391,8 @@ pub fn background_fields(ui: &mut Ui, meta: &mut BoardMeta) {
             meta.background = hex(c);
         }
     });
-    ui.add_space(8.0);
+    ui.add_space(4.0);
+    sub_label(ui, "Motivo");
     let avail = ui.available_width();
     let cols = 3;
     let spacing = 6.0;
@@ -1248,14 +1422,12 @@ pub fn background_fields(ui: &mut Ui, meta: &mut BoardMeta) {
         }
     });
     if meta.pattern != Pattern::None {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 12.0;
-            ui.label(RichText::new("Passo").color(t.text2));
-            let mut g = meta.grid_size as i64;
-            if ui::segmented(ui, &mut g, &[(12, "Fitto"), (24, "Medio"), (48, "Ampio")], 160.0) {
-                meta.grid_size = g as f64;
-            }
-        });
+        ui.add_space(4.0);
+        sub_label(ui, "Passo del motivo");
+        let mut g = meta.grid_size as i64;
+        if ui::segmented(ui, &mut g, &[(12, "Fitto"), (24, "Medio"), (48, "Ampio")], ui.available_width()) {
+            meta.grid_size = g as f64;
+        }
     }
 }
 

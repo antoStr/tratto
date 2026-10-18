@@ -104,6 +104,10 @@ pub struct Ink {
     /// pressure kept between 0.2 and 1, with a gentler effect on the width).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brush: Option<Brush>,
+    /// The sfumino's colours, one a point (0xRRGGBB): what it had picked up from the board
+    /// there, as it dragged it along. Empty for every other stroke.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub colors: Vec<u32>,
 }
 
 /// What a pen draws like: a small brush library, as in Procreate.

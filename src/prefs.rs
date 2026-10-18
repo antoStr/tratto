@@ -172,6 +172,17 @@ impl TimerSound {
             TimerSound::Drop => "Goccia d'acqua",
         }
     }
+
+    /// The name in a word, for a row of choices.
+    pub fn short(self) -> &'static str {
+        match self {
+            TimerSound::Tibetan => "Campana",
+            TimerSound::Harp => "Arpa",
+            TimerSound::Carillon => "Carillon",
+            TimerSound::Piano => "Piano",
+            TimerSound::Drop => "Goccia",
+        }
+    }
 }
 
 pub const TIMER_SOUNDS: [TimerSound; 5] = [
@@ -303,7 +314,7 @@ pub struct ToolbarProfile {
 
 /// Every button the toolbar can have: id, name, and the group it sits with (a thin line
 /// separates groups).
-pub const TOOLBAR_ITEMS: [(&str, &str, u8); 23] = [
+pub const TOOLBAR_ITEMS: [(&str, &str, u8); 22] = [
     ("select", "Seleziona", 0),
     ("hand", "Mano", 0),
     ("draw", "Penne e gomma", 1),
@@ -325,7 +336,7 @@ pub const TOOLBAR_ITEMS: [(&str, &str, u8); 23] = [
     ("chat", "Chat del cursore", 2),
     ("laser", "Puntatore laser", 2),
     ("minimap", "Minimappa", 3),
-    ("trash", "Cestino", 3),
+
     ("more", "Altri strumenti", 3),
 ];
 

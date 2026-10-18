@@ -151,7 +151,9 @@ impl Editor {
                         if kind != PointerKind::Mouse {
                             self.input.touch_pointer = Some(pointer);
                         }
-                        if button == PointerButton::Secondary && kind == PointerKind::Mouse {
+                        // Alt with the right button on a drawing tool sets its opacity (below).
+                        let adjust = modifiers.alt && !self.read_only && matches!(self.tool, Tool::Pen | Tool::Highlighter | Tool::Eraser);
+                        if button == PointerButton::Secondary && kind == PointerKind::Mouse && !adjust {
                             if self.gesture.is_none() {
                                 self.select_for_menu(s);
                                 self.requests.push(Request::Menu(pos));
@@ -167,7 +169,7 @@ impl Editor {
                         if kind != PointerKind::Mouse && matches!(self.gesture, Some(Gesture::Move { .. } | Gesture::Marquee { .. } | Gesture::Pan { .. } | Gesture::Lasso { .. })) {
                             self.press = Some((s, t));
                         }
-                    } else if self.input.down && (button == PointerButton::Primary || button == PointerButton::Middle) {
+                    } else if self.input.down && (button == PointerButton::Primary || button == PointerButton::Middle || (button == PointerButton::Secondary && matches!(self.gesture, Some(Gesture::BrushAdjust { .. })))) {
                         self.input.down = false;
                         self.input.touch_pointer = None;
                         if button == PointerButton::Primary && self.input.kind == Some(PointerKind::Mouse) && matches!(self.gesture, Some(Gesture::Draw(_) | Gesture::Erase { .. })) {
@@ -440,9 +442,19 @@ impl Editor {
         }
         let touch_pans = kind == PointerKind::Touch && !self.prefs.finger_draw;
 
-        // The eyedropper: armed from the pen's colours, or Alt+click with a pen or the highlighter.
-        if !ro && (self.eyedropper || (m.alt && matches!(tool, Tool::Pen | Tool::Highlighter))) {
+        // The eyedropper, armed from the pen's colours.
+        if !ro && self.eyedropper {
             return self.pick_color(p);
+        }
+        // Alt with a drawing tool: dragged, its size (left button) or opacity (right button);
+        // Alt+click with a pen or the highlighter picks a colour.
+        if !ro
+            && m.alt
+            && kind == PointerKind::Mouse
+            && let Some((size0, opacity0)) = self.brush_feel()
+        {
+            self.gesture = Some(Gesture::BrushAdjust { s0: s, size0, opacity0, opacity: button == PointerButton::Secondary, moved: false });
+            return;
         }
         // The pen's eraser end, and its barrel button (lasso; a tap opens the menu).
         if !ro && eraser {
@@ -812,6 +824,16 @@ impl Editor {
                 self.ruler.x = *x + (s.x - s0.x) as f64;
                 self.ruler.y = *y + (s.y - s0.y) as f64;
             }
+            Gesture::BrushAdjust { s0, size0, opacity0, opacity, moved } => {
+                let dx = (s.x - s0.x) as f64;
+                *moved |= s.distance(*s0) > 4.0;
+                if *moved {
+                    // Right is more: the size doubles every 120 points, the opacity goes from
+                    // none to full over 300.
+                    let (size, op) = if *opacity { (None, Some(*opacity0 + dx / 300.0)) } else { (Some(*size0 * 2f64.powf(dx / 120.0)), None) };
+                    self.set_brush_feel(size, op);
+                }
+            }
             Gesture::RulerRotate => {
                 let mut angle = (s.y as f64 - self.ruler.y).atan2(s.x as f64 - self.ruler.x);
                 let right = snap_angle(angle, std::f64::consts::FRAC_PI_4);
@@ -877,6 +899,12 @@ impl Editor {
             Gesture::Erase { touched, .. } => self.finish_erase(touched),
             // Let the trail fade, then clear it for the others.
             Gesture::Laser => self.laser_clear = Some(now() + 950.0),
+            Gesture::BrushAdjust { s0, opacity, moved, .. } => {
+                if !moved && !opacity && matches!(self.tool, Tool::Pen | Tool::Highlighter) {
+                    let p = self.to_world(s0);
+                    self.pick_color(p);
+                }
+            }
             Gesture::Move { moved, edit, .. } => {
                 let sel = self.selected();
                 let screen_pos = s + self.origin.to_vec2();
@@ -1029,6 +1057,19 @@ impl Editor {
         }
         if m.shift && (digit(Key::Num0) || key == Key::Equals) {
             return self.zoom_to(1.0);
+        }
+        // [ and ] (the keys there, whatever the layout): the drawing tool's size, a step at a
+        // time; with Shift its opacity.
+        let bracket = |k: Key| key == k || physical == Some(k);
+        if !ro && (bracket(Key::OpenBracket) || bracket(Key::CloseBracket)) && let Some((size, op)) = self.brush_feel() {
+            let up = bracket(Key::CloseBracket);
+            if m.shift {
+                self.set_brush_feel(None, Some(op + if up { 0.1 } else { -0.1 }));
+            } else {
+                self.set_brush_feel(Some(if up { size * 1.25 } else { size / 1.25 }), None);
+            }
+            self.flash_size = Some(now());
+            return;
         }
         if key == Key::Questionmark {
             return self.requests.push(Request::Shortcuts);

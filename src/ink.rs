@@ -78,7 +78,7 @@ fn brush_width(brush: Brush, p: f32, from_start: f64, to_end: f64, size: f64) ->
 }
 
 /// How much stylus tilt (`0.0..=1.0`) broadens a stroke for shading brushes.
-fn tilt_scale(brush: Brush, tilt: f32) -> f64 {
+pub fn tilt_scale(brush: Brush, tilt: f32) -> f64 {
     let t = tilt.clamp(0.0, 1.0) as f64;
     if t <= 0.05 {
         return 1.0;
@@ -262,6 +262,63 @@ pub fn brush_dabs_tilted(pts: &[f32], size: f64, min_step: f64, tilt: f32) -> Ve
             let k = at / d.max(1e-9);
             let lerp = |u: f64, v: f64| u + (v - u) * k;
             out.push([lerp(p0[0], p1[0]) as f32, lerp(p0[1], p1[1]) as f32, lerp(p0[2], p1[2]) as f32, strength(lerp(a[i - 1][2], a[i][2]), step / nominal) as f32]);
+        }
+    }
+    out
+}
+
+/// The sfumino: soft dabs along the stroke, each in the colour it carried there (`colors`, one
+/// a point, 0xRRGGBB), denser and stronger than the airbrush's so it smears what is under it.
+pub fn smudge_dabs(pts: &[f32], colors: &[u32], size: f64, min_step: f64) -> Vec<([f32; 4], u32)> {
+    let mut out = Vec::new();
+    if size <= 0.0 || !size.is_finite() || pts.len() < 3 || colors.is_empty() {
+        return out;
+    }
+    // Only the points that are numbers, each with its colour (the centre line skips the others).
+    let mut flat = Vec::with_capacity(pts.len());
+    let mut cols = Vec::with_capacity(pts.len() / 3);
+    for (i, p) in pts.chunks_exact(3).enumerate() {
+        if p[0].is_finite() && p[1].is_finite() {
+            flat.extend_from_slice(p);
+            cols.push(colors.get(i).or(colors.last()).copied().unwrap_or(0));
+        }
+    }
+    let flow = |p: f32| if p < 0.0 { 0.5 } else { 0.2 + 0.45 * p.clamp(0.0, 1.0) as f64 };
+    let c = centre_line(&flat, 0.85, |p, _, _| size / 2.0 * brush_width(Brush::Smudge, p, 0.0, 0.0, size));
+    let a = centre_line(&flat, 0.85, |p, _, _| flow(p));
+    if c.len() != cols.len() || a.len() != c.len() {
+        return out;
+    }
+    const STEP: f64 = 0.22;
+    let least = (size * 0.03).max(min_step);
+    let strength = |a: f64, k: f64| if k <= 1.0 { a } else { 1.0 - (1.0 - a).powf(k) };
+    let mix = |u: u32, v: u32, k: f64| {
+        let ch = |s: u32| {
+            let (x, y) = (((u >> s) & 0xFF) as f64, ((v >> s) & 0xFF) as f64);
+            ((x + (y - x) * k).round().clamp(0.0, 255.0) as u32) << s
+        };
+        ch(16) | ch(8) | ch(0)
+    };
+    out.push(([c[0][0] as f32, c[0][1] as f32, c[0][2] as f32, strength(a[0][2], least / (c[0][2] * 2.0 * STEP).max(1e-9)) as f32], cols[0]));
+    let mut since = 0.0;
+    for i in 1..c.len() {
+        let (p0, p1) = (c[i - 1], c[i]);
+        let d = (p1[0] - p0[0]).hypot(p1[1] - p0[1]);
+        let mut at = 0.0;
+        loop {
+            let r = p0[2] + (p1[2] - p0[2]) * (at / d.max(1e-9));
+            let nominal = (r * 2.0 * STEP).max(1e-9);
+            let step = nominal.max(least);
+            if since + (d - at) < step {
+                since += d - at;
+                break;
+            }
+            at += step - since;
+            since = 0.0;
+            let k = at / d.max(1e-9);
+            let lerp = |u: f64, v: f64| u + (v - u) * k;
+            let dab = [lerp(p0[0], p1[0]) as f32, lerp(p0[1], p1[1]) as f32, lerp(p0[2], p1[2]) as f32, strength(lerp(a[i - 1][2], a[i][2]), step / nominal) as f32];
+            out.push((dab, mix(cols[i - 1], cols[i], k)));
         }
     }
     out
@@ -491,20 +548,23 @@ impl OneEuro {
 
 /// Drops points closer than `min_dist` to the previous kept one; keeps the last point.
 pub fn thin_points(pts: &[f32], min_dist: f64) -> Vec<f32> {
-    if pts.len() <= 6 {
-        return pts.to_vec();
+    thin_indices(pts, min_dist).into_iter().flat_map(|i| pts[i * 3..i * 3 + 3].iter().copied()).collect()
+}
+
+/// Which points `thin_points` keeps (their numbers), for what goes along with each point.
+pub fn thin_indices(pts: &[f32], min_dist: f64) -> Vec<usize> {
+    let n = pts.len() / 3;
+    if n <= 2 {
+        return (0..n).collect();
     }
-    let mut out = pts[..3].to_vec();
-    let n = pts.len();
-    let mut i = 3;
-    while i < n - 3 {
-        let (lx, ly) = (out[out.len() - 3], out[out.len() - 2]);
-        if ((pts[i] - lx) as f64).hypot((pts[i + 1] - ly) as f64) >= min_dist {
-            out.extend_from_slice(&pts[i..i + 3]);
+    let mut out = vec![0];
+    for i in 1..n - 1 {
+        let l = out[out.len() - 1] * 3;
+        if ((pts[i * 3] - pts[l]) as f64).hypot((pts[i * 3 + 1] - pts[l + 1]) as f64) >= min_dist {
+            out.push(i);
         }
-        i += 3;
     }
-    out.extend_from_slice(&pts[n - 3..]);
+    out.push(n - 1);
     out
 }
 

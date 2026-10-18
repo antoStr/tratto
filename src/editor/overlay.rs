@@ -46,19 +46,19 @@ impl Editor {
     /// A stroke (board coordinates, flat [x, y, pressure, …]) drawn on screen.
     #[allow(clippy::too_many_arguments)]
     fn stroke_shape(&self, ctx: &egui::Context, out: &mut Vec<Shape>, pts: &[f64], size: f64, hl: bool, brush: Option<Brush>, color: Color32, opacity: f64) {
-        out.extend(Self::build_stroke_shape(ctx, self.cam, self.origin, is_dark(&self.board.meta().background), pts, size, hl, brush, color, opacity, 0.0));
+        out.extend(Self::build_stroke_shape(ctx, self.cam, self.origin, is_dark(&self.board.meta().background), pts, size, hl, brush, color, opacity, &[]));
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn build_stroke_shape(ctx: &egui::Context, cam: Camera, origin: Pos2, dark_bg: bool, pts: &[f64], size: f64, hl: bool, brush: Option<Brush>, color: Color32, opacity: f64, tilt: f32) -> Vec<Shape> {
-        let Some((prims, place)) = Self::stroke_prims(cam, origin, dark_bg, pts, size, hl, brush, color, opacity, ctx.pixels_per_point(), tilt) else { return Vec::new() };
+    fn build_stroke_shape(ctx: &egui::Context, cam: Camera, origin: Pos2, dark_bg: bool, pts: &[f64], size: f64, hl: bool, brush: Option<Brush>, color: Color32, opacity: f64, colors: &[u32]) -> Vec<Shape> {
+        let Some((prims, place)) = Self::stroke_prims(cam, origin, dark_bg, pts, size, hl, brush, color, opacity, ctx.pixels_per_point(), colors) else { return Vec::new() };
         crate::paint::brush_meshes(ctx, prims, cam.z as f32, place).into_iter().map(Shape::mesh).collect()
     }
 
     /// A stroke's primitives as it will be drawn (relative to its first point), and where they
-    /// go on screen.
+    /// go on screen. `colors`: the sfumino's, one a point.
     #[allow(clippy::too_many_arguments)]
-    fn stroke_prims(cam: Camera, origin: Pos2, dark_bg: bool, pts: &[f64], size: f64, hl: bool, brush: Option<Brush>, color: Color32, opacity: f64, ppp: f32, tilt: f32) -> Option<(Vec<crate::prims::Prim>, impl Fn(f32, f32) -> Pos2 + Copy)> {
+    fn stroke_prims(cam: Camera, origin: Pos2, dark_bg: bool, pts: &[f64], size: f64, hl: bool, brush: Option<Brush>, color: Color32, opacity: f64, ppp: f32, colors: &[u32]) -> Option<(Vec<crate::prims::Prim>, impl Fn(f32, f32) -> Pos2 + Copy)> {
         if pts.len() < 3 {
             return None;
         }
@@ -67,7 +67,12 @@ impl Editor {
         // As the stroke will be drawn: the default ink light on a dark board.
         let color = if color == DARK && dark_bg { crate::prims::LIGHT_INK } else { color };
         let a = if hl { 0.45 } else { 1.0 } * opacity.clamp(0.05, 1.0) as f32;
-        let prims = crate::prims::brush_prims_tilted(&rel, size, brush, hl, alpha(color, a * color.a() as f32 / 255.0), (x0, y0), Some(1.0 / (cam.z * ppp as f64)), tilt);
+        let color = alpha(color, a * color.a() as f32 / 255.0);
+        let pixel = Some(1.0 / (cam.z * ppp as f64));
+        let prims = match brush {
+            Some(Brush::Smudge) if !hl => crate::prims::smudge_prims(&rel, colors, size, color, pixel),
+            _ => crate::prims::brush_prims(&rel, size, brush, hl, color, (x0, y0), pixel),
+        };
         let place = move |x: f32, y: f32| {
             let p = cam.to_screen(x as f64 + x0, y as f64 + y0);
             pos2(p.x as f32 + origin.x, p.y as f32 + origin.y)
@@ -308,7 +313,7 @@ impl Editor {
                 }
                 if d.pieces_pts != d.pts.len() {
                     d.pieces_pts = d.pts.len();
-                    if let Some((prims, place)) = Self::stroke_prims(cam, origin, dark_bg, &d.pts, d.size, d.hl, d.brush, color, d.opacity, ctx.pixels_per_point(), d.tilt) {
+                    if let Some((prims, place)) = Self::stroke_prims(cam, origin, dark_bg, &d.pts, d.size, d.hl, d.brush, color, d.opacity, ctx.pixels_per_point(), &d.colors) {
                         let mut old = std::mem::take(&mut d.pieces).into_iter();
                         for prim in prims {
                             match old.next() {
@@ -326,7 +331,7 @@ impl Editor {
                 }
                 if self.prefs.symmetry != crate::prefs::Symmetry::Off {
                     for m_pts in super::symmetry_pts(self.prefs.symmetry, d.sym_center, &d.pts) {
-                        out.extend(Self::build_stroke_shape(&ctx, cam, origin, dark_bg, &m_pts, d.size, d.hl, d.brush, color, d.opacity, d.tilt));
+                        out.extend(Self::build_stroke_shape(&ctx, cam, origin, dark_bg, &m_pts, d.size, d.hl, d.brush, color, d.opacity, &d.colors));
                     }
                 }
             }
@@ -405,7 +410,45 @@ impl Editor {
         }
         self.cursor_shapes(painter, &mut out);
         self.emote_shapes(painter, &mut out);
+        self.brush_feel_shapes(painter, &mut out, dark_ui);
         painter.extend(out);
+    }
+
+    /// While the size or opacity is set with Alt and a drag (or [ and ]): the tip as it will
+    /// draw, true to size, and the value beside it.
+    fn brush_feel_shapes(&mut self, painter: &Painter, out: &mut Vec<Shape>, dark_ui: bool) {
+        let (at, opacity_shown) = match &self.gesture {
+            Some(Gesture::BrushAdjust { s0, opacity, .. }) => (*s0 + self.origin.to_vec2(), *opacity),
+            _ => match self.flash_size {
+                Some(t0) if now() - t0 < 900.0 => match painter.ctx().input(|i| i.pointer.hover_pos()) {
+                    Some(p) => (p, false),
+                    None => return,
+                },
+                _ => {
+                    self.flash_size = None;
+                    return;
+                }
+            },
+        };
+        let Some((size, op)) = self.brush_feel() else { return };
+        painter.ctx().request_repaint();
+        let color = match self.tool {
+            Tool::Pen => self.prefs.pens.get(self.pen).and_then(|p| parse_color(&p.color)),
+            Tool::Highlighter => parse_color(&self.prefs.highlighter.color),
+            _ => None,
+        };
+        let r = (size as f32 / 2.0).max(1.5);
+        let ring = if dark_ui { Color32::from_white_alpha(200) } else { Color32::from_black_alpha(140) };
+        match color {
+            Some(c) => out.push(Shape::circle_filled(at, r, c.gamma_multiply(op as f32))),
+            None => out.push(Shape::circle_filled(at, r, ring.gamma_multiply(0.15 * op as f32))),
+        }
+        out.push(Shape::circle_stroke(at, r + 0.5, Stroke::new(1.0, ring)));
+        let text = if opacity_shown { format!("{:.0}%", op * 100.0) } else { format!("{:.0} px", size) };
+        let g = painter.layout_no_wrap(text, medium(11.0), Color32::WHITE);
+        let pill = egui::Rect::from_min_size(at + vec2(r + 10.0, -g.size().y / 2.0 - 4.0), g.size() + vec2(14.0, 8.0));
+        out.push(Shape::rect_filled(pill, 6, Color32::from_black_alpha(200)));
+        out.push(Shape::galley(pill.min + vec2(7.0, 4.0), g, Color32::WHITE));
     }
 
 }

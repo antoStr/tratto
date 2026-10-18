@@ -677,7 +677,6 @@ fn toolbar_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme, id: &
         }
         "more" => more_tools(ui, ed, t, top),
         "laser" => laser_button(ui, ed),
-        "trash" => trash_button(ui, ed, t),
         "minimap" => {
             let on = ed.prefs.minimap;
             if icon_button(ui, "map", if on { "Nascondi la minimappa" } else { "Mostra la minimappa" }, None, vec2(btn(), btn()), icon_px(), on, false).clicked() {
@@ -1207,6 +1206,7 @@ pub fn toolbar(ctx: &egui::Context, stage: Rect, ed: &mut Editor, st: &mut Board
     });
     let bar = resp.response.rect;
     ctx.data_mut(|d| d.insert_temp(Id::new("toolbar-rect"), bar));
+    trash_pill(ctx, bar, dock, ed, &t);
     let tray_rect = if !ed.read_only && ed.prefs.tray { tray(ctx, bar, stage.width(), top, ed, &t) } else { None };
     // What the zoom controls and the minimap keep clear of.
     let bars = tray_rect.map_or(bar, |r| r.union(bar));
@@ -1229,10 +1229,37 @@ fn laser_button(ui: &mut Ui, ed: &mut Editor) {
     ui.painter().circle_filled(c, 1.6, Color32::WHITE);
 }
 
+/// The bin, beside the toolbar: it comes out when something is selected (or dragged, to be
+/// thrown in it) and goes away when nothing is.
+fn trash_pill(ctx: &egui::Context, bar: Rect, dock: f32, ed: &mut Editor, t: &Theme) {
+    let dragging = is_dragging(ctx) || matches!(ed.gesture, Some(crate::editor::Gesture::Move { moved: true, .. }));
+    let wanted = !ed.read_only && dock > 0.5 && (!ed.selection.is_empty() || dragging) && ed.editing.is_none();
+    let k = ui::motion::presence(ctx, Id::new("trash-pill"), wanted);
+    if k <= 0.01 {
+        ctx.data_mut(|d| {
+            d.remove::<Rect>(Id::new("trash-slot-rect"));
+            d.remove::<Rect>(Id::new("trash-pill-rect"));
+        });
+        return;
+    }
+    // Out from behind the toolbar's end, to its right.
+    let slide = ui::motion::travel(ctx, k.clamp(0.0, 1.0)) * -18.0;
+    let at = pos2(bar.max.x + 10.0 + slide, bar.center().y);
+    egui::Area::new(Id::new("trash-pill")).pivot(egui::Align2::LEFT_CENTER).fixed_pos(at).constrain_to(ctx.content_rect().shrink(8.0)).interactable(k > 0.5).order(egui::Order::Foreground).show(ctx, |ui| {
+        ui.set_opacity(k.clamp(0.0, 1.0));
+        let [contact, soft] = ui::card_shadows(t);
+        let under = ui.painter().add(egui::Shape::Noop);
+        let card = egui::Frame::new().fill(t.bg).stroke(Stroke::new(1.0, t.border)).corner_radius(16).shadow(soft).inner_margin(egui::Margin::same(6)).show(ui, |ui| trash_button(ui, ed, t));
+        ui.painter().set(under, contact.as_shape(card.response.rect, egui::CornerRadius::same(16)));
+        ui.ctx().data_mut(|d| d.insert_temp(Id::new("trash-pill-rect"), card.response.rect));
+    });
+}
+
 fn trash_button(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
     let ctx = ui.ctx().clone();
     let (rect, resp) = ui.allocate_exact_size(vec2(btn(), btn()), Sense::click());
     ctx.data_mut(|d| d.insert_temp(Id::new("trash-slot-rect"), rect));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Cestino"));
     let pointer = ctx.input(|i| i.pointer.latest_pos());
     let is_dragging_item = is_dragging(&ctx) || matches!(ed.gesture, Some(crate::editor::Gesture::Move { moved: true, .. }));
     let near = is_dragging_item && pointer.is_some_and(|p| rect.expand2(vec2(32.0, 48.0)).contains(p));
@@ -1295,8 +1322,8 @@ fn back_to_content(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t
     });
 }
 
-const PX: fn(f64) -> String = |v| format!("{} px", (v * 10.0).round() / 10.0);
-const PCT: fn(f64) -> String = |v| format!("{}%", (v * 100.0).round());
+pub(crate) const PX: fn(f64) -> String = |v| format!("{} px", (v * 10.0).round() / 10.0);
+pub(crate) const PCT: fn(f64) -> String = |v| format!("{}%", (v * 100.0).round());
 
 /// The contextual tray above the toolbar: what the current tool can be set to.
 fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t: &Theme) -> Option<Rect> {
@@ -1372,26 +1399,16 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                         ui.spacing_mut().item_spacing.x = 2.0;
                         let n = p.pens.len();
                         for i in 0..n {
-                            pen_slot(ui, ed, i, t, top);
+                            pen_slot(ui, ed, i, t);
                         }
                         ui.spacing_mut().item_spacing.x = 8.0;
-                        brush_chip(ui, ed, t, top);
-                        let p = &mut ed.prefs;
-                        let i = ed.pen.min(p.pens.len() - 1);
                         sep_h(ui, t, h);
-                        let pen = &mut p.pens[i];
-                        let (lo, hi) = size_range(pen.brush);
-                        slide(ui, "Spessore", &mut pen.size, lo, hi, 0.5, true, PX, sw(196.0));
-                        ui.add_space(8.0);
-                        slide(ui, "Opacità", &mut pen.opacity, 0.1, 1.0, 0.05, false, PCT, sw(172.0));
-                        sep_h(ui, t, h);
-                        ui.spacing_mut().item_spacing.x = 2.0;
-                        if icon_button(ui, "shapes", "Riconosci le forme", None, vec2(32.0, 32.0), 18.0, p.ink_to_shape, false).clicked() {
-                            p.ink_to_shape = !p.ink_to_shape;
-                        }
-                        let label = if p.finger_draw { "Le dita disegnano" } else { "Le dita spostano la lavagna" };
-                        if icon_button(ui, "hand", label, None, vec2(32.0, 32.0), 18.0, p.finger_draw, false).clicked() {
-                            p.finger_draw = !p.finger_draw;
+                        // The colour, at hand; everything else (brush, size, pressure,
+                        // stabilizer, symmetry…) in the right panel.
+                        let i = ed.pen.min(ed.prefs.pens.len() - 1);
+                        color_pop(ui, "Colore della penna", &mut ed.prefs.pens[i].color, false, true, top, t);
+                        if ui::button(ui, "Personalizza", ui::Kind::Secondary, Some("sliders-horizontal"), false, true).clicked() {
+                            ed.requests.push(crate::editor::Request::ToolSettings);
                         }
                     }
                     Tool::Highlighter => {
@@ -1400,6 +1417,9 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                         }
                         sep_h(ui, t, h);
                         slide(ui, "Spessore", &mut p.highlighter.size, 4.0, 96.0, 0.0, true, PX, sw(196.0));
+                        if icon_button(ui, "sliders-horizontal", "Personalizza", None, vec2(30.0, 30.0), 16.0, false, false).clicked() {
+                            ed.requests.push(crate::editor::Request::ToolSettings);
+                        }
                     }
                     Tool::Tape => {
                         if let Some(c) = ui::swatches(ui, &TAPE_COLORS, &p.tape.color, false) {
@@ -1605,13 +1625,13 @@ pub(crate) fn brush_sizes(brush: Brush) -> (f64, f64, f64) {
 }
 
 /// The thickness slider's range for a brush (the airbrush sprays wide).
-fn size_range(brush: Brush) -> (f64, f64) {
+pub(crate) fn size_range(brush: Brush) -> (f64, f64) {
     if matches!(brush, Brush::Airbrush | Brush::Smudge) { (4.0, 160.0) } else { (1.0, 64.0) }
 }
 
 /// Gives a pen another brush: its thickness too, when the one it had doesn't suit the new
 /// brush (a 4 px airbrush would hardly show).
-fn set_brush(pen: &mut Pen, brush: Brush) {
+pub(crate) fn set_brush(pen: &mut Pen, brush: Brush) {
     if pen.brush == brush {
         return;
     }
@@ -1619,17 +1639,6 @@ fn set_brush(pen: &mut Pen, brush: Brush) {
     let (lo, hi, start) = brush_sizes(brush);
     if !(lo..=hi).contains(&pen.size) {
         pen.size = start;
-    }
-}
-
-/// The brushes, each drawn as it looks, the pen's own ticked; true when one was picked.
-fn brush_list(ui: &mut Ui, pen: &mut Pen, t: &Theme) -> bool {
-    match brush_rows(ui, Some(pen.brush), &pen.color, t) {
-        Some(b) => {
-            set_brush(pen, b);
-            true
-        }
-        None => false,
     }
 }
 
@@ -1662,31 +1671,9 @@ pub fn brush_rows(ui: &mut Ui, current: Option<Brush>, color: &str, t: &Theme) -
     picked
 }
 
-/// The brush of the pen in use, opening the others (Penna, Matita, Pennello…).
-fn brush_chip(ui: &mut Ui, ed: &mut Editor, t: &Theme, top: bool) {
-    if ed.prefs.pens.is_empty() {
-        return;
-    }
-    let i = ed.pen.min(ed.prefs.pens.len() - 1);
-    let brush = ed.prefs.pens[i].brush;
-    let font = egui::FontId::proportional(ui::px(11.0));
-    let galley = ui.painter().layout_no_wrap(brush.name().to_string(), font, t.text);
-    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 50.0, ui::ctl(28.0)), Sense::click());
-    ui::hover_fill(ui, resp.id, rect, resp.hovered(), ui::RADIUS as f32, t.hover);
-    icon(ui, brush_icon_name(brush), pos2(rect.min.x + 13.0, rect.center().y), 13.0, t.icon);
-    ui.painter().galley(pos2(rect.min.x + 25.0, rect.center().y - galley.size().y / 2.0), galley, t.text);
-    icon(ui, if top { "chevron-up" } else { "chevron-down" }, pos2(rect.max.x - 13.0, rect.center().y), 12.0, t.icon2);
-    let resp = ui::tip(resp, "Pennello", None);
-    egui::Popup::from_toggle_button_response(&resp).frame(ui::float_frame(t).inner_margin(egui::Margin::same(6))).align(if top { egui::RectAlign::BOTTOM_START } else { egui::RectAlign::TOP_START }).gap(12.0).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
-        ui.set_width(ui::px(11.0) * 10.0 + 96.0);
-        ui.spacing_mut().item_spacing.y = 0.0;
-        brush_list(ui, &mut ed.prefs.pens[i], t);
-    });
-}
-
 /// A pen in the tray, drawn as a real stroke with its brush, colour, thickness and opacity. The
 /// active one opens its colour (with the eyedropper) and stroke settings; its brush is chosen beside.
-fn pen_slot(ui: &mut Ui, ed: &mut Editor, i: usize, t: &Theme, top: bool) {
+fn pen_slot(ui: &mut Ui, ed: &mut Editor, i: usize, t: &Theme) {
     let pen: Pen = ed.prefs.pens[i].clone();
     let active = ed.pen == i;
     let (rect, resp) = ui.allocate_exact_size(vec2(48.0, 32.0), Sense::click());
@@ -1703,35 +1690,16 @@ fn pen_slot(ui: &mut Ui, ed: &mut Editor, i: usize, t: &Theme, top: bool) {
         _ => (pen.size * 1.2).min(12.0),
     };
     brush_sample(ui, rect, pen.brush, color, shown);
-    icon(ui, brush_icon_name(pen.brush), pos2(rect.min.x + 9.0, rect.min.y + 9.0), 10.0, t.icon2.gamma_multiply(0.85));
     let label = format!("{} {}", pen.brush.name(), i + 1);
-    let resp = ui::tip(resp, if active { "Colore e spessore" } else { &label }, Some(&(i + 1).to_string()));
-    if resp.clicked() && !active {
-        ed.pen = i;
-    }
-    if active {
-        egui::Popup::from_toggle_button_response(&resp).frame(ui::float_frame(t).inner_margin(egui::Margin::same(12))).align(if top { egui::RectAlign::BOTTOM } else { egui::RectAlign::TOP }).gap(12.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-            ui.set_width(232.0);
-            ui::row(ui, ui::ctl(24.0), |ui| {
-                ui::heading(ui, "Colore");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // The eyedropper: the next click on the board takes the colour there.
-                    if ui::small_icon_button(ui, "droplet", "Prendi un colore dalla lavagna (Alt+clic)", ed.eyedropper).clicked() {
-                        ed.eyedropper = !ed.eyedropper;
-                        ui.close();
-                    }
-                });
-            });
-            let pen = &mut ed.prefs.pens[i];
-            if let Some(c) = ui::swatches(ui, &INK_COLORS, &pen.color, false) {
-                pen.color = c;
-            }
-            ui.add_space(4.0);
-            ui::heading(ui, "Tratto");
-            let (lo, hi) = size_range(pen.brush);
-            ui::slider(ui, "Spessore", &mut pen.size, lo, hi, 0.5, true, PX, 208.0);
-            ui::slider(ui, "Opacità", &mut pen.opacity, 0.1, 1.0, 0.05, false, PCT, 208.0);
-        });
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, active, &label));
+    let resp = ui::tip(resp, if active { "Personalizza questa penna" } else { &label }, Some(&(i + 1).to_string()));
+    // Picked, it is the pen in hand; picked again, its settings (in the right panel).
+    if resp.clicked() {
+        if active {
+            ed.requests.push(crate::editor::Request::ToolSettings);
+        } else {
+            ed.pen = i;
+        }
     }
 }
 
@@ -1835,33 +1803,37 @@ pub fn stamp_picker(ui: &mut Ui, value: Option<&str>) -> Option<String> {
 /// Bottom right, Whiteboard style: minimap on/off, zoom in, zoom level (menu), zoom out.
 pub fn view_controls(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     let t = ui::theme(ctx);
-    // In the bottom right corner; when the toolbar, its options or the minimap are there, the
-    // first free place nearby: above the minimap, beside it, above the toolbar. It glides there.
+    // In the bottom right corner; when the minimap is there, beside it or above it. Never over
+    // the toolbar, its options or the bin: when the corner is theirs (a narrow window), the
+    // controls step aside (zooming stays at hand: Ctrl and the wheel, a pinch, the panel's menu).
     let bar = ctx.data(|d| d.get_temp::<Rect>(Id::new("bottom-bars")));
-    let size = ctx.data(|d| d.get_temp::<egui::Vec2>(Id::new("view-controls-size"))).unwrap_or(vec2(40.0, 130.0));
+    let bin = ctx.data(|d| d.get_temp::<Rect>(Id::new("trash-pill-rect")));
+    let size = ctx.data(|d| d.get_temp::<egui::Vec2>(Id::new("view-controls-size"))).unwrap_or(vec2(80.0, 36.0));
     let corner = stage.max - vec2(16.0, 16.0);
     let mini = if ed.prefs.minimap { ctx.data(|d| d.get_temp::<Rect>(Id::new("minimap-rect"))) } else { None };
-    let obstacles: Vec<Rect> = [bar, mini].into_iter().flatten().map(|r| r.expand(8.0)).collect();
+    let obstacles: Vec<Rect> = [bar, bin, mini].into_iter().flatten().map(|r| r.expand(8.0)).collect();
     let free = |p: Pos2| {
         let r = Rect::from_min_max(p - size, p);
         r.min.y >= stage.min.y + 8.0 && r.min.x >= stage.min.x + 8.0 && !obstacles.iter().any(|o| o.intersects(r))
     };
     let mut spots = vec![corner];
     if let Some(m) = mini {
-        spots.push(pos2(corner.x, m.min.y - 10.0));
         spots.push(pos2(m.min.x - 10.0, corner.y));
+        spots.push(pos2(corner.x, m.min.y - 10.0));
     }
-    if let Some(b) = bar {
-        spots.push(pos2(corner.x, b.min.y - 12.0));
-        if let Some(m) = mini {
-            spots.push(pos2(corner.x, b.min.y.min(m.min.y) - 12.0));
-            spots.push(pos2(m.min.x - 10.0, b.min.y - 12.0));
-        }
+    let target = spots.iter().copied().find(|p| free(*p));
+    let k = ui::motion::presence(ctx, Id::new("view-controls-shown"), target.is_some());
+    if k <= 0.01 {
+        ctx.data_mut(|d| d.remove::<Rect>(Id::new("view-controls-rect")));
+        return;
     }
-    let target = spots.iter().copied().find(|p| free(*p)).unwrap_or(*spots.last().unwrap());
+    // Where it was, while it fades out.
+    let target = target.unwrap_or_else(|| ctx.data(|d| d.get_temp::<Pos2>(Id::new("view-controls-at"))).unwrap_or(corner));
+    ctx.data_mut(|d| d.insert_temp(Id::new("view-controls-at"), target));
     let x = ui::motion::spring(ctx, Id::new("view-controls-x"), target.x, 0.3, 0.9);
     let y = ui::motion::spring(ctx, Id::new("view-controls-y"), target.y, 0.3, 0.9);
-    let resp = egui::Area::new(Id::new("view-controls")).pivot(egui::Align2::RIGHT_BOTTOM).fixed_pos(pos2(x, y)).order(egui::Order::Foreground).show(ctx, |ui| {
+    let resp = egui::Area::new(Id::new("view-controls")).pivot(egui::Align2::RIGHT_BOTTOM).fixed_pos(pos2(x, y)).interactable(k > 0.5).order(egui::Order::Foreground).show(ctx, |ui| {
+        ui.set_opacity(k.clamp(0.0, 1.0));
         if !ed.prefs.zoom_full {
             // FigJam's: a round-ended pill with − and +; the percentage on hover, the rest of the
             // zoom (fit, 100%, the minimap) in the menu of a right click or a long press.

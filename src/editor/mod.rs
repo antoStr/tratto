@@ -175,6 +175,8 @@ pub enum Request {
     OpenLink(String),
     /// A short message for the person (a toast).
     Notice(String),
+    /// Show the right panel, with the settings of the tool in hand.
+    ToolSettings,
 }
 
 pub(crate) struct Draw {
@@ -196,8 +198,7 @@ pub(crate) struct Draw {
     /// First raw force seen on this stroke, and whether hardware force actually varied from 0.5.
     first_force: Option<f32>,
     force_varied: bool,
-    /// Stylus tilt magnitude (0.0..=1.0) when tilt shading is enabled.
-    pub(crate) tilt: f32,
+
     /// When the pointer last moved significantly (ms), for QuickShape hold detection.
     pub(crate) last_move_ms: f64,
     /// True once holding still at the end of the stroke has snapped it into a geometric shape.
@@ -212,6 +213,8 @@ pub(crate) struct Draw {
     last_raw: Option<(Pos2, f64)>,
     /// Last raw position, added at release so the line ends exactly where the pen lifted.
     raw: Option<Pos2>,
+    /// When the pen touched down (ms).
+    down_ms: Option<f64>,
     pointer: u64,
     /// Tells this stroke's pieces apart from the previous one's, for the others.
     sid: u64,
@@ -223,6 +226,79 @@ pub(crate) struct Draw {
     /// The view the pieces were made for, and how many points they show.
     pub(crate) pieces_cam: (i64, i64, i64, i64, i64),
     pub(crate) pieces_pts: usize,
+    /// The sfumino: the colour each point carries (one a point, 0xRRGGBB), and what it picks
+    /// them up from.
+    pub(crate) colors: Vec<u32>,
+    smear: Option<Box<Smear>>,
+}
+
+/// What the sfumino smears: the board as it was when the stroke began, in a picture, and the
+/// colour it drags along.
+struct Smear {
+    pic: tiny_skia::Pixmap,
+    /// The board point at the picture's top left corner, and its pixels a board unit.
+    at: Pt,
+    k: f64,
+    carried: Option<[f64; 3]>,
+    last: Option<Pt>,
+}
+
+impl Smear {
+    /// The board as it is on screen (and a little around), at up to 640 pixels across: enough
+    /// for colours, quick to draw (a few milliseconds when the stroke starts).
+    fn of(ed: &mut Editor, margin: f64) -> Option<Smear> {
+        let v = ed.view();
+        let view = BBox { x: v.x - margin, y: v.y - margin, w: v.w + margin * 2.0, h: v.h + margin * 2.0 };
+        let k = (640.0 / view.w.max(view.h)).min(ed.cam.z);
+        let (w, h) = ((view.w * k).ceil().max(1.0) as u32, (view.h * k).ceil().max(1.0) as u32);
+        let mut pic = tiny_skia::Pixmap::new(w, h)?;
+        let meta = ed.board.meta();
+        let bg = color_or(&meta.background, Color32::from_gray(0xF5));
+        let [r, g, b, a] = bg.to_srgba_unmultiplied();
+        pic.fill(tiny_skia::Color::from_rgba8(r, g, b, a));
+        let env = crate::prims::Env { dark_board: is_dark(&meta.background), pixel: Some(1.0 / k), ..Default::default() };
+        let t = tiny_skia::Transform::from_row(k as f32, 0.0, 0.0, k as f32, (-view.x * k) as f32, (-view.y * k) as f32);
+        let order = ed.board.paint_order().to_vec();
+        let images = &ed.painter.images;
+        let fetch = |key: &crate::prims::ImageKey| images.pixmap(key);
+        for el in order.iter().filter(|e| !e.hidden && intersects(&aabb(e), &view)) {
+            crate::raster::draw_element(&mut pic, el, &env, t, &fetch);
+        }
+        Some(Smear { pic, at: pt(view.x, view.y), k, carried: None, last: None })
+    }
+
+    /// The colour under a board point, averaged over a little disc of radius `r` (board units).
+    fn sample(&self, p: Pt, r: f64) -> [f64; 3] {
+        let mut sum = [0.0; 3];
+        let taps = [(0.0, 0.0), (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)];
+        for (dx, dy) in taps {
+            let x = ((p.x + dx * r * 0.5 - self.at.x) * self.k).floor().clamp(0.0, self.pic.width() as f64 - 1.0) as u32;
+            let y = ((p.y + dy * r * 0.5 - self.at.y) * self.k).floor().clamp(0.0, self.pic.height() as f64 - 1.0) as u32;
+            if let Some(c) = self.pic.pixel(x, y) {
+                let c = c.demultiply();
+                sum[0] += c.red() as f64;
+                sum[1] += c.green() as f64;
+                sum[2] += c.blue() as f64;
+            }
+        }
+        sum.map(|v| v / taps.len() as f64)
+    }
+
+    /// The colour the sfumino carries at the next point: what it had, with some of what is under
+    /// it there (more the farther it went: it drags colours about a width and a half).
+    fn carry(&mut self, p: Pt, size: f64) -> u32 {
+        let under = self.sample(p, size / 2.0);
+        let c = match (self.carried, self.last) {
+            (Some(c), Some(l)) => {
+                let k = 1.0 - (-(p.x - l.x).hypot(p.y - l.y) / (size * 1.5).max(1e-6)).exp();
+                [0, 1, 2].map(|i| c[i] + (under[i] - c[i]) * k)
+            }
+            _ => under,
+        };
+        (self.carried, self.last) = (Some(c), Some(p));
+        let ch = |v: f64| v.round().clamp(0.0, 255.0) as u32;
+        (ch(c[0]) << 16) | (ch(c[1]) << 8) | ch(c[2])
+    }
 }
 
 pub(crate) struct Touched {
@@ -251,6 +327,9 @@ pub(crate) enum Gesture {
     Laser,
     Ruler { s0: Pos2, x: f64, y: f64 },
     RulerRotate,
+    /// Alt and a drag with a pen, the highlighter or the eraser: its size (left button) or its
+    /// opacity (right button) follow the pointer. Alt+click without a drag picks a colour.
+    BrushAdjust { s0: Pos2, size0: f64, opacity0: f64, opacity: bool, moved: bool },
 }
 
 pub struct Editor {
@@ -325,6 +404,8 @@ pub struct Editor {
     pub(crate) emote_sprayed: bool,
     /// The eyedropper is armed: the next press on the board takes the colour there for the pen.
     pub eyedropper: bool,
+    /// When the size was last set from the keyboard: its preview shows for a moment.
+    pub(crate) flash_size: Option<f64>,
     /// Emotes floating up, everyone's: emoji, board point, when it started (ms, this clock).
     pub(crate) floaters: Vec<(String, f64, f64, f64)>,
     emote_n: u64,
@@ -418,6 +499,7 @@ impl Editor {
             emote_spray: None,
             emote_sprayed: false,
             eyedropper: false,
+            flash_size: None,
             floaters: Vec::new(),
             emote_n: 0,
             seen_emotes: HashMap::new(),
@@ -1012,7 +1094,7 @@ impl Editor {
         }
         let rnd = stroke_round(size);
         let points = pts.chunks_exact(3).flat_map(|p| [rnd(p[0] - x0), rnd(p[1] - y0), ((p[2] * 1000.0).round() / 1000.0) as f32]).collect();
-        let ink = Ink { points, color: color.into(), size, brush };
+        let ink = Ink { points, color: color.into(), size, brush, colors: Vec::new() };
         let mut el = self.base(El::new(if hl { Kind::Highlighter(ink) } else { Kind::Ink(ink) }));
         (el.x, el.y, el.w, el.h, el.opacity) = (x0, y0, x1 - x0, y1 - y0, opacity);
         el
@@ -1043,17 +1125,53 @@ impl Editor {
 
     /* ---------- drawing ---------- */
 
+    /// What the drawing tool in use lays down: its size on screen and its opacity (the eraser:
+    /// its size and strength). None for the other tools.
+    pub(crate) fn brush_feel(&self) -> Option<(f64, f64)> {
+        match self.tool {
+            Tool::Pen => self.prefs.pens.get(self.pen).map(|p| (p.size, p.opacity)),
+            Tool::Highlighter => Some((self.prefs.highlighter.size, self.prefs.highlighter.opacity)),
+            Tool::Eraser => Some((self.prefs.eraser.size, self.prefs.eraser.strength)),
+            _ => None,
+        }
+    }
+
+    /// Sets what `brush_feel` tells, each kept within what suits the tool.
+    pub(crate) fn set_brush_feel(&mut self, size: Option<f64>, opacity: Option<f64>) {
+        let (lo, hi) = match self.tool {
+            Tool::Pen => self.prefs.pens.get(self.pen).map_or((1.0, 64.0), |p| crate::app::toolbar::size_range(p.brush)),
+            Tool::Highlighter => (4.0, 80.0),
+            _ => (4.0, 200.0),
+        };
+        let size = size.map(|s| (s.clamp(lo, hi) * 2.0).round() / 2.0);
+        let opacity = opacity.map(|o| (o.clamp(0.05, 1.0) * 100.0).round() / 100.0);
+        let (s, o) = match self.tool {
+            Tool::Pen => match self.prefs.pens.get_mut(self.pen) {
+                Some(p) => (&mut p.size, &mut p.opacity),
+                None => return,
+            },
+            Tool::Highlighter => (&mut self.prefs.highlighter.size, &mut self.prefs.highlighter.opacity),
+            Tool::Eraser => (&mut self.prefs.eraser.size, &mut self.prefs.eraser.strength),
+            _ => return,
+        };
+        if let Some(size) = size {
+            *s = size;
+        }
+        if let Some(opacity) = opacity {
+            *o = opacity;
+        }
+    }
+
     pub(crate) fn start_draw(&mut self, s: Pos2, hl: bool, kind: PointerKind, pointer: u64) {
         let pen = if hl { self.prefs.highlighter.clone() } else { self.prefs.pens.get(self.pen).or(self.prefs.pens.first()).cloned().unwrap_or_default() };
         let size = self.world_size(pen.size);
         let cutoff = if kind == PointerKind::Mouse { self.prefs.ink_smoothing.cutoff() * 1.2 } else { self.prefs.ink_smoothing.cutoff() };
-        let mut color = pen.color;
-        if !hl && pen.brush == Brush::Smudge {
-            let w = self.to_world(s);
-            if self.hit_element(w, 8.0).is_some() {
-                color = self.color_at(w);
-            }
-        }
+        let color = pen.color;
+        // Tilted, the shading brushes lay a broader stroke: its width set as it starts, the same
+        // while it is drawn and once it is down.
+        let tilt = if self.prefs.tilt_shading && !hl { self.input.tilt } else { 0.0 };
+        let size = size * ink::tilt_scale(pen.brush, tilt);
+        let smear = (!hl && pen.brush == Brush::Smudge).then(|| Smear::of(self, size * 2.0).map(Box::new)).flatten();
         let (cx, cy) = self.safe_center();
         let sym_center = self.cam.to_world(cx, cy);
         self.gesture = Some(Gesture::Draw(Box::new(Draw {
@@ -1061,7 +1179,7 @@ impl Editor {
             brush: (!hl).then_some(pen.brush),
             color,
             size,
-            opacity: if !hl && pen.brush == Brush::Smudge { (pen.opacity * 0.72).clamp(0.15, 0.85) } else { pen.opacity.clamp(0.05, 1.0) },
+            opacity: pen.opacity.clamp(0.05, 1.0),
             pts: Vec::new(),
             snap: ink::ruler_snapper(&self.ruler, s.x as f64, s.y as f64, size * self.cam.z / 2.0),
             filter: Some(OneEuro::with_streamline(cutoff, self.prefs.streamline)),
@@ -1069,7 +1187,6 @@ impl Editor {
             use_pressure: (kind == PointerKind::Pen || self.input.force.is_some()) && self.prefs.pressure && !hl,
             first_force: None,
             force_varied: false,
-            tilt: if self.prefs.tilt_shading { self.input.tilt } else { 0.0 },
             last_move_ms: now(),
             quick_shape_snapped: false,
             sym_center,
@@ -1077,35 +1194,22 @@ impl Editor {
             speed: None,
             last_raw: None,
             raw: None,
+            down_ms: None,
             pointer,
             sid: (now() * 1000.0) as u64,
             pieces: Vec::new(),
             pieces_cam: (0, 0, 0, 0, 0),
             pieces_pts: usize::MAX,
+            colors: Vec::new(),
+            smear,
         })));
     }
 
     /// A new pen position (canvas coordinates), with the pen pressure if any.
     pub(crate) fn add_draw_point(&mut self, raw: Pos2, t_ms: f64, force: Option<f32>) {
-        // Sfumino: pick up and blend underlying board colours along the stroke.
-        let sample_smudge = matches!(&self.gesture, Some(Gesture::Draw(g)) if g.brush == Some(Brush::Smudge) && (g.pts.len() / 3) % 6 == 0 && !g.pts.is_empty());
-        let smudged = if sample_smudge {
-            let w = self.to_world(raw);
-            self.hit_element(w, 6.0).map(|_| self.color_at(w))
-        } else {
-            None
-        };
         let cam = self.cam;
-        let tilt = if self.prefs.tilt_shading { self.input.tilt } else { 0.0 };
         let pressure_pref = self.prefs.pressure;
         let Some(Gesture::Draw(g)) = &mut self.gesture else { return };
-        if let Some(under) = smudged
-            && let (Some(c0), Some(c1)) = (parse_color(&g.color), parse_color(&under))
-        {
-            let blend = |a: u8, b: u8| (a as f32 * 0.72 + b as f32 * 0.28).round() as u8;
-            g.color = hex(Color32::from_rgb(blend(c0.r(), c1.r()), blend(c0.g(), c1.g()), blend(c0.b(), c1.b())));
-        }
-        g.tilt = g.tilt * 0.7 + tilt * 0.3;
         if g.quick_shape_snapped {
             if g.raw.is_some_and(|p0| p0.distance(raw) < 6.0) {
                 return;
@@ -1125,6 +1229,10 @@ impl Editor {
         } else {
             g.last_move_ms = t_ms;
         }
+        // Time since the previous sample (ms), for a smoothing that is the same whatever the
+        // pen's rate; and since the pen touched down.
+        let dt = g.last_raw.map_or(8.0, |(_, t0)| (t_ms - t0).clamp(0.0, 100.0));
+        let since_down = t_ms - *g.down_ms.get_or_insert(t_ms);
         g.last_raw = Some((raw, t_ms));
         let s = match &mut g.filter {
             Some(f) => f.filter(raw.x as f64, raw.y as f64, t_ms),
@@ -1146,7 +1254,17 @@ impl Editor {
                 // Real hardware pressure from Windows Ink, Wintab, or PointerEvents: map across
                 // the full 0.02..=1.0 range through the user's sensitivity curve.
                 let raw_p = (f as f64).clamp(0.02, 1.0).powf(g.gamma);
-                let p = g.pressure.map_or(raw_p, |prev| prev + (raw_p - prev) * 0.55);
+                // Eased over about 12 ms, and never faster than full in 40 ms: a driver's odd
+                // spike leaves no blot. The first touch eases in over 30 ms, a fine start.
+                let ease = 1.0 - (-dt / 12.0).exp();
+                let p = match g.pressure {
+                    None => raw_p * 0.35,
+                    Some(prev) => {
+                        let step = ((raw_p - prev) * ease).clamp(-dt / 40.0, dt / 40.0);
+                        let p = prev + step;
+                        if since_down < 30.0 { p.min(raw_p * (0.35 + 0.65 * since_down / 30.0)) } else { p }
+                    }
+                };
                 g.pressure = Some(p);
                 pressure = (p * 1000.0).round() / 1000.0;
             } else {
@@ -1165,6 +1283,7 @@ impl Editor {
             pressure = ((1.0 - (v - 0.3) / 2.5).clamp(0.15, 1.0) * 1000.0).round() / 1000.0;
         }
         push_draw_point(g, &cam, pt(s.x, s.y), pressure, false);
+        smear_points(g);
         // The others get the new points with the next presence message.
         self.presence.dirty = true;
     }
@@ -1193,16 +1312,39 @@ impl Editor {
         {
             let last = g.pts[g.pts.len() - 1];
             push_draw_point(&mut g, &self.cam, pt(raw.x as f64, raw.y as f64), last, false);
+            smear_points(&mut g);
         }
         if g.pts.is_empty() || self.read_only {
             return;
         }
+        // With pressure, the end thins away as the pen lifts (over the last few points, as
+        // long as the stroke is a few widths long): the tail Procreate gives its ink.
+        if g.use_pressure && !g.hl && !g.quick_shape_snapped {
+            let n = g.pts.len() / 3;
+            let length: f64 = (1..n).map(|i| (g.pts[i * 3] - g.pts[i * 3 - 3]).hypot(g.pts[i * 3 + 1] - g.pts[i * 3 - 2])).sum();
+            if n >= 6 && length > g.size * 4.0 {
+                let tail = (n / 4).clamp(2, 6);
+                for k in 0..tail {
+                    let p = &mut g.pts[(n - 1 - k) * 3 + 2];
+                    if *p >= 0.0 {
+                        *p *= 0.35 + 0.65 * (k as f64 / tail as f64);
+                    }
+                }
+            }
+        }
         let z = self.cam.z;
         let flat: Vec<f32> = g.pts.iter().map(|&v| v as f32).collect();
-        let thin: Vec<f64> = ink::thin_points(&flat, (0.2 / z).min(g.size * 0.08)).into_iter().map(|v| v as f64).collect();
+        let kept = ink::thin_indices(&flat, (0.2 / z).min(g.size * 0.08));
+        let thin: Vec<f64> = kept.iter().flat_map(|&i| g.pts[i * 3..i * 3 + 3].iter().copied()).collect();
+        let colors: Vec<u32> = if g.colors.is_empty() { Vec::new() } else { kept.iter().map(|&i| g.colors.get(i).or(g.colors.last()).copied().unwrap_or(0)).collect() };
         let sym = self.prefs.symmetry;
         let mut el = self.ink_element(&thin, g.size, &g.color, g.hl, g.opacity, g.brush);
-        if !g.hl && (self.prefs.ink_to_shape || g.quick_shape_snapped) && g.snap.is_none() && sym == crate::prefs::Symmetry::Off {
+        if let Kind::Ink(i) = &mut el.kind {
+            i.colors = colors.clone();
+        }
+        // QuickShape keeps the stroke, with its brush, in its perfect shape (as in Procreate); the
+        // setting "ink to shapes" makes shapes of what is drawn.
+        if !g.hl && self.prefs.ink_to_shape && g.snap.is_none() && sym == crate::prefs::Symmetry::Off {
             let flat: Vec<f32> = thin.iter().map(|&v| v as f32).collect();
             if let Some(r) = ink::recognize(&flat, 1.0 / z) {
                 let (color, size, op) = (g.color.clone(), g.size, g.opacity);
@@ -1254,7 +1396,11 @@ impl Editor {
         let mut els = vec![el];
         if sym != crate::prefs::Symmetry::Off {
             for m_pts in symmetry_pts(sym, g.sym_center, &thin) {
-                els.push(self.ink_element(&m_pts, g.size, &g.color, g.hl, g.opacity, g.brush));
+                let mut m = self.ink_element(&m_pts, g.size, &g.color, g.hl, g.opacity, g.brush);
+                if let Kind::Ink(i) = &mut m.kind {
+                    i.colors = colors.clone();
+                }
+                els.push(m);
             }
         }
         self.board.stop_capturing();
@@ -2680,6 +2826,16 @@ impl Editor {
     }
 }
 
+/// The sfumino: a colour for each point added since the last call, picked up under it.
+fn smear_points(g: &mut Draw) {
+    let Some(smear) = g.smear.as_mut() else { return };
+    let n = g.pts.len() / 3;
+    while g.colors.len() < n {
+        let i = g.colors.len();
+        g.colors.push(smear.carry(pt(g.pts[i * 3], g.pts[i * 3 + 1]), g.size));
+    }
+}
+
 fn push_draw_point(g: &mut Draw, cam: &Camera, s: Pt, pressure: f64, force: bool) {
     let s = match g.snap {
         Some(snap) => snap.apply(s.x, s.y),
@@ -2845,6 +3001,89 @@ mod tests {
         Editor::new(board, "b".into(), Painter::new(crate::paint::Images::new(None)), Prefs::default(), "v".into())
     }
 
+    /// With a pen's pressure the stroke starts fine and swells, a spike of the driver makes no
+    /// blot, and the end thins away as the pen lifts.
+    #[test]
+    fn pressure_starts_fine_ignores_spikes_and_thins_at_the_end() {
+        let mut ed = editor();
+        ed.size = (800.0, 600.0);
+        ed.tool = Tool::Pen;
+        ed.input.force = Some(0.7);
+        ed.start_draw(pos2(100.0, 100.0), false, PointerKind::Pen, 1);
+        for i in 0..=80 {
+            // Pressing about 0.7, a single reading of 1.0 halfway.
+            let f = if i == 40 { 1.0 } else { 0.7 + 0.01 * (i % 3) as f32 };
+            ed.add_draw_point(pos2(100.0 + i as f32 * 4.0, 100.0), i as f64 * 5.0, Some(f));
+        }
+        let Some(Gesture::Draw(g)) = ed.gesture.take() else { panic!("drawing") };
+        ed.commit_draw(g);
+        let ink = ed.board.all().iter().find_map(|e| e.ink().cloned()).expect("a stroke");
+        let p: Vec<f32> = ink.points.chunks_exact(3).map(|q| q[2]).collect();
+        let n = p.len();
+        let mid = p[n / 4..n / 2 - 4].iter().sum::<f32>() / (n / 4 - 4) as f32;
+        assert!(p[0] < mid * 0.6, "a fine start: {} against {mid}", p[0]);
+        let peak = p.iter().copied().fold(0.0, f32::max);
+        assert!(peak < mid + 0.2, "no blot from the spike: {peak} against {mid}");
+        assert!(p[n - 1] < mid * 0.6, "a thin end: {} against {mid}", p[n - 1]);
+    }
+
+    /// The sfumino drags colours along: from red into blue, it starts red, carries red a little
+    /// way into the blue and ends up blue; each point keeps its colour.
+    #[test]
+    fn the_sfumino_drags_the_colours_under_it_along() {
+        let mut ed = editor();
+        ed.size = (800.0, 600.0);
+        let fill = |id: &str, x: f64, color: &str| {
+            let mut e = El::new(Kind::Shape(Shape { fill: color.into(), stroke: "transparent".into(), stroke_width: 0.0, ..Default::default() }));
+            (e.id, e.x, e.y, e.w, e.h) = (id.into(), x, 0.0, 200.0, 200.0);
+            e
+        };
+        ed.board.put([fill("r", 0.0, "#E03131"), fill("b", 200.0, "#1971C2")]);
+        ed.tool = Tool::Pen;
+        ed.prefs.pens[0] = crate::prefs::Pen { brush: Brush::Smudge, size: 20.0, opacity: 1.0, ..Default::default() };
+        ed.start_draw(pos2(40.0, 100.0), false, PointerKind::Mouse, 0);
+        for i in 0..=64 {
+            ed.add_draw_point(pos2(40.0 + i as f32 * 5.0, 100.0), i as f64 * 8.0, None);
+        }
+        let Some(Gesture::Draw(g)) = ed.gesture.take() else { panic!("drawing") };
+        ed.commit_draw(g);
+        let ink = ed.board.all().iter().find_map(|e| e.ink().cloned()).expect("a stroke");
+        assert_eq!(ink.colors.len(), ink.points.len() / 3, "a colour a point");
+        let rgb = |c: u32| ((c >> 16) as u8, (c >> 8) as u8, c as u8);
+        let at = |x: f32| {
+            let i = ink.points.chunks_exact(3).position(|p| p[0] + 40.0 >= x).unwrap_or(0);
+            rgb(ink.colors[i])
+        };
+        let (r0, _, b0) = at(40.0);
+        assert!(r0 > 180 && b0 < 90, "red where it starts: {:?}", at(40.0));
+        let (r1, _, b1) = at(215.0);
+        assert!(r1 > 80 && b1 > 80, "red dragged into the blue: {:?}", at(215.0));
+        let (r2, _, b2) = at(355.0);
+        assert!(r2 < 70 && b2 > 150, "blue at the end: {:?}", at(355.0));
+        // Drawn with those colours, and the same once saved and read back.
+        let prims = crate::prims::smudge_prims(&ink.points, &ink.colors, ink.size, Color32::WHITE, None);
+        assert!(prims.iter().any(|p| matches!(p, crate::prims::Prim::Dabs { tints, .. } if !tints.is_empty())));
+        let back: Ink = serde_json::from_value(serde_json::to_value(&ink).unwrap()).unwrap();
+        assert_eq!(back.colors, ink.colors);
+        // TRATTO_SHOT=out.png: a few more strokes, back and forth, and the picture.
+        if let Ok(path) = std::env::var("TRATTO_SHOT") {
+            for (k, y) in [60.0f32, 140.0, 175.0].into_iter().enumerate() {
+                let x0 = if k % 2 == 0 { 360.0 } else { 40.0 };
+                ed.start_draw(pos2(x0, y), false, PointerKind::Mouse, 0);
+                for i in 0..=64 {
+                    let x = if k % 2 == 0 { 360.0 - i as f32 * 5.0 } else { 40.0 + i as f32 * 5.0 };
+                    ed.add_draw_point(pos2(x, y + (i as f32 * 0.3).sin() * 12.0), i as f64 * 8.0, Some(0.3 + 0.6 * (i as f32 / 64.0)));
+                }
+                let Some(Gesture::Draw(g)) = ed.gesture.take() else { panic!("drawing") };
+                ed.commit_draw(g);
+            }
+            let els = ed.board.paint_order().to_vec();
+            let env = crate::prims::Env::default();
+            let pm = crate::raster::render(&els, Some(Color32::from_gray(0xF5)), 800, 400, BBox { x: 0.0, y: 0.0, w: 400.0, h: 200.0 }, &env, &|_| None).unwrap();
+            pm.save_png(path).unwrap();
+        }
+    }
+
     /// The eyedropper sees what is drawn: a shape's fill, the board where nothing is, and a
     /// see-through stroke mixed with what is under it; the pen in use takes it.
     #[test]
@@ -2852,7 +3091,7 @@ mod tests {
         let mut ed = editor();
         let mut s = El::new(Kind::Shape(Shape { fill: "#E03131".into(), stroke: "transparent".into(), stroke_width: 0.0, ..Default::default() }));
         (s.x, s.y, s.w, s.h) = (0.0, 0.0, 100.0, 100.0);
-        let mut ink = El::new(Kind::Ink(Ink { points: vec![0.0, 0.0, -1.0, 100.0, 0.0, -1.0], color: "#1971C2".into(), size: 20.0, brush: Some(Brush::Marker) }));
+        let mut ink = El::new(Kind::Ink(Ink { colors: Vec::new(), points: vec![0.0, 0.0, -1.0, 100.0, 0.0, -1.0], color: "#1971C2".into(), size: 20.0, brush: Some(Brush::Marker) }));
         (ink.x, ink.y, ink.w, ink.h, ink.z, ink.opacity) = (0.0, 50.0, 100.0, 0.0, 1.0, 0.5);
         ed.board.put([s, ink]);
         assert_eq!(ed.color_at(pt(20.0, 20.0)), "#E03131");

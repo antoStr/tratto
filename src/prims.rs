@@ -188,8 +188,9 @@ pub enum Prim {
     /// `offset` places the grain: where the coordinates start, within a tile of it, so it
     /// lies the same on the board whatever the stroke is measured from.
     Grain { path: Path, color: Color32, grain: crate::brush::Grain, offset: [f32; 2] },
-    /// The airbrush: soft dabs, `[x, y, radius, alpha]` each, in the colour.
-    Dabs { dabs: Vec<[f32; 4]>, color: Color32 },
+    /// The airbrush: soft dabs, `[x, y, radius, alpha]` each, in the colour; or, the sfumino,
+    /// each in its own colour (`tints`, one a dab, the alpha of the stroke in each).
+    Dabs { dabs: Vec<[f32; 4]>, color: Color32, tints: Vec<Color32> },
     /// A soft shadow under a rounded rectangle.
     Shadow { x: f32, y: f32, w: f32, h: f32, radius: f32, blur: f32, dy: f32, color: Color32 },
 }
@@ -523,14 +524,14 @@ fn line_top(cy: f64, size: f64) -> f64 {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PieceKey {
     Path(Path, Color32),
-    Dabs(Vec<[f32; 4]>, Color32),
+    Dabs(Vec<[f32; 4]>, Color32, Vec<Color32>),
 }
 
 impl Prim {
     pub fn piece_key(&self) -> Option<PieceKey> {
         match self {
             Prim::Fill { path, color } | Prim::Grain { path, color, .. } => Some(PieceKey::Path(path.clone(), *color)),
-            Prim::Dabs { dabs, color } => Some(PieceKey::Dabs(dabs.clone(), *color)),
+            Prim::Dabs { dabs, color, tints } => Some(PieceKey::Dabs(dabs.clone(), *color, tints.clone())),
             _ => None,
         }
     }
@@ -556,7 +557,7 @@ impl PieceKey {
     pub fn matches(&self, prim: &Prim) -> bool {
         match (self, prim) {
             (PieceKey::Path(p, c), Prim::Fill { path, color } | Prim::Grain { path, color, .. }) => c == color && p == path,
-            (PieceKey::Dabs(d, c), Prim::Dabs { dabs, color }) => c == color && d == dabs,
+            (PieceKey::Dabs(d, c, t), Prim::Dabs { dabs, color, tints }) => c == color && d == dabs && t == tints,
             _ => false,
         }
     }
@@ -583,13 +584,29 @@ pub fn brush_prims_tilted(points: &[f32], size: f64, brush: Option<Brush>, hl: b
             pieces(g).map(|path| Prim::Grain { path, color, grain, offset }).collect()
         }
         // In pieces too, so a stroke being drawn remakes only its last one.
-        Some(Brush::Airbrush) => brush_dabs_tilted(points, size, pixel.unwrap_or(0.0) * 0.75, tilt).chunks(256).map(|d| Prim::Dabs { dabs: d.to_vec(), color }).collect(),
-        // Sfumino: soft overlapping blending dabs that pick up and diffuse board colours.
-        Some(Brush::Smudge) => brush_dabs_tilted(points, size * 1.15, pixel.unwrap_or(0.0) * 0.65, tilt).chunks(256).map(|d| Prim::Dabs { dabs: d.to_vec(), color: color.gamma_multiply(0.55) }).collect(),
+        Some(Brush::Airbrush) => brush_dabs_tilted(points, size, pixel.unwrap_or(0.0) * 0.75, tilt).chunks(256).map(|d| Prim::Dabs { dabs: d.to_vec(), color, tints: Vec::new() }).collect(),
+        // The sfumino without the colours it picked up (a sample of it): its own colour.
+        Some(Brush::Smudge) => smudge_prims(points, &[], size, color, pixel),
         // Felt tip ink lets a little of what is under it through: crossings come out darker.
         Some(Brush::Marker) => pieces(Brush::Marker).map(|path| Prim::Fill { path, color: color.gamma_multiply(0.88) }).collect(),
         Some(b) => pieces(b).map(|path| Prim::Fill { path, color }).collect(),
     }
+}
+
+/// The sfumino: soft dabs, each in the colour picked up at its point (`colors`, one a point);
+/// without them, in `color`. The alpha of `color` is the stroke's.
+pub fn smudge_prims(points: &[f32], colors: &[u32], size: f64, color: Color32, pixel: Option<f64>) -> Vec<Prim> {
+    let own = [u32::from_be_bytes([0, color.r(), color.g(), color.b()])];
+    let colors = if colors.is_empty() { &own[..] } else { colors };
+    let a = color.a();
+    let dabs = crate::ink::smudge_dabs(points, colors, size, pixel.unwrap_or(0.0) * 0.65);
+    dabs.chunks(256)
+        .map(|d| Prim::Dabs {
+            dabs: d.iter().map(|x| x.0).collect(),
+            color,
+            tints: d.iter().map(|x| Color32::from_rgba_unmultiplied((x.1 >> 16) as u8, (x.1 >> 8) as u8, x.1 as u8, a)).collect(),
+        })
+        .collect()
 }
 
 /// The primitives of one element, in its local coordinates (see `Affine::of`), with its
@@ -614,8 +631,11 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
             let hl = matches!(el.kind, Kind::Highlighter(_));
             let color = with_alpha(ink(color_or(&i.color, DARK)), alpha * if hl { 0.45 } else { 1.0 });
             // Zoomed out, points closer than a pixel or two only add vertices.
-            let thinned = env.pixel.filter(|px| *px > 0.5).map(|px| crate::ink::thin_points(&i.points, 1.5 * px));
+            let kept = env.pixel.filter(|px| *px > 0.5).map(|px| crate::ink::thin_indices(&i.points, 1.5 * px));
+            let thinned: Option<Vec<f32>> = kept.as_ref().map(|k| k.iter().flat_map(|&n| i.points[n * 3..n * 3 + 3].iter().copied()).collect());
             let points = thinned.as_deref().unwrap_or(&i.points);
+            let tints: Option<Vec<u32>> = kept.as_ref().filter(|_| !i.colors.is_empty()).map(|k| k.iter().map(|&n| i.colors.get(n).or(i.colors.last()).copied().unwrap_or(0)).collect());
+            let colors = tints.as_deref().unwrap_or(&i.colors);
             // Thinner than a device pixel (far zoomed out): its centre line, much faster.
             if let Some(px) = env.pixel
                 && i.size <= px
@@ -624,7 +644,10 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
                 let pts: Vec<f64> = points.chunks_exact(3).flat_map(|p| [p[0] as f64, p[1] as f64]).collect();
                 out.push(Prim::Stroke { path: Path::polyline(&pts), width: (if env.hairline { px } else { i.size }) as f32, color, round: false, dash: None });
             } else {
-                out.extend(brush_prims(points, i.size.max(MIN_SIZE), if hl { None } else { i.brush }, hl, color, (el.x, el.y), env.pixel));
+                match i.brush {
+                    Some(Brush::Smudge) if !hl => out.extend(smudge_prims(points, colors, i.size.max(MIN_SIZE), color, env.pixel)),
+                    b => out.extend(brush_prims(points, i.size.max(MIN_SIZE), if hl { None } else { b }, hl, color, (el.x, el.y), env.pixel)),
+                }
             }
         }
         Kind::Shape(s) => {

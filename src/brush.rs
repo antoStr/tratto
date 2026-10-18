@@ -152,10 +152,13 @@ pub fn dab_mesh(x: f32, y: f32, r: f32, color: Color32, place: impl Fn(f32, f32)
     }
 }
 
-/// A soft dab for software drawing: a radial gradient fading as the rings do.
-pub fn dab_shader(x: f32, y: f32, r: f32, color: Color32) -> Option<tiny_skia::Shader<'static>> {
+/// A soft dab for software drawing: a radial gradient fading as the rings do, in `color` (its
+/// own alpha too) times `alpha`. Kept apart: a faint dab's colour, made premultiplied and back,
+/// would come out a few shades off, and many of them show it.
+pub fn dab_shader(x: f32, y: f32, r: f32, color: Color32, alpha: f32) -> Option<tiny_skia::Shader<'static>> {
     let [cr, cg, cb, ca] = color.to_srgba_unmultiplied();
-    let stops = DAB_RINGS.iter().map(|&(d, k)| tiny_skia::GradientStop::new(d, tiny_skia::Color::from_rgba8(cr, cg, cb, (ca as f32 * k).round() as u8))).collect();
+    let a = ca as f32 / 255.0 * alpha.clamp(0.0, 1.0);
+    let stops = DAB_RINGS.iter().map(|&(d, k)| tiny_skia::GradientStop::new(d, tiny_skia::Color::from_rgba(cr as f32 / 255.0, cg as f32 / 255.0, cb as f32 / 255.0, (a * k).clamp(0.0, 1.0)).unwrap_or(tiny_skia::Color::TRANSPARENT))).collect();
     let c = tiny_skia::Point::from_xy(x, y);
     tiny_skia::RadialGradient::new(c, 0.0, c, r.max(1e-3), stops, tiny_skia::SpreadMode::Pad, tiny_skia::Transform::identity())
 }
@@ -208,7 +211,7 @@ mod tests {
                     let p = if pen { (t * std::f32::consts::PI).sin().max(0.0).powf(0.8) } else { -1.0 };
                     pts.extend([t * 420.0, 30.0 + 26.0 * (t * std::f32::consts::TAU * 1.5).sin(), p]);
                 }
-                let mut el = El::new(Kind::Ink(Ink { points: pts, color: if *brush == crate::model::Brush::Chalk { "#2F6FD6".into() } else { "#1E1E1E".into() }, size, brush: Some(*brush) }));
+                let mut el = El::new(Kind::Ink(Ink { colors: Vec::new(), points: pts, color: if *brush == crate::model::Brush::Chalk { "#2F6FD6".into() } else { "#1E1E1E".into() }, size, brush: Some(*brush) }));
                 (el.x, el.y, el.w, el.h) = (40.0 + col as f64 * 480.0, 30.0 + row as f64 * 100.0, 420.0, 60.0);
                 els.push(std::sync::Arc::new(el));
             }

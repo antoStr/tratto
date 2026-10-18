@@ -452,7 +452,7 @@ fn linux_install(ui: &mut egui::Ui) {
     }
 }
 
-const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
+const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
     (
         "Strumenti",
         &[
@@ -497,6 +497,15 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
             ("Duplica trascinando", "Alt + trascina"),
             ("Apri un link", "Ctrl + clic"),
             ("Senza aggancio", "Ctrl + trascina"),
+        ],
+    ),
+    (
+        "Disegno",
+        &[
+            ("Spessore della penna", "Alt + trascina  ·  [ e ]"),
+            ("Opacità della penna", "Alt + trascina col destro  ·  Maiusc+[ e ]"),
+            ("Prendi un colore dalla lavagna", "Alt + clic"),
+            ("Forma perfetta (QuickShape)", "tieni ferma la penna a fine tratto"),
         ],
     ),
     (

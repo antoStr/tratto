@@ -699,14 +699,14 @@ impl Painter {
                     part.col.extend(std::iter::repeat_n(color, buf.vertices.len()));
                     part.idx.extend(buf.indices.iter().map(|i| i + base));
                 }
-                Prim::Dabs { dabs, color } => {
+                Prim::Dabs { dabs, color, tints } => {
                     let part = last_colored(&mut parts);
-                    for d in &dabs {
+                    for (n, d) in dabs.iter().enumerate() {
                         crate::brush::dab_mesh(
                             d[0],
                             d[1],
                             d[2],
-                            color.gamma_multiply(d[3]),
+                            tints.get(n).copied().unwrap_or(color).gamma_multiply(d[3]),
                             |x, y| {
                                 let (px, py) = tf(x, y);
                                 [px, py]
@@ -835,14 +835,14 @@ pub fn brush_meshes(ctx: &egui::Context, prims: Vec<Prim>, scale: f32, place: im
                 m.indices = buf.indices;
                 out.push(m);
             }
-            Prim::Dabs { dabs, color } => {
+            Prim::Dabs { dabs, color, tints } => {
                 let (mut pos, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new());
-                for d in &dabs {
+                for (n, d) in dabs.iter().enumerate() {
                     crate::brush::dab_mesh(
                         d[0],
                         d[1],
                         d[2],
-                        color.gamma_multiply(d[3]),
+                        tints.get(n).copied().unwrap_or(color).gamma_multiply(d[3]),
                         |x, y| {
                             let p = place(x, y);
                             [p.x, p.y]
@@ -1027,7 +1027,7 @@ mod tests {
                 .collect();
             let (x0, y0) = (pts.chunks(3).map(|p| p[0]).fold(f32::MAX, f32::min), pts.chunks(3).map(|p| p[1]).fold(f32::MAX, f32::min));
             let rel: Vec<f32> = pts.chunks(3).flat_map(|p| [p[0] - x0, p[1] - y0, p[2]]).collect();
-            let mut el = El::new(Kind::Ink(Ink { points: rel, color: "#1E1E1E".into(), size: 6.0, brush: Some(crate::model::Brush::Pen) }));
+            let mut el = El::new(Kind::Ink(Ink { colors: Vec::new(), points: rel, color: "#1E1E1E".into(), size: 6.0, brush: Some(crate::model::Brush::Pen) }));
             (el.x, el.y, el.w, el.h, el.z) = (x0 as f64, y0 as f64, 600.0, 400.0, s as f64);
             els.push(Arc::new(el));
         }
@@ -1083,7 +1083,7 @@ mod tests {
         use crate::model::{EraseMark, Ink};
         let ctx = egui::Context::default();
         let pts: Vec<f32> = (0..=60).flat_map(|i| [i as f32 * 5.0, (i as f32 * 0.4).sin() * 30.0 + 40.0, 0.6]).collect();
-        let mut el = El::new(Kind::Ink(Ink { points: pts, color: "#1E1E1E".into(), size: 12.0, brush: None }));
+        let mut el = El::new(Kind::Ink(Ink { colors: Vec::new(), points: pts, color: "#1E1E1E".into(), size: 12.0, brush: None }));
         (el.x, el.y, el.w, el.h) = (10.0, 10.0, 300.0, 80.0);
         let k = 1.5;
         let env = Env { zoom: k, pixel: Some(1.0 / k), comments: true, ..Env::default() };
@@ -1272,8 +1272,8 @@ pub mod picture {
         add(440.0, 40.0, 120.0, 100.0, shape(ShapeKind::Star, "#FFE066", None));
         add(600.0, 40.0, 140.0, 100.0, shape(ShapeKind::Diamond, "transparent", Some("Sì?")));
         let pts: Vec<f32> = (0..=40).flat_map(|i| { let t = i as f32 / 40.0; [t * 180.0, (t * 9.0).sin() * 30.0 + 40.0, 0.3 + 0.6 * (t * 3.1).sin().abs()] }).collect();
-        add(40.0, 180.0, 180.0, 80.0, Kind::Ink(Ink { points: pts.clone(), color: "#1971C2".into(), size: 6.0, brush: None }));
-        add(240.0, 180.0, 180.0, 80.0, Kind::Highlighter(Ink { points: pts.iter().enumerate().map(|(i, v)| if i % 3 == 2 { -1.0 } else { *v }).collect(), color: "#FFE066".into(), size: 22.0, brush: None }));
+        add(40.0, 180.0, 180.0, 80.0, Kind::Ink(Ink { colors: Vec::new(), points: pts.clone(), color: "#1971C2".into(), size: 6.0, brush: None }));
+        add(240.0, 180.0, 180.0, 80.0, Kind::Highlighter(Ink { colors: Vec::new(), points: pts.iter().enumerate().map(|(i, v)| if i % 3 == 2 { -1.0 } else { *v }).collect(), color: "#FFE066".into(), size: 22.0, brush: None }));
         add(440.0, 200.0, 140.0, 40.0, Kind::Line(Line { points: vec![0.0, 40.0, 140.0, 0.0], stroke: "#E03131".into(), stroke_width: 3.0, dash: false, arrow_start: false, arrow_end: true, from: None, to: None, tape: false, route: crate::model::Route::Straight, label: None, ..Default::default() }));
         add(600.0, 200.0, 140.0, 40.0, Kind::Line(Line { points: vec![0.0, 20.0, 140.0, 20.0], stroke: "#FFB3C7".into(), stroke_width: 28.0, dash: false, arrow_start: false, arrow_end: false, from: None, to: None, tape: true, route: crate::model::Route::Straight, label: None, ..Default::default() }));
         add(40.0, 300.0, 220.0, 220.0, Kind::Sticky(Sticky { text: "Una nota adesiva con un po' di testo".into(), color: "#FFF3A3".into(), font: FontKind::Hand, author: Some("Anto".into()), ..Default::default() }));

@@ -61,6 +61,23 @@ fn link(mut l: El, a: &El, b: &El) -> El {
     l
 }
 
+/// The heading of a board: a large title and, under it, a line on what it is for, its left
+/// edge at `x` and the bottom of the line at `bottom`.
+fn header(x: f64, bottom: f64, title: &str, subtitle: &str) -> Vec<El> {
+    let sub = text(x, 0.0, subtitle, 18.0, false, "#757575", Align::Left, None);
+    let sub_y = bottom - sub.h;
+    let head = text(x, 0.0, title, 40.0, true, DARK_C, Align::Left, None);
+    let head_y = sub_y - 6.0 - head.h;
+    vec![El { y: head_y, ..head }, El { y: sub_y, ..sub }]
+}
+
+/// A frame (section) with its name.
+fn frame(x: f64, y: f64, w: f64, h: f64, name: &str, fill: &str) -> El {
+    let mut e = el(Kind::Section { fill: fill.into() }, x, y, w, h);
+    e.name = Some(name.into());
+    e
+}
+
 /// Increasing z in paint order.
 fn finish(els: Vec<El>) -> Vec<El> {
     els.into_iter().enumerate().map(|(i, mut e)| {
@@ -97,7 +114,8 @@ const VIOLET: &str = STICKY_COLORS[4];
 const ORANGE: &str = STICKY_COLORS[5];
 
 fn brainstorm() -> Vec<El> {
-    let mut out = vec![text(-150.0, -560.0, "Brainstorming", 28.0, true, DARK_C, Align::Left, None), sticky(-100.0, -100.0, YELLOW, "Tema")];
+    let mut out = header(-560.0, -480.0, "Brainstorming", "Scrivi il tema al centro, poi un'idea per nota. Nessuna idea è sbagliata.");
+    out.push(sticky(-100.0, -100.0, YELLOW, "Tema"));
     let colors = [GREEN, BLUE, PINK, VIOLET, ORANGE];
     for (i, (x, y)) in ring(8, 460.0, 340.0).into_iter().enumerate() {
         out.push(sticky(x - 100.0, y - 100.0, colors[i % colors.len()], ""));
@@ -108,13 +126,15 @@ fn brainstorm() -> Vec<El> {
 fn kanban() -> Vec<El> {
     let colors = [vec![YELLOW, YELLOW, YELLOW], vec![BLUE, BLUE], vec![GREEN, GREEN]];
     let texts = [vec!["Idea 1", "Idea 2", "Idea 3"], vec!["Attività 1", "Attività 2"], vec!["Completata 1", "Completata 2"]];
-    finish(columns(&["Da fare", "In corso", "Fatto"], 248.0, 740.0, 32.0, 24.0, |i, x, y| colors[i].iter().enumerate().map(|(j, c)| sticky(x + 24.0, y + 72.0 + j as f64 * 216.0, c, texts[i][j])).collect()))
+    let mut out = header(-408.0, -400.0, "Kanban", "Sposta le note da una colonna all'altra man mano che il lavoro avanza.");
+    out.extend(columns(&["Da fare", "In corso", "Fatto"], 248.0, 740.0, 32.0, 24.0, |i, x, y| colors[i].iter().enumerate().map(|(j, c)| sticky(x + 24.0, y + 72.0 + j as f64 * 216.0, c, texts[i][j])).collect()));
+    finish(out)
 }
 
 fn swot() -> Vec<El> {
     let quads = [("Punti di forza", "#E6F6EA", "#B7E4C2"), ("Punti deboli", "#FDE8E8", "#F5BFBF"), ("Opportunità", "#E7F1FD", "#B9D7F7"), ("Minacce", "#FFF0DC", "#F7D3A3")];
     let (w, h, gap) = (440.0, 320.0, 24.0);
-    let mut out = Vec::new();
+    let mut out = header(-w - gap / 2.0, -h - gap / 2.0 - 24.0, "Analisi SWOT", "Dentro: forze e debolezze. Fuori: opportunità e minacce.");
     for (i, (title, fill, stroke)) in quads.into_iter().enumerate() {
         let x = -w - gap / 2.0 + (i % 2) as f64 * (w + gap);
         let y = -h - gap / 2.0 + (i / 2) as f64 * (h + gap);
@@ -125,14 +145,18 @@ fn swot() -> Vec<El> {
 }
 
 fn retro() -> Vec<El> {
-    finish(columns(&["Cosa è andato bene", "Cosa migliorare", "Azioni"], 300.0, 680.0, 32.0, 22.0, |_, _, _| Vec::new()))
+    let mut out = header(-482.0, -364.0, "Retrospettiva", "Ognuno aggiunge le sue note; poi si vota e si scelgono le azioni.");
+    let hints = ["Un successo da ripetere", "Qualcosa che ha rallentato", "Chi fa cosa, entro quando"];
+    let colors = [GREEN, PINK, BLUE];
+    out.extend(columns(&["Cosa è andato bene", "Cosa migliorare", "Azioni"], 300.0, 680.0, 32.0, 22.0, |i, x, y| vec![sticky(x + 50.0, y + 72.0, colors[i], hints[i])]));
+    finish(out)
 }
 
 fn mindmap() -> Vec<El> {
     let colors = [BLUE, GREEN, PINK, VIOLET, ORANGE, YELLOW];
     // Text inside the shapes and connectors attached to them: a branch dragged away keeps its line.
     let centre = with_text(shape(ShapeKind::Ellipse, -120.0, -64.0, 240.0, 128.0, "#E7F1FD", "#1971C2", 2.0, 0.0), "Idea centrale");
-    let mut out = Vec::new();
+    let mut out = header(-525.0, -380.0, "Mappa mentale", "Un'idea al centro; trascina il + di un ramo per aggiungerne altri.");
     let mut branches = Vec::new();
     for (i, (x, y)) in ring(6, 440.0, 280.0).into_iter().enumerate() {
         let (w, h) = (170.0, 64.0);
@@ -146,7 +170,52 @@ fn mindmap() -> Vec<El> {
 }
 
 fn week() -> Vec<El> {
-    finish(columns(&["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"], 220.0, 620.0, 16.0, 22.0, |_, _, _| Vec::new()))
+    let mut out = header(-818.0, -334.0, "Planner settimanale", "Una nota per impegno; trascinala al giorno giusto.");
+    out.extend(columns(&["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"], 220.0, 620.0, 16.0, 22.0, |_, _, _| Vec::new()));
+    finish(out)
+}
+
+/// Six scenes to draw in, two rows of three, each with a line for what happens.
+fn storyboard() -> Vec<El> {
+    let (w, h, gx, gy) = (360.0, 220.0, 40.0, 110.0);
+    let x0 = -(3.0 * w + 2.0 * gx) / 2.0;
+    let y0 = -(2.0 * h + gy) / 2.0;
+    let mut out = header(x0, y0 - 40.0, "Storyboard", "Disegna una scena per riquadro, con la penna o il pennello; sotto, cosa succede.");
+    for i in 0..6 {
+        let (x, y) = (x0 + (i % 3) as f64 * (w + gx), y0 + (i / 3) as f64 * (h + gy));
+        out.push(frame(x, y, w, h, &format!("Scena {}", i + 1), "#FFFFFF"));
+        out.push(text(x, y + h + 12.0, "Cosa succede…", 18.0, false, "#9E9E9E", Align::Left, Some(w)));
+    }
+    finish(out)
+}
+
+/// A board for the look of a project: pictures, a palette and the words that describe it.
+fn moodboard() -> Vec<El> {
+    let (x0, y0) = (-620.0, -330.0);
+    let mut out = header(x0, y0 - 40.0, "Moodboard", "Raccogli immagini, colori e parole: lo stile del progetto in un colpo d'occhio.");
+    out.push(frame(x0, y0, 760.0, 660.0, "Immagini", "#F2F2F2"));
+    for (i, (x, y, w, h)) in [(24.0, 56.0, 340.0, 260.0), (388.0, 56.0, 348.0, 160.0), (388.0, 240.0, 348.0, 396.0), (24.0, 340.0, 340.0, 296.0)].into_iter().enumerate() {
+        let mut slot = with_text(shape(ShapeKind::Rect, x0 + x, y0 + y, w, h, "#FFFFFF", "#D9D9D9", 1.5, 12.0), if i == 0 { "Trascina qui un'immagine" } else { "" });
+        if let Kind::Shape(s) = &mut slot.kind {
+            s.text_color = Some("#9E9E9E".into());
+        }
+        out.push(slot);
+    }
+    let px = x0 + 800.0;
+    out.push(frame(px, y0, 440.0, 300.0, "Tavolozza", "#FFFFFF"));
+    for (i, c) in ["#1E1E1E", "#E03131", "#F5B700", "#2F9E44", "#1971C2"].into_iter().enumerate() {
+        let x = px + 24.0 + i as f64 * 82.0;
+        out.push(shape(ShapeKind::Ellipse, x, y0 + 70.0, 70.0, 70.0, c, "transparent", 0.0, 0.0));
+        out.push(text(x, y0 + 156.0, c, 14.0, false, "#757575", Align::Center, Some(70.0)));
+    }
+    out.push(text(px + 24.0, y0 + 210.0, "Clic su un colore e usa il contagocce della penna (Alt + clic) per dipingere con lui.", 15.0, false, "#9E9E9E", Align::Left, Some(392.0)));
+    out.push(frame(px, y0 + 340.0, 440.0, 320.0, "Parole chiave", "#FFF8D6"));
+    for (i, (c, s)) in [(YELLOW, "Stile"), (PINK, "Materiali"), (BLUE, "Idee")].into_iter().enumerate() {
+        let mut n = sticky(px + 24.0 + i as f64 * 140.0, y0 + 400.0, c, s);
+        (n.w, n.h) = (128.0, 128.0);
+        out.push(n);
+    }
+    finish(out)
 }
 
 fn flow() -> Vec<El> {
@@ -199,7 +268,7 @@ fn meeting() -> Vec<El> {
     ])
 }
 
-pub static TEMPLATES: [Template; 8] = [
+pub static TEMPLATES: [Template; 10] = [
     Template { id: "brainstorm", name: "Brainstorming", description: "Un tema al centro e tante note attorno per raccogliere idee.", build: brainstorm },
     Template { id: "kanban", name: "Kanban", description: "Tre colonne: da fare, in corso, fatto.", build: kanban },
     Template { id: "swot", name: "Analisi SWOT", description: "Punti di forza, punti deboli, opportunità e minacce.", build: swot },
@@ -208,6 +277,8 @@ pub static TEMPLATES: [Template; 8] = [
     Template { id: "week", name: "Planner settimanale", description: "Sette colonne, da lunedì a domenica.", build: week },
     Template { id: "flow", name: "Diagramma di flusso", description: "Inizio, passo, decisione e due esiti collegati da frecce.", build: flow },
     Template { id: "meeting", name: "Riunione", description: "Ordine del giorno da spuntare, un sondaggio, le azioni in tabella.", build: meeting },
+    Template { id: "storyboard", name: "Storyboard", description: "Sei scene da disegnare, ognuna con una riga per raccontarla.", build: storyboard },
+    Template { id: "moodboard", name: "Moodboard", description: "Immagini, tavolozza di colori e parole chiave del progetto.", build: moodboard },
 ];
 
 #[cfg(test)]
@@ -249,7 +320,7 @@ pub fn bench() -> Vec<El> {
             p[0] -= minx;
             p[1] -= miny;
         }
-        let ink = Ink { points: pts, color: colors[i % colors.len()].into(), size: 4.0, brush: None };
+        let ink = Ink { colors: Vec::new(), points: pts, color: colors[i % colors.len()].into(), size: 4.0, brush: None };
         out.push(el(Kind::Ink(ink), ox + minx as f64, oy + miny as f64, (maxx - minx) as f64, (maxy - miny) as f64));
     }
     for i in 0..300 {

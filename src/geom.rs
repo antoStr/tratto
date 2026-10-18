@@ -970,7 +970,7 @@ pub mod tests {
         el
     }
     fn ink(points: Vec<f32>, w: f64, h: f64, size: f64) -> El {
-        El { w, h, ..base(Kind::Ink(Ink { points, color: "#000".into(), size, brush: None })) }
+        El { w, h, ..base(Kind::Ink(Ink { points, color: "#000".into(), size, brush: None, colors: Vec::new() })) }
     }
     pub fn line(points: Vec<f32>, width: f64) -> El {
         base(Kind::Line(Line { points, stroke: "#000000".into(), stroke_width: width, dash: false, arrow_start: false, arrow_end: false, from: None, to: None, tape: false, route: crate::model::Route::Straight, label: None, ..Default::default() }))

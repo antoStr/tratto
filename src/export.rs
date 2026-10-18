@@ -270,19 +270,24 @@ pub fn svg(els: &[Arc<El>], meta: &BoardMeta, opts: &Options, images: raster::Im
                     ));
                     body += &format!(r#"<path d="{}" fill="url(#{pid})" fill-rule="nonzero"/>"#, path_data(&path, t));
                 }
-                Prim::Dabs { dabs, color } => {
-                    let next = dab_fills.len();
-                    let id = dab_fills
-                        .entry(color.to_array())
-                        .or_insert_with(|| {
-                            let (c, a) = rgba_attr(color);
-                            let id = format!("tratto-dab-{next}");
-                            let stops: String = crate::brush::DAB_RINGS.iter().map(|&(d, k)| format!(r#"<stop offset="{}" stop-color="{c}" stop-opacity="{}"/>"#, f(d as f64), f(a.parse::<f64>().unwrap_or(1.0) * k as f64))).collect();
-                            defs.push(format!(r#"<radialGradient id="{id}">{stops}</radialGradient>"#));
-                            id
-                        })
-                        .clone();
-                    for &[x, y, r, a] in &dabs {
+                Prim::Dabs { dabs, color, tints } => {
+                    for (n, &[x, y, r, a]) in dabs.iter().enumerate() {
+                        // A gradient a colour (the sfumino's a little rounded: fewer of them).
+                        let color = tints.get(n).map_or(color, |c| {
+                            let q = |v: u8| (v & 0xF8) | 4;
+                            egui::Color32::from_rgba_premultiplied(q(c.r()), q(c.g()), q(c.b()), c.a())
+                        });
+                        let next = dab_fills.len();
+                        let id = dab_fills
+                            .entry(color.to_array())
+                            .or_insert_with(|| {
+                                let (c, a) = rgba_attr(color);
+                                let id = format!("tratto-dab-{next}");
+                                let stops: String = crate::brush::DAB_RINGS.iter().map(|&(d, k)| format!(r#"<stop offset="{}" stop-color="{c}" stop-opacity="{}"/>"#, f(d as f64), f(a.parse::<f64>().unwrap_or(1.0) * k as f64))).collect();
+                                defs.push(format!(r#"<radialGradient id="{id}">{stops}</radialGradient>"#));
+                                id
+                            })
+                            .clone();
                         let (cx, cy) = t(x, y);
                         body += &format!(r#"<circle cx="{}" cy="{}" r="{}" fill="url(#{id})" fill-opacity="{}"/>"#, f(cx), f(cy), f(r as f64), f(a as f64));
                     }
@@ -446,7 +451,7 @@ mod tests {
             .enumerate()
             .map(|(row, (brush, _))| {
                 let pts: Vec<f32> = (0..=40).flat_map(|i| [i as f32 * 5.0, (i as f32 * 0.3).sin() * 10.0 + 10.0, 0.6]).collect();
-                let mut el = El::new(Kind::Ink(Ink { points: pts, color: "#1971C2".into(), size: 8.0, brush: Some(*brush) }));
+                let mut el = El::new(Kind::Ink(Ink { colors: Vec::new(), points: pts, color: "#1971C2".into(), size: 8.0, brush: Some(*brush) }));
                 (el.x, el.y, el.w, el.h) = (0.0, row as f64 * 40.0, 200.0, 20.0);
                 Arc::new(el)
             })

@@ -389,7 +389,7 @@ mod picture {
                         [t * 420.0, 24.0 + 22.0 * (t * std::f32::consts::TAU * 1.5).sin(), if col == 0 { (t * std::f32::consts::PI).sin().max(0.0).powf(0.7) } else { -1.0 }]
                     })
                     .collect();
-                let mut el = crate::model::El::new(crate::model::Kind::Ink(crate::model::Ink { points: pts, color: "#1E1E1E".into(), size, brush: Some(*brush) }));
+                let mut el = crate::model::El::new(crate::model::Kind::Ink(crate::model::Ink { colors: Vec::new(), points: pts, color: "#1E1E1E".into(), size, brush: Some(*brush) }));
                 (el.x, el.y, el.w, el.h, el.z) = (col as f64 * 480.0, row as f64 * 90.0, 420.0, 48.0, (row * 2 + col) as f64);
                 b.put([el]);
             }
@@ -814,7 +814,7 @@ mod picture {
                     // Every brush, and strokes of older versions.
                     let brush = crate::model::BRUSHES.get(i % 8).map(|b| b.0);
                     let size = if brush == Some(crate::model::Brush::Airbrush) { 24.0 } else { 4.0 };
-                    let mut s = El::new(Kind::Ink(Ink { points: pts, color: "#1E1E1E".into(), size, brush }));
+                    let mut s = El::new(Kind::Ink(Ink { colors: Vec::new(), points: pts, color: "#1E1E1E".into(), size, brush }));
                     (s.x, s.y, s.w, s.h) = ((i % 30) as f64 * 160.0, 5000.0 + (i / 30) as f64 * 90.0, 450.0, 60.0);
                     els.push(s);
                 }
@@ -936,7 +936,10 @@ mod picture {
                 ui::install_fonts(&ctx);
                 ui::setup(&ctx, Theme::new(dark, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), text_scale());
                 let mut b = board::BoardScreen::open(&ctx, &store, &id, prefs.clone(), Some("flow".into())).unwrap();
-                b.editor.selection = vec![b.editor.board.all().iter().find(|e| e.shape().is_some()).unwrap().id.clone()];
+                // TRATTO_NOSEL=1: nothing selected.
+                if std::env::var_os("TRATTO_NOSEL").is_none() {
+                    b.editor.selection = vec![b.editor.board.all().iter().find(|e| e.shape().is_some()).unwrap().id.clone()];
+                }
                 b.editor.tool = if std::env::var_os("TRATTO_SELECT").is_some() { crate::editor::Tool::Select } else { crate::editor::Tool::Pen };
                 b.editor.prefs.focus = std::env::var_os("TRATTO_FOCUS").is_some();
                 if crowded {
@@ -962,6 +965,7 @@ mod picture {
                     Ok("table") => b.editor.set_tool(crate::editor::Tool::Table),
                     Ok("pen") => b.editor.set_tool(crate::editor::Tool::Pen),
                     Ok("lasso") => b.editor.set_tool(crate::editor::Tool::Lasso),
+                    Ok("select") => b.editor.set_tool(crate::editor::Tool::Select),
                     _ => {}
                 }
                 // TRATTO_VOTES=1: a vote just ended, with a few votes cast.
@@ -1000,7 +1004,7 @@ mod picture {
                             })
                             .collect();
                         let colors = ["#1E1E1E", "#3D3D3D", "#E03131", "#1971C2", "#2F9E44", "#6741D9", "#F76707"];
-                        let mut el = crate::model::El::new(crate::model::Kind::Ink(crate::model::Ink { points: pts, color: colors[row].into(), size, brush: Some(*brush) }));
+                        let mut el = crate::model::El::new(crate::model::Kind::Ink(crate::model::Ink { colors: Vec::new(), points: pts, color: colors[row].into(), size, brush: Some(*brush) }));
                         (el.x, el.y, el.w, el.h, el.z) = (-700.0 + (row % 2) as f64 * 420.0, -380.0 + (row / 2) as f64 * 110.0, 360.0, 40.0, 100.0 + row as f64);
                         els.push(el);
                     }
@@ -1526,6 +1530,109 @@ mod picture {
         assert_eq!(out.borrow().as_slice(), ["Ciao a tutti"], "the message is in the thread");
     }
 
+    /// Alt and a drag with the pen: to the right, the left button makes it thicker, the right
+    /// button more opaque; Alt and a click still picks a colour. [ and ] step the size.
+    #[test]
+    fn alt_and_a_drag_set_the_pen_size_and_opacity() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let id = store.create("Penna", None).unwrap();
+        let mut screen: Option<board::BoardScreen> = None;
+        let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
+        let out: std::rc::Rc<std::cell::Cell<(f64, f64, usize)>> = Default::default();
+        let seen = out.clone();
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui(move |ui| {
+            let ctx = ui.ctx().clone();
+            if screen.is_none() {
+                ui::install_fonts(&ctx);
+                ui::setup(&ctx, Theme::new(false, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), 1.0);
+                let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs { left_panel: false, right_panel: false, ..Prefs::default() }, None).unwrap();
+                b.editor.tool = crate::editor::Tool::Pen;
+                b.editor.prefs.pens[0] = crate::prefs::Pen { size: 4.0, opacity: 0.5, ..Default::default() };
+                screen = Some(b);
+                return;
+            }
+            let b = screen.as_mut().unwrap();
+            b.ui(ui, &mut toasts, &mut dialogs);
+            let p = &b.editor.prefs.pens[b.editor.pen];
+            seen.set((p.size, p.opacity, b.editor.board.len()));
+        });
+        harness.run_steps(5);
+        let alt = egui::Modifiers { alt: true, ..Default::default() };
+        let drag = |h: &mut egui_kittest::Harness, button: egui::PointerButton, dx: f32| {
+            let a = egui::pos2(500.0, 400.0);
+            h.input_mut().events.push(egui::Event::PointerMoved(a));
+            h.step();
+            h.input_mut().events.push(egui::Event::PointerButton { pos: a, button, pressed: true, modifiers: alt });
+            h.step();
+            for k in 1..=6 {
+                h.input_mut().events.push(egui::Event::PointerMoved(a + egui::vec2(dx * k as f32 / 6.0, 0.0)));
+                h.step();
+            }
+            h.input_mut().events.push(egui::Event::PointerButton { pos: a + egui::vec2(dx, 0.0), button, pressed: false, modifiers: alt });
+            h.run_steps(2);
+        };
+        drag(&mut harness, egui::PointerButton::Primary, 120.0);
+        let (size, opacity, n) = out.get();
+        assert!((size - 8.0).abs() < 0.6, "twice as thick: {size}");
+        assert_eq!((opacity, n), (0.5, 0), "nothing else changes, nothing drawn");
+        drag(&mut harness, egui::PointerButton::Secondary, 150.0);
+        let (_, opacity, n) = out.get();
+        assert!((opacity - 1.0).abs() < 0.01 && n == 0, "fully opaque: {opacity}");
+        assert!(!egui::Popup::is_any_open(&harness.ctx), "no menu");
+        harness.input_mut().events.push(egui::Event::Key { key: egui::Key::OpenBracket, physical_key: Some(egui::Key::OpenBracket), pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+        harness.run_steps(2);
+        assert!(out.get().0 < 7.0, "a step thinner: {}", out.get().0);
+    }
+
+    /// In the timer's panel, the chime and the piece picked are the ones that stay: each list
+    /// opens over the panel without closing it, and a choice is kept.
+    #[test]
+    fn the_timer_chime_and_the_music_can_be_chosen() {
+        use egui_kittest::kittest::Queryable;
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let id = store.create("Riunione", None).unwrap();
+        let mut screen: Option<board::BoardScreen> = None;
+        let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
+        type Seen = (crate::prefs::TimerSound, Option<String>);
+        let out: std::rc::Rc<std::cell::RefCell<Option<Seen>>> = Default::default();
+        let seen = out.clone();
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 900.0)).build_ui(move |ui| {
+            let ctx = ui.ctx().clone();
+            if screen.is_none() {
+                ui::install_fonts(&ctx);
+                ui::setup(&ctx, Theme::new(false, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), 1.0);
+                screen = Some(board::BoardScreen::open(&ctx, &store, &id, Prefs { music_volume: 0.0, timer_volume: 0.0, right_panel: false, ..Prefs::default() }, None).unwrap());
+                return;
+            }
+            let b = screen.as_mut().unwrap();
+            b.ui(ui, &mut toasts, &mut dialogs);
+            let music = b.editor.board.timer_field("music").and_then(|v| v.as_str().map(str::to_string));
+            *seen.borrow_mut() = Some((b.editor.prefs.timer_chime, music));
+        });
+        harness.run_steps(5);
+        harness.get_by_label_contains("Timer:").click();
+        harness.run_steps(10);
+        // (The sounds are side by side in the panel.)
+        harness.run_steps(10);
+        harness.get_by_label("Carillon").click();
+        harness.run_steps(10);
+        assert_eq!(out.borrow().as_ref().unwrap().0, crate::prefs::TimerSound::Carillon, "the chime picked");
+        assert!(harness.query_by_label_contains("Brano:").is_some(), "the panel is still open");
+        // A piece, then play it for everyone; then another while it plays.
+        harness.get_by_label_contains("Brano:").click();
+        harness.run_steps(10);
+        harness.get_by_label("Synthwave").click();
+        harness.run_steps(10);
+        harness.get_by_label("Fai partire la musica per tutti").click();
+        harness.run_steps(10);
+        assert_eq!(out.borrow().as_ref().unwrap().1.as_deref(), Some("synthwave"), "the piece picked plays");
+        harness.get_by_label_contains("Brano:").click();
+        harness.run_steps(10);
+        harness.get_by_label("Lo-fi hip hop").click();
+        harness.run_steps(10);
+        assert_eq!(out.borrow().as_ref().unwrap().1.as_deref(), Some("lofi"), "changed while playing");
+    }
+
     /// The timer and music panel, open, while a timer runs and music plays (TRATTO_PAUSED=1 for
     /// a paused timer, TRATTO_IDLE=1 for none): `TRATTO_SHOT=out.png cargo test timer_picture`.
     #[test]
@@ -1670,7 +1777,7 @@ mod picture {
                     }
                     "menu-main" => (ed.prefs.left_panel, ed.prefs.right_panel, ed.prefs.minimap) = (false, false, false),
                     "dot" => {
-                        let mut d = crate::model::El::new(crate::model::Kind::Ink(crate::model::Ink { points: vec![0.0, 0.0, 0.5, 1.0, 1.0, 0.5], color: "#1E1E1E".into(), size: 6.0, brush: None }));
+                        let mut d = crate::model::El::new(crate::model::Kind::Ink(crate::model::Ink { colors: Vec::new(), points: vec![0.0, 0.0, 0.5, 1.0, 1.0, 0.5], color: "#1E1E1E".into(), size: 6.0, brush: None }));
                         (d.w, d.h) = (1.0, 1.0);
                         ed.board.put([d]);
                     }

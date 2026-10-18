@@ -696,11 +696,12 @@ impl BoardScreen {
                     action = Some(a);
                 }
             }
+            // The minimap first: the zoom controls keep clear of it.
             if !self.editor.prefs.focus && !is_mobile {
-                super::toolbar::view_controls(&ctx, rect, &mut self.editor);
                 if self.editor.prefs.minimap {
                     super::toolbar::minimap(&ctx, rect, &mut self.editor, &mut self.ui.minimap);
                 }
+                super::toolbar::view_controls(&ctx, rect, &mut self.editor);
             }
             if !right_shown && !self.editor.prefs.focus && !phone_panel {
                 let mini = (self.editor.prefs.minimap && !is_mobile).then(|| super::toolbar::minimap_home(rest, &self.editor.prefs));
@@ -739,6 +740,18 @@ impl BoardScreen {
                 }
                 Request::Paste(text) => self.paste(&ctx, &text, toasts),
                 Request::Shortcuts => self.ui.shortcuts = true,
+                Request::ToolSettings => {
+                    let shown = ctx.data(|d| d.get_temp::<(bool, bool)>(Id::new("panels-shown"))).is_some_and(|s| s.1);
+                    // Shown already: the button hides it again.
+                    self.editor.prefs.right_panel = !shown;
+                    self.ui.peek_right = !shown;
+                    if !shown {
+                        self.editor.prefs.focus = false;
+                        if ui::narrow(&ctx) {
+                            self.ui.peek_left = false;
+                        }
+                    }
+                }
                 Request::Templates => {
                     // Shown even where the panel only shows on request (a phone, a narrow window).
                     self.ui.left_tab = super::board::LeftTab::Templates;

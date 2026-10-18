@@ -101,9 +101,10 @@ fn draw_body(pm: &mut Pixmap, el: &El, env: &Env, t: Transform, images: Images) 
                     pm.fill_path(&p, &paint, FillRule::Winding, et, None);
                 }
             }
-            Prim::Dabs { dabs, color } => {
-                for &[x, y, r, a] in &dabs {
-                    if let (Some(shader), Some(circle)) = (crate::brush::dab_shader(x, y, r, color.gamma_multiply(a)), PathBuilder::from_circle(x, y, r.max(1e-3))) {
+            Prim::Dabs { dabs, color, tints } => {
+                for (n, &[x, y, r, a]) in dabs.iter().enumerate() {
+                    let c = tints.get(n).copied().unwrap_or(color);
+                    if let (Some(shader), Some(circle)) = (crate::brush::dab_shader(x, y, r, c, a), PathBuilder::from_circle(x, y, r.max(1e-3))) {
                         let paint = Paint { anti_alias: true, shader, ..Paint::default() };
                         pm.fill_path(&circle, &paint, FillRule::Winding, et, None);
                     }
@@ -214,7 +215,7 @@ mod tests {
     use crate::model::{EraseMark, Ink, Kind};
 
     fn stroke() -> El {
-        let mut el = El::new(Kind::Ink(Ink { points: vec![0.0, 0.0, -1.0, 100.0, 0.0, -1.0], color: "#000000".into(), size: 10.0, brush: None }));
+        let mut el = El::new(Kind::Ink(Ink { colors: Vec::new(), points: vec![0.0, 0.0, -1.0, 100.0, 0.0, -1.0], color: "#000000".into(), size: 10.0, brush: None }));
         el.w = 100.0;
         el
     }
