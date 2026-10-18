@@ -331,6 +331,11 @@ pub fn start_drag(ctx: &egui::Context, what: Payload, label: &str, icon_name: &'
     egui::Popup::close_all(ctx);
 }
 
+/// Whether an element or sticky note is currently being dragged from the toolbar.
+pub fn is_dragging(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<(Payload, String, &'static str)>(Id::new("insert-drag"))).is_some()
+}
+
 /// The thing being dragged onto the board: a small card under the pointer; let go over the
 /// board, it lands there (over a panel or the toolbar, nothing happens).
 pub fn insert_drag(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
@@ -341,9 +346,15 @@ pub fn insert_drag(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     // Over the board itself, not over a panel, a bar or a card floating on it.
     let over_stack = ctx.data(|d| d.get_temp::<Rect>(Id::new("sticky-stack-rect"))).is_some_and(|r| r.expand2(vec2(18.0, 56.0)).contains(pos));
     let over_bars = ctx.data(|d| d.get_temp::<Rect>(Id::new("bottom-bars"))).is_some_and(|r| r.expand(8.0).contains(pos));
-    let over_board = stage.contains(pos) && !over_stack && !over_bars && ctx.layer_id_at(pos).is_none_or(|l| l.order == egui::Order::Background);
+    let over_trash = ctx.data(|d| d.get_temp::<Rect>(Id::new("trash-slot-rect"))).is_some_and(|r| r.expand2(vec2(22.0, 48.0)).contains(pos));
+    let over_board = stage.contains(pos) && !over_stack && !over_bars && !over_trash && ctx.layer_id_at(pos).is_none_or(|l| l.order == egui::Order::Background);
     if !down {
         ctx.data_mut(|d| d.remove::<(Payload, String, &'static str)>(Id::new("insert-drag")));
+        if over_trash {
+            ctx.data_mut(|d| d.insert_temp(Id::new("trash-crunch"), 1.0));
+            ctx.request_repaint();
+            return;
+        }
         if over_board && !ed.read_only {
             let at = ed.to_world(ed.screen_pt(pos));
             insert_payload(ed, &what, Some(at));
@@ -365,7 +376,7 @@ pub fn insert_drag(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
         let c = pos2(pos.x, pos.y + size * 0.3 * l);
         note_shadow(&p, c + vec2(0.0, 10.0 * l), size, swing * l);
         note_shape(&p, c, size, swing * l, color, ui::mix(color, 0.8, Color32::BLACK).gamma_multiply(0.4));
-        ctx.set_cursor_icon(if over_board { egui::CursorIcon::Grabbing } else { egui::CursorIcon::NoDrop });
+        ctx.set_cursor_icon(if over_board { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
         ctx.request_repaint();
         return;
     }
@@ -374,12 +385,16 @@ pub fn insert_drag(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
         ui::float_frame(&t).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
             ui::row(ui, 24.0, |ui| {
                 let (r, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
-                icon(ui, icon_name, r.center(), 16.0, t.icon);
+                if let Payload::Shape(s) = what {
+                    shape_icon(ui, s, r.center(), 16.0, t.brand);
+                } else {
+                    icon(ui, icon_name, r.center(), 16.0, t.icon);
+                }
                 ui.label(RichText::new(&label).font(ui::medium(ui::px(11.0))).color(t.text));
             });
         });
     });
-    ctx.set_cursor_icon(if over_board { egui::CursorIcon::Grabbing } else { egui::CursorIcon::NoDrop });
+    ctx.set_cursor_icon(if over_board { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
     ctx.request_repaint();
 }
 
@@ -462,6 +477,19 @@ fn tile(ui: &mut Ui, name: &str, label: &str, hint: &str, t: &Theme, draggable: 
     resp
 }
 
+pub fn brush_icon_name(b: Brush) -> &'static str {
+    match b {
+        Brush::Pen => "pen",
+        Brush::Pencil => "pen-tool",
+        Brush::Brush => "paintbrush",
+        Brush::Marker => "highlighter",
+        Brush::Chalk => "pen-line",
+        Brush::Calligraphy => "pen-tool",
+        Brush::Airbrush => "spray-can",
+        Brush::Smudge => "sparkles",
+    }
+}
+
 /// One marker of FigJam's drawer: pen, highlighter or washi tape drawn as the real thing, in the
 /// colour it will draw with. It peeks out of the toolbar, rises a little under the pointer and
 /// stands up when chosen, on a spring.
@@ -472,7 +500,7 @@ fn drawer_slot(ui: &mut Ui, ed: &mut Editor, t: &Theme, tool: Tool) -> egui::Res
     let clip = Rect::from_min_max(pos2(rect.min.x, rect.min.y - 6.0), pos2(rect.max.x, rect.max.y + 5.0));
     let pen = ed.prefs.pens.get(ed.pen).cloned().unwrap_or_default();
     let (label, kbd, color) = match tool {
-        Tool::Pen => ("Penna", "P", pen.color.clone()),
+        Tool::Pen => (pen.brush.name(), "P", pen.color.clone()),
         Tool::Highlighter => ("Evidenziatore", "M", ed.prefs.highlighter.color.clone()),
         _ => ("Nastro adesivo", "W", ed.prefs.tape.color.clone()),
     };
@@ -489,6 +517,9 @@ fn drawer_slot(ui: &mut Ui, ed: &mut Editor, t: &Theme, tool: Tool) -> egui::Res
         Tool::Pen => marker(&p, slot.center().x, top, c, t, 14.0 * bar(), false),
         Tool::Highlighter => marker(&p, slot.center().x, top, c, t, 17.0 * bar(), true),
         _ => tape_roll(&p, slot.center().x, top, c, t, bar()),
+    }
+    if tool == Tool::Pen {
+        icon(ui, brush_icon_name(pen.brush), pos2(slot.center().x, rect.max.y - 6.0), 9.0, t.icon2);
     }
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, label));
     ui::tip(resp, label, Some(kbd))
@@ -646,6 +677,7 @@ fn toolbar_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme, id: &
         }
         "more" => more_tools(ui, ed, t, top),
         "laser" => laser_button(ui, ed),
+        "trash" => trash_button(ui, ed, t),
         "minimap" => {
             let on = ed.prefs.minimap;
             if icon_button(ui, "map", if on { "Nascondi la minimappa" } else { "Mostra la minimappa" }, None, vec2(btn(), btn()), icon_px(), on, false).clicked() {
@@ -954,8 +986,17 @@ fn sticky_stack(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
 fn shapes_combo(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
     let held = matches!(ed.tool, Tool::Shape | Tool::Arrow | Tool::Line);
     let folded = held && !ed.prefs.tray;
-    let r = icon_button(ui, "", "Forme e connettori", Some("R"), vec2(combo_w(), btn()), icon_px(), folded, held && !folded);
-    if r.clicked() {
+    let (rect, r) = ui.allocate_exact_size(vec2(combo_w(), btn()), Sense::click_and_drag());
+    let sel = ui::motion::hover(ui.ctx(), r.id.with("sel"), held && !folded);
+    if sel > 0.0 {
+        ui.painter().rect_filled(rect, 8.0, t.selected.gamma_multiply(sel));
+    }
+    ui::hover_fill(ui, r.id, rect, r.hovered() && !(held && !folded), 8.0, t.hover);
+    if r.drag_started() && !ed.read_only {
+        let shape = ed.prefs.last_shape;
+        let label = SHAPES.iter().find(|s| s.0 == shape).map_or("Forma", |s| s.1);
+        start_drag(ui.ctx(), Payload::Shape(shape), label, "shapes");
+    } else if r.clicked() {
         if held {
             ed.prefs.tray = !ed.prefs.tray;
         } else {
@@ -963,9 +1004,13 @@ fn shapes_combo(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
             ed.prefs.tray = true;
         }
     }
+    if r.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+    ui::tip(r, "Forme e connettori", Some("R"));
     let ink = if held && !folded { Color32::WHITE } else if folded && !t.dark { ui::mix(t.brand, 0.7, Color32::BLACK) } else { t.icon };
     let k = bar();
-    let c = r.rect.center();
+    let c = rect.center();
     let p = ui.painter();
     let line = Stroke::new(1.3, ink);
     p.rect_stroke(Rect::from_center_size(c + vec2(-6.0, -5.0) * k, vec2(11.0, 11.0) * k), 1.5, line, egui::StrokeKind::Middle);
@@ -1066,6 +1111,7 @@ pub fn toolbar_icon(id: &str) -> &'static str {
         "stamp" => "stamp",
         "comment" => "message-circle",
         "chat" => "message-square-text",
+        "trash" => "trash-2",
         "more" => "plus",
         "minimap" => "map",
         _ => "locate-fixed",
@@ -1181,6 +1227,61 @@ fn laser_button(ui: &mut Ui, ed: &mut Editor) {
     ui.painter().circle_filled(c, 7.5, red.gamma_multiply(0.18));
     ui.painter().circle_filled(c, 4.0, red);
     ui.painter().circle_filled(c, 1.6, Color32::WHITE);
+}
+
+fn trash_button(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
+    let ctx = ui.ctx().clone();
+    let (rect, resp) = ui.allocate_exact_size(vec2(btn(), btn()), Sense::click());
+    ctx.data_mut(|d| d.insert_temp(Id::new("trash-slot-rect"), rect));
+    let pointer = ctx.input(|i| i.pointer.latest_pos());
+    let is_dragging_item = is_dragging(&ctx) || matches!(ed.gesture, Some(crate::editor::Gesture::Move { moved: true, .. }));
+    let near = is_dragging_item && pointer.is_some_and(|p| rect.expand2(vec2(32.0, 48.0)).contains(p));
+    let open = ui::motion::spring(&ctx, Id::new("trash-lid"), if near { 1.0 } else { 0.0 }, 0.25, 0.75);
+    let has_crunch: f32 = ctx.data(|d| d.get_temp(Id::new("trash-crunch"))).unwrap_or(0.0);
+    let crunch = ui::motion::spring(&ctx, Id::new("trash-crunch-anim"), has_crunch, 0.25, 0.7);
+    if has_crunch > 0.001 {
+        ctx.data_mut(|d| d.insert_temp(Id::new("trash-crunch"), 0.0));
+        ctx.request_repaint();
+    }
+    let active = !ed.selection.is_empty();
+    let h = ui::motion::hover(&ctx, resp.id.with("h"), resp.hovered() || near);
+    if active || h > 0.0 {
+        ui.painter().rect_filled(rect, 8.0, if near { t.danger.gamma_multiply(0.22) } else if active { t.danger.gamma_multiply(0.12) } else { t.hover.gamma_multiply(h) });
+    }
+    let c = rect.center() + vec2(0.0, crunch * 2.0);
+    let ink = if near { t.danger } else if active { t.danger } else { t.icon };
+    let k = bar();
+    let p = ui.painter();
+    // Trash can body
+    let body = Rect::from_min_max(pos2(c.x - 6.0 * k, c.y - 2.5 * k), pos2(c.x + 6.0 * k, c.y + 7.5 * k));
+    p.rect_stroke(body, 2.0, Stroke::new(1.3, ink), egui::StrokeKind::Inside);
+    p.line_segment([pos2(c.x - 2.2 * k, c.y - 0.5 * k), pos2(c.x - 2.2 * k, c.y + 5.5 * k)], Stroke::new(1.2, ink));
+    p.line_segment([pos2(c.x + 2.2 * k, c.y - 0.5 * k), pos2(c.x + 2.2 * k, c.y + 5.5 * k)], Stroke::new(1.2, ink));
+    // Animated lid: tilts open on hinge at top-left
+    let hinge = pos2(c.x - 7.5 * k, c.y - 3.5 * k);
+    let angle = -open * 0.58;
+    let (sn, cs) = angle.sin_cos();
+    let rot = |pt: Pos2| {
+        let dx = pt.x - hinge.x;
+        let dy = pt.y - hinge.y;
+        pos2(hinge.x + dx * cs - dy * sn, hinge.y + dx * sn + dy * cs)
+    };
+    let rim_a = rot(pos2(c.x - 8.0 * k, c.y - 3.5 * k));
+    let rim_b = rot(pos2(c.x + 8.0 * k, c.y - 3.5 * k));
+    p.line_segment([rim_a, rim_b], Stroke::new(1.5, ink));
+    let handle_a = rot(pos2(c.x - 2.5 * k, c.y - 6.5 * k));
+    let handle_b = rot(pos2(c.x + 2.5 * k, c.y - 6.5 * k));
+    let handle_c = rot(pos2(c.x - 2.5 * k, c.y - 3.5 * k));
+    let handle_d = rot(pos2(c.x + 2.5 * k, c.y - 3.5 * k));
+    p.line_segment([handle_c, handle_a], Stroke::new(1.2, ink));
+    p.line_segment([handle_a, handle_b], Stroke::new(1.2, ink));
+    p.line_segment([handle_b, handle_d], Stroke::new(1.2, ink));
+    if resp.clicked() && !ed.read_only && active {
+        ed.remove();
+        ctx.data_mut(|d| d.insert_temp(Id::new("trash-crunch"), 1.0));
+    }
+    let tip_text = if active { "Elimina selezione" } else { "Cestino: trascina qui elementi per eliminarli" };
+    ui::tip(resp, tip_text, Some("Canc"));
 }
 
 fn back_to_content(ctx: &egui::Context, bar: Rect, top: bool, ed: &mut Editor, t: &Theme) {
@@ -1349,12 +1450,23 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                         for k in QUICK_SHAPES {
                             let on = tool == Tool::Shape && p.last_shape == k;
                             let label = SHAPES.iter().find(|s| s.0 == k).map_or("Forma", |s| s.1);
-                            let r = icon_button(ui, "", label, None, vec2(30.0, 30.0), 16.0, false, on);
-                            shape_icon(ui, k, r.rect.center(), 18.0, if on { Color32::WHITE } else { t.icon });
-                            if r.clicked() {
+                            let (r, resp) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::click_and_drag());
+                            let sel = ui::motion::hover(ui.ctx(), resp.id.with("sel"), on);
+                            if on || sel > 0.0 {
+                                ui.painter().rect_filled(r, 6.0, if on { t.selected } else { t.hover.gamma_multiply(sel) });
+                            }
+                            ui::hover_fill(ui, resp.id, r, resp.hovered() && !on, 6.0, t.hover);
+                            shape_icon(ui, k, r.center(), 18.0, if on { Color32::WHITE } else { t.icon });
+                            if resp.drag_started() && !ed.read_only {
+                                start_drag(ui.ctx(), Payload::Shape(k), label, "shapes");
+                            } else if resp.clicked() {
                                 p.last_shape = k;
                                 want = Some(Tool::Shape);
                             }
+                            if resp.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                            }
+                            ui::tip(resp, label, None);
                         }
                         ui.spacing_mut().item_spacing.x = 6.0;
                         sep_h(ui, t, h);
@@ -1488,12 +1600,13 @@ pub(crate) fn brush_sizes(brush: Brush) -> (f64, f64, f64) {
         Brush::Brush => (2.0, 48.0, 10.0),
         Brush::Airbrush => (12.0, 160.0, 32.0),
         Brush::Chalk => (3.0, 48.0, 10.0),
+        Brush::Smudge => (4.0, 64.0, 16.0),
     }
 }
 
 /// The thickness slider's range for a brush (the airbrush sprays wide).
 fn size_range(brush: Brush) -> (f64, f64) {
-    if brush == Brush::Airbrush { (4.0, 160.0) } else { (1.0, 64.0) }
+    if matches!(brush, Brush::Airbrush | Brush::Smudge) { (4.0, 160.0) } else { (1.0, 64.0) }
 }
 
 /// Gives a pen another brush: its thickness too, when the one it had doesn't suit the new
@@ -1558,9 +1671,10 @@ fn brush_chip(ui: &mut Ui, ed: &mut Editor, t: &Theme, top: bool) {
     let brush = ed.prefs.pens[i].brush;
     let font = egui::FontId::proportional(ui::px(11.0));
     let galley = ui.painter().layout_no_wrap(brush.name().to_string(), font, t.text);
-    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 34.0, ui::ctl(28.0)), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 50.0, ui::ctl(28.0)), Sense::click());
     ui::hover_fill(ui, resp.id, rect, resp.hovered(), ui::RADIUS as f32, t.hover);
-    ui.painter().galley(pos2(rect.min.x + 8.0, rect.center().y - galley.size().y / 2.0), galley, t.text);
+    icon(ui, brush_icon_name(brush), pos2(rect.min.x + 13.0, rect.center().y), 13.0, t.icon);
+    ui.painter().galley(pos2(rect.min.x + 25.0, rect.center().y - galley.size().y / 2.0), galley, t.text);
     icon(ui, if top { "chevron-up" } else { "chevron-down" }, pos2(rect.max.x - 13.0, rect.center().y), 12.0, t.icon2);
     let resp = ui::tip(resp, "Pennello", None);
     egui::Popup::from_toggle_button_response(&resp).frame(ui::float_frame(t).inner_margin(egui::Margin::same(6))).align(if top { egui::RectAlign::BOTTOM_START } else { egui::RectAlign::TOP_START }).gap(12.0).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
@@ -1589,6 +1703,7 @@ fn pen_slot(ui: &mut Ui, ed: &mut Editor, i: usize, t: &Theme, top: bool) {
         _ => (pen.size * 1.2).min(12.0),
     };
     brush_sample(ui, rect, pen.brush, color, shown);
+    icon(ui, brush_icon_name(pen.brush), pos2(rect.min.x + 9.0, rect.min.y + 9.0), 10.0, t.icon2.gamma_multiply(0.85));
     let label = format!("{} {}", pen.brush.name(), i + 1);
     let resp = ui::tip(resp, if active { "Colore e spessore" } else { &label }, Some(&(i + 1).to_string()));
     if resp.clicked() && !active {
@@ -2027,7 +2142,12 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
         }
         _ => 0.0,
     };
-    let push = ui::motion::spring(ctx, Id::new("minimap-push"), push, 0.3, 0.9);
+    // Nor under the pill at the top left (the board's menu and name): down below it.
+    let below = match ctx.data(|d| d.get_temp::<Rect>(Id::new("left-pill-rect"))) {
+        Some(p) if m.moving.is_none() && card.expand(6.0).intersects(p) => (p.max.y + 10.0 - card.min.y).max(0.0),
+        _ => 0.0,
+    };
+    let push = ui::motion::spring(ctx, Id::new("minimap-push"), push - below, 0.3, 0.9);
     let pos = pos2(px, py - push - ui::motion::travel(ctx, k) * 8.0);
     let resp = egui::Area::new(Id::new("minimap")).fixed_pos(pos).order(egui::Order::Middle).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));

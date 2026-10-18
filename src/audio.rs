@@ -13,8 +13,8 @@ pub fn music(want: Option<(Track, f64)>, volume: f32) {
 }
 
 /// The timer ran out.
-pub fn chime(volume: f32) {
-    imp::chime(volume.clamp(0.0, 1.0));
+pub fn chime(sound: crate::prefs::TimerSound, volume: f32) {
+    imp::chime(sound, volume.clamp(0.0, 1.0));
 }
 
 /// Where a loop of `len` samples is, `elapsed_ms` after it started.
@@ -80,9 +80,9 @@ mod imp {
         }
     }
 
-    pub fn chime(volume: f32) {
-        static CHIME: std::sync::LazyLock<Arc<Vec<f32>>> = std::sync::LazyLock::new(|| Arc::new(music::chime()));
-        lock().chime = Some((CHIME.clone(), 0.0, volume));
+    pub fn chime(sound: crate::prefs::TimerSound, volume: f32) {
+        let samples = Arc::new(music::chime_sound(sound));
+        lock().chime = Some((samples, 0.0, volume));
         start();
     }
 
@@ -350,12 +350,11 @@ mod imp {
         });
     }
 
-    pub fn chime(volume: f32) {
+    pub fn chime(sound: crate::prefs::TimerSound, volume: f32) {
         with(|w| {
-            if w.chime.is_none() {
-                w.chime = buffer(&w.ctx, &music::chime());
-            }
-            let (Some(buf), Ok(node), Ok(g)) = (w.chime.clone(), w.ctx.create_buffer_source(), w.ctx.create_gain()) else { return };
+            let samples = music::chime_sound(sound);
+            let Some(buf) = buffer(&w.ctx, &samples) else { return };
+            let (Ok(node), Ok(g)) = (w.ctx.create_buffer_source(), w.ctx.create_gain()) else { return };
             g.gain().set_value(volume);
             node.set_buffer(Some(&buf));
             if node.connect_with_audio_node(&g).is_ok() && g.connect_with_audio_node(&w.ctx.destination()).is_ok() {
@@ -381,7 +380,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         assert!(super::imp::running(), "the sound card is playing");
-        super::chime(volume);
+        super::chime(crate::prefs::TimerSound::Tibetan, volume);
         std::thread::sleep(std::time::Duration::from_millis(1500));
         super::music(None, volume);
     }

@@ -18,6 +18,11 @@ pub struct PenState {
     pub barrel: bool,
     /// The eraser end is being used.
     pub eraser: bool,
+    /// Stylus pressure (0.0..=1.0) when reported by the platform pointer API.
+    pub pressure: Option<f32>,
+    /// Stylus tilt (-1.0 to 1.0, for -90° to 90°) along X and Y.
+    pub tilt_x: f32,
+    pub tilt_y: f32,
 }
 
 /// A pen moving the mouse pointer, as it is now.
@@ -27,6 +32,23 @@ pub struct MousePen {
     pub pressure: f32,
     pub barrel: bool,
     pub eraser: bool,
+    /// Stylus tilt (-1.0 to 1.0, for -90° to 90°) along X and Y.
+    pub tilt_x: f32,
+    pub tilt_y: f32,
+}
+
+impl PenState {
+    /// Combined tilt magnitude in 0.0..=1.0 (0 = upright, 1 = flat).
+    pub fn tilt(self) -> f32 {
+        self.tilt_x.hypot(self.tilt_y).clamp(0.0, 1.0)
+    }
+}
+
+impl MousePen {
+    /// Combined tilt magnitude in 0.0..=1.0 (0 = upright, 1 = flat).
+    pub fn tilt(self) -> f32 {
+        self.tilt_x.hypot(self.tilt_y).clamp(0.0, 1.0)
+    }
 }
 
 /// The pen behind a touch id, or None for a finger.
@@ -49,7 +71,7 @@ pub fn state(_id: u64) -> Option<PenState> {
 /// in a browser); None for a real mouse.
 #[cfg(windows)]
 pub fn mouse_pen() -> Option<MousePen> {
-    wintab::current()
+    wintab::current().or_else(imp::mouse_pen)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -62,14 +84,19 @@ pub fn mouse_pen() -> Option<MousePen> {
     None
 }
 
-/// The pressure a touch's own force doesn't give (a browser that leaves it out), from the
-/// pen's pointer events.
+/// The pressure a touch's own force doesn't give (a browser or Windows pointer message whose
+/// pressure was read before winit turned it into a touch).
+#[cfg(windows)]
+pub fn touch_pressure() -> Option<f32> {
+    imp::touch_pressure().or_else(|| wintab::current().map(|p| p.pressure))
+}
+
 #[cfg(target_arch = "wasm32")]
 pub fn touch_pressure() -> Option<f32> {
     web::mouse_pen().map(|p| p.pressure)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(windows, target_arch = "wasm32")))]
 pub fn touch_pressure() -> Option<f32> {
     None
 }
@@ -130,19 +157,20 @@ pub use imp::hook;
 
 #[cfg(windows)]
 mod imp {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
     use std::ffi::c_void;
     use std::sync::Mutex;
-
-    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicIsize, Ordering};
 
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GMMP_USE_DISPLAY_POINTS, GetMouseMovePointsEx, MOUSEMOVEPOINT};
     use windows_sys::Win32::UI::Input::Pointer::{GetPointerPenInfo, GetPointerType, POINTER_PEN_INFO};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MSG, PEN_FLAG_BARREL, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PT_PEN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_POINTERDOWN, WM_POINTERUP, WM_POINTERUPDATE};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{CallWindowProcW, GWLP_WNDPROC, MSG, PEN_FLAG_BARREL, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PT_PEN, SetWindowLongPtrW, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_POINTERDOWN, WM_POINTERUP, WM_POINTERUPDATE, WNDPROC};
 
     pub static PENS: Mutex<Option<HashMap<u64, super::PenState>>> = Mutex::new(None);
+    static LAST_PEN: Mutex<Option<(super::MousePen, f64)>> = Mutex::new(None);
+    static ORIG_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 
     /// The positions folded into one mouse move, and that move's position (window pixels).
     pub struct Trail {
@@ -156,6 +184,46 @@ mod imp {
     /// When the left button last went up, and how long it stayed up before the latest press.
     static UP: Mutex<Option<u32>> = Mutex::new(None);
     pub static GAP: Mutex<Option<u32>> = Mutex::new(None);
+
+    pub fn mouse_pen() -> Option<super::MousePen> {
+        let (pen, at) = (*LAST_PEN.lock().ok()?)?;
+        (crate::platform::now_ms() - at <= 250.0).then_some(pen)
+    }
+
+    pub fn touch_pressure() -> Option<f32> {
+        let (pen, at) = (*LAST_PEN.lock().ok()?)?;
+        (crate::platform::now_ms() - at <= 500.0 && pen.pressure > 0.0).then_some(pen.pressure)
+    }
+
+    /// Subclasses the window procedure once so `WM_POINTER*` and `WT_PACKET` messages sent
+    /// directly to the window (bypassing `PeekMessageW`) still update pen pressure and tilt.
+    pub fn subclass(hwnd: isize) {
+        if hwnd == 0 || ORIG_WNDPROC.load(Ordering::Relaxed) != 0 {
+            return;
+        }
+        // SAFETY: `hwnd` is the main window handle on the UI thread; we chain to the original WndProc.
+        unsafe {
+            let prev = SetWindowLongPtrW(hwnd as *mut c_void, GWLP_WNDPROC, wnd_proc as *const () as isize);
+            if prev != 0 {
+                ORIG_WNDPROC.store(prev, Ordering::Relaxed);
+            }
+        }
+    }
+
+    unsafe extern "system" fn wnd_proc(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> isize {
+        let _ = super::wintab::on_raw(msg, wparam, lparam);
+        if matches!(msg, WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP) {
+            on_pointer(wparam);
+        }
+        let prev = ORIG_WNDPROC.load(Ordering::Relaxed);
+        if prev != 0 {
+            // SAFETY: forwards to the previous window procedure saved by `SetWindowLongPtrW`.
+            let proc: WNDPROC = unsafe { std::mem::transmute(prev) };
+            unsafe { CallWindowProcW(proc, hwnd, msg, wparam, lparam) }
+        } else {
+            0
+        }
+    }
 
     /// Screen coordinates from the mouse history are 16 bits: back to signed for monitors left
     /// of or above the main one.
@@ -221,6 +289,50 @@ mod imp {
         }
     }
 
+    pub fn on_pointer(wparam: usize) {
+        let id = (wparam & 0xFFFF) as u32;
+        let mut kind = 0;
+        // SAFETY: plain Win32 queries about a pointer id taken from the message.
+        unsafe {
+            if GetPointerType(id, &mut kind) == 0 || kind != PT_PEN {
+                return;
+            }
+            let mut info: POINTER_PEN_INFO = std::mem::zeroed();
+            if GetPointerPenInfo(id, &mut info) == 0 {
+                return;
+            }
+            super::seen(1);
+            let flags = info.penFlags;
+            let pressure = (info.pressure > 0).then(|| (info.pressure as f32 / 1024.0).clamp(0.0, 1.0));
+            let state = super::PenState {
+                barrel: flags & PEN_FLAG_BARREL != 0,
+                eraser: flags & (PEN_FLAG_ERASER | PEN_FLAG_INVERTED) != 0,
+                pressure,
+                tilt_x: (info.tiltX as f32 / 90.0).clamp(-1.0, 1.0),
+                tilt_y: (info.tiltY as f32 / 90.0).clamp(-1.0, 1.0),
+            };
+            if let Ok(mut pens) = PENS.lock() {
+                let map = pens.get_or_insert_with(HashMap::new);
+                if map.len() > 64 {
+                    map.clear();
+                }
+                map.insert(id as u64, state);
+            }
+            if let Ok(mut last) = LAST_PEN.lock() {
+                *last = Some((
+                    super::MousePen {
+                        pressure: pressure.unwrap_or(0.0),
+                        barrel: state.barrel,
+                        eraser: state.eraser,
+                        tilt_x: state.tilt_x,
+                        tilt_y: state.tilt_y,
+                    },
+                    crate::platform::now_ms(),
+                ));
+            }
+        }
+    }
+
     /// Message hook for the event loop: notes pens and folded mouse moves, never consumes the
     /// message.
     pub fn hook(msg: *const c_void) -> bool {
@@ -244,30 +356,8 @@ mod imp {
         if super::wintab::on_message(msg) {
             return false;
         }
-        if !matches!(msg.message, WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP) {
-            return false;
-        }
-        let id = (msg.wParam & 0xFFFF) as u32;
-        let mut kind = 0;
-        // SAFETY: plain Win32 queries about a pointer id taken from the message.
-        unsafe {
-            if GetPointerType(id, &mut kind) == 0 || kind != PT_PEN {
-                return false;
-            }
-            let mut info: POINTER_PEN_INFO = std::mem::zeroed();
-            if GetPointerPenInfo(id, &mut info) == 0 {
-                return false;
-            }
-            super::seen(1);
-            let flags = info.penFlags;
-            let state = super::PenState { barrel: flags & PEN_FLAG_BARREL != 0, eraser: flags & (PEN_FLAG_ERASER | PEN_FLAG_INVERTED) != 0 };
-            if let Ok(mut pens) = PENS.lock() {
-                let map = pens.get_or_insert_with(HashMap::new);
-                if map.len() > 64 {
-                    map.clear();
-                }
-                map.insert(id as u64, state);
-            }
+        if matches!(msg.message, WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP) {
+            on_pointer(msg.wParam);
         }
         false
     }
@@ -366,6 +456,7 @@ mod wintab {
         packet: GetPacket,
         overlap: Toggle,
         enable: Toggle,
+        min: f32,
         max: f32,
     }
 
@@ -386,6 +477,7 @@ mod wintab {
     /// crashes Tratto while it opens is skipped afterwards (until the next version of Tratto):
     /// `dir` keeps the mark of an opening that never finished.
     pub fn open(hwnd: isize, dir: &std::path::Path) {
+        super::imp::subclass(hwnd);
         if TABLET.lock().map_or(true, |t| t.is_some()) {
             return;
         }
@@ -428,9 +520,11 @@ mod wintab {
             lc.pkt_data = DATA;
             lc.pkt_mode = 0;
             lc.move_mask = DATA;
+            lc.btn_dn_mask = lc.btn_up_mask;
             let mut axis = Axis::default();
             info(WTI_DEVICES + lc.device, DVC_NPRESSURE, (&mut axis as *mut Axis).cast());
-            let max = if axis.max > 0 { axis.max as f32 } else { 1023.0 };
+            let min = axis.min.max(0) as f32;
+            let max = if axis.max > axis.min { axis.max as f32 } else { 1023.0 };
             let len = info(WTI_DEVICES + lc.device, DVC_NAME, std::ptr::null_mut()) as usize;
             let mut buf = vec![0u16; len / 2 + 1];
             if len > 0 {
@@ -443,7 +537,7 @@ mod wintab {
             }
             let (packet, enable, overlap): (GetPacket, Toggle, Toggle) = (std::mem::transmute(packet), std::mem::transmute(enable), std::mem::transmute(overlap));
             if let Ok(mut t) = TABLET.lock() {
-                *t = Some(Tablet { ctx: ctx as usize, packet, overlap, enable, max });
+                *t = Some(Tablet { ctx: ctx as usize, packet, overlap, enable, min, max });
             }
             done(format!("Wintab: {device}, pressione su {max} livelli"));
         }
@@ -465,25 +559,26 @@ mod wintab {
         }
     }
 
-    /// Reads Wintab's messages from the event loop; true when the message was one of them.
-    pub fn on_message(msg: &MSG) -> bool {
-        match msg.message {
+    pub fn on_raw(message: u32, wparam: usize, lparam: isize) -> bool {
+        match message {
             WT_PACKET => {
                 let Ok(t) = TABLET.lock() else { return true };
                 let Some(t) = t.as_ref() else { return true };
                 let mut p = Packet::default();
-                // SAFETY: the packet the message announces (serial in wParam, context in lParam),
+                // SAFETY: the packet the message announces (serial in wparam, context in lparam),
                 // read into a structure laid out for the fields asked for.
-                if unsafe { (t.packet)(msg.lParam as *mut c_void, msg.wParam as u32, (&mut p as *mut Packet).cast()) } != 0
+                if unsafe { (t.packet)(lparam as *mut c_void, wparam as u32, (&mut p as *mut Packet).cast()) } != 0
                     && let Ok(mut last) = LAST.lock()
                 {
-                    *last = Some(Last { pressure: (p.pressure as f32 / t.max).clamp(0.0, 1.0), buttons: p.buttons, eraser: p.status & TPS_INVERT != 0, near: p.status & TPS_PROXIMITY == 0, at: crate::platform::now_ms() });
+                    let span = (t.max - t.min).max(1.0);
+                    let pressure = ((p.pressure as f32 - t.min) / span).clamp(0.0, 1.0);
+                    *last = Some(Last { pressure, buttons: p.buttons, eraser: p.status & TPS_INVERT != 0, near: p.status & TPS_PROXIMITY == 0, at: crate::platform::now_ms() });
                 }
                 true
             }
             WT_PROXIMITY => {
                 // Low word 0: the pen left the context.
-                if msg.lParam & 0xFFFF == 0
+                if lparam & 0xFFFF == 0
                     && let Ok(mut last) = LAST.lock()
                     && let Some(l) = last.as_mut()
                 {
@@ -495,6 +590,11 @@ mod wintab {
         }
     }
 
+    /// Reads Wintab's messages from the event loop; true when the message was one of them.
+    pub fn on_message(msg: &MSG) -> bool {
+        on_raw(msg.message, msg.wParam, msg.lParam)
+    }
+
     /// The pen, if it is within the tablet's reach and was heard from a moment ago (a pen lying
     /// still sends nothing, and the mouse may be in use meanwhile).
     pub fn current() -> Option<super::MousePen> {
@@ -503,7 +603,7 @@ mod wintab {
             return None;
         }
         super::seen(2);
-        Some(super::MousePen { pressure: last.pressure, barrel: last.buttons & 2 != 0, eraser: last.eraser })
+        Some(super::MousePen { pressure: last.pressure, barrel: last.buttons & 2 != 0, eraser: last.eraser, tilt_x: 0.0, tilt_y: 0.0 })
     }
 }
 
@@ -520,6 +620,8 @@ mod web {
     struct Last {
         pressure: f32,
         buttons: u32,
+        tilt_x: f32,
+        tilt_y: f32,
         at: f64,
     }
 
@@ -546,8 +648,10 @@ mod web {
             }
             let pressure = get(v, "pressure").and_then(|p| p.as_f64()).unwrap_or(0.0) as f32;
             let buttons = get(v, "buttons").and_then(|b| b.as_f64()).unwrap_or(0.0) as u32;
+            let tilt_x = (get(v, "tiltX").and_then(|t| t.as_f64()).unwrap_or(0.0) as f32 / 90.0).clamp(-1.0, 1.0);
+            let tilt_y = (get(v, "tiltY").and_then(|t| t.as_f64()).unwrap_or(0.0) as f32 / 90.0).clamp(-1.0, 1.0);
             if let Ok(mut last) = LAST.lock() {
-                *last = Some(Last { pressure: pressure.clamp(0.0, 1.0), buttons, at: js_sys::Date::now() });
+                *last = Some(Last { pressure: pressure.clamp(0.0, 1.0), buttons, tilt_x, tilt_y, at: js_sys::Date::now() });
             }
             if e.type_() == "pointerdown"
                 && let Ok(mut d) = DOWN_AT.lock()
@@ -593,13 +697,16 @@ mod web {
         if !STYLUS.lock().ok()?.contains(&id) {
             return None;
         }
-        let b = recent(1000.0).map_or(0, |l| l.buttons);
-        Some(super::PenState { barrel: b & 2 != 0, eraser: b & 32 != 0 })
+        let l = recent(1000.0);
+        let b = l.map_or(0, |l| l.buttons);
+        let pressure = l.and_then(|l| (l.pressure > 0.0).then_some(l.pressure));
+        let (tilt_x, tilt_y) = l.map_or((0.0, 0.0), |l| (l.tilt_x, l.tilt_y));
+        Some(super::PenState { barrel: b & 2 != 0, eraser: b & 32 != 0, pressure, tilt_x, tilt_y })
     }
 
     pub fn mouse_pen() -> Option<super::MousePen> {
         let l = recent(150.0)?;
-        Some(super::MousePen { pressure: l.pressure, barrel: l.buttons & 2 != 0, eraser: l.buttons & 32 != 0 })
+        Some(super::MousePen { pressure: l.pressure, barrel: l.buttons & 2 != 0, eraser: l.buttons & 32 != 0, tilt_x: l.tilt_x, tilt_y: l.tilt_y })
     }
 }
 

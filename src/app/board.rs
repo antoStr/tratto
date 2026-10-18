@@ -608,8 +608,9 @@ impl BoardScreen {
             ed.fit_now();
         }
         let any_dialog = self.ui.export.is_some() || self.ui.share || self.ui.shortcuts || dialogs.settings || self.ui.menu.is_some();
+        let dragging_insert = super::toolbar::is_dragging(&ctx);
         let keys = !ctx.egui_wants_keyboard_input() && !any_dialog;
-        let hovered = resp.hovered() && !any_dialog;
+        let hovered = resp.hovered() && !any_dialog && !dragging_insert;
         let dbl = if resp.double_clicked() { resp.interact_pointer_pos() } else { None };
         ed.handle_input(&ctx, hovered, keys, dbl);
         if ed.tick_camera(crate::platform::now_ms()) {
@@ -689,15 +690,16 @@ impl BoardScreen {
                     d.remove::<Rect>(Id::new(k));
                 }
             });
+            // The pill at the top left first: the minimap keeps clear of it.
+            if !left_shown && !phone_panel {
+                if let Some(a) = super::panels::focus_pill(&ctx, rest, self, dialogs) {
+                    action = Some(a);
+                }
+            }
             if !self.editor.prefs.focus && !is_mobile {
                 super::toolbar::view_controls(&ctx, rect, &mut self.editor);
                 if self.editor.prefs.minimap {
                     super::toolbar::minimap(&ctx, rect, &mut self.editor, &mut self.ui.minimap);
-                }
-            }
-            if !left_shown && !phone_panel {
-                if let Some(a) = super::panels::focus_pill(&ctx, rest, self, dialogs) {
-                    action = Some(a);
                 }
             }
             if !right_shown && !self.editor.prefs.focus && !phone_panel {

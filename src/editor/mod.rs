@@ -193,6 +193,17 @@ pub(crate) struct Draw {
     /// Smoothed pen pressure; None until the first sample.
     pressure: Option<f64>,
     use_pressure: bool,
+    /// First raw force seen on this stroke, and whether hardware force actually varied from 0.5.
+    first_force: Option<f32>,
+    force_varied: bool,
+    /// Stylus tilt magnitude (0.0..=1.0) when tilt shading is enabled.
+    pub(crate) tilt: f32,
+    /// When the pointer last moved significantly (ms), for QuickShape hold detection.
+    pub(crate) last_move_ms: f64,
+    /// True once holding still at the end of the stroke has snapped it into a geometric shape.
+    pub(crate) quick_shape_snapped: bool,
+    /// Board centre used for symmetry axes during this stroke.
+    pub(crate) sym_center: Pt,
     /// The pressure is raised to this power (Settings ▸ Penna ▸ Sensibilità).
     gamma: f64,
     /// The brush pen without pressure: how fast it moves (screen points per ms, smoothed) and
@@ -562,6 +573,19 @@ impl Editor {
                 return Some(el.clone());
             }
         }
+        // Second pass: if no stroke, text, or filled element was hit directly, allow clicking
+        // inside an unfilled shape so hollow shapes can be easily selected and moved.
+        for base in order.iter().rev() {
+            let el = self.preview.get(&base.id).unwrap_or(base);
+            if el.locked || el.hidden {
+                continue;
+            }
+            if intersects(&expand(aabb(el), tol), &BBox { x: p.x, y: p.y, w: 0.0, h: 0.0 })
+                && shape_interior(el, p.x, p.y, tol)
+            {
+                return Some(el.clone());
+            }
+        }
         None
     }
 
@@ -920,6 +944,26 @@ impl Editor {
                 self.open_menu(at);
             }
         }
+        // QuickShape: holding the pen still at the end of a stroke snaps it into a clean shape in-place.
+        if self.prefs.quick_shape
+            && let Some(Gesture::Draw(g)) = &mut self.gesture
+            && !g.hl
+            && g.brush != Some(Brush::Smudge)
+            && g.snap.is_none()
+            && !g.quick_shape_snapped
+            && g.pts.len() >= 18
+            && g.last_move_ms > 0.0
+            && now() - g.last_move_ms >= 420.0
+        {
+            let flat: Vec<f32> = g.pts.iter().map(|&v| v as f32).collect();
+            if let Some(rec) = ink::recognize(&flat, 1.0 / self.cam.z) {
+                g.pts = recognized_stroke_pts(&rec);
+                g.quick_shape_snapped = true;
+                g.pieces.clear();
+                g.pieces_pts = usize::MAX;
+                self.presence.dirty = true;
+            }
+        }
         // Lose selection of elements that are gone (deleted by someone else, undone…).
         if !matches!(self.gesture, Some(Gesture::Move { .. })) {
             self.prune();
@@ -947,6 +991,15 @@ impl Editor {
     /// Sizes chosen in the toolbar are what you see on screen, whatever the zoom.
     pub fn world_size(&self, screen_px: f64) -> f64 {
         r2(screen_px / self.cam.z)
+    }
+
+    /// Current board-space centre used for drawing symmetry axes.
+    pub fn symmetry_center(&self) -> Pt {
+        if let Some(Gesture::Draw(g)) = &self.gesture {
+            return g.sym_center;
+        }
+        let (cx, cy) = self.safe_center();
+        self.cam.to_world(cx, cy)
     }
 
     fn ink_element(&mut self, pts: &[f64], size: f64, color: &str, hl: bool, opacity: f64, brush: Option<Brush>) -> El {
@@ -994,17 +1047,32 @@ impl Editor {
         let pen = if hl { self.prefs.highlighter.clone() } else { self.prefs.pens.get(self.pen).or(self.prefs.pens.first()).cloned().unwrap_or_default() };
         let size = self.world_size(pen.size);
         let cutoff = if kind == PointerKind::Mouse { self.prefs.ink_smoothing.cutoff() * 1.2 } else { self.prefs.ink_smoothing.cutoff() };
+        let mut color = pen.color;
+        if !hl && pen.brush == Brush::Smudge {
+            let w = self.to_world(s);
+            if self.hit_element(w, 8.0).is_some() {
+                color = self.color_at(w);
+            }
+        }
+        let (cx, cy) = self.safe_center();
+        let sym_center = self.cam.to_world(cx, cy);
         self.gesture = Some(Gesture::Draw(Box::new(Draw {
             hl,
             brush: (!hl).then_some(pen.brush),
-            color: pen.color,
+            color,
             size,
-            opacity: pen.opacity.clamp(0.05, 1.0),
+            opacity: if !hl && pen.brush == Brush::Smudge { (pen.opacity * 0.72).clamp(0.15, 0.85) } else { pen.opacity.clamp(0.05, 1.0) },
             pts: Vec::new(),
             snap: ink::ruler_snapper(&self.ruler, s.x as f64, s.y as f64, size * self.cam.z / 2.0),
-            filter: Some(OneEuro::new(cutoff)),
+            filter: Some(OneEuro::with_streamline(cutoff, self.prefs.streamline)),
             pressure: None,
-            use_pressure: kind == PointerKind::Pen && self.prefs.pressure && !hl,
+            use_pressure: (kind == PointerKind::Pen || self.input.force.is_some()) && self.prefs.pressure && !hl,
+            first_force: None,
+            force_varied: false,
+            tilt: if self.prefs.tilt_shading { self.input.tilt } else { 0.0 },
+            last_move_ms: now(),
+            quick_shape_snapped: false,
+            sym_center,
             gamma: self.prefs.sensitivity.gamma(),
             speed: None,
             last_raw: None,
@@ -1019,35 +1087,80 @@ impl Editor {
 
     /// A new pen position (canvas coordinates), with the pen pressure if any.
     pub(crate) fn add_draw_point(&mut self, raw: Pos2, t_ms: f64, force: Option<f32>) {
+        // Sfumino: pick up and blend underlying board colours along the stroke.
+        let sample_smudge = matches!(&self.gesture, Some(Gesture::Draw(g)) if g.brush == Some(Brush::Smudge) && (g.pts.len() / 3) % 6 == 0 && !g.pts.is_empty());
+        let smudged = if sample_smudge {
+            let w = self.to_world(raw);
+            self.hit_element(w, 6.0).map(|_| self.color_at(w))
+        } else {
+            None
+        };
         let cam = self.cam;
+        let tilt = if self.prefs.tilt_shading { self.input.tilt } else { 0.0 };
+        let pressure_pref = self.prefs.pressure;
         let Some(Gesture::Draw(g)) = &mut self.gesture else { return };
+        if let Some(under) = smudged
+            && let (Some(c0), Some(c1)) = (parse_color(&g.color), parse_color(&under))
+        {
+            let blend = |a: u8, b: u8| (a as f32 * 0.72 + b as f32 * 0.28).round() as u8;
+            g.color = hex(Color32::from_rgb(blend(c0.r(), c1.r()), blend(c0.g(), c1.g()), blend(c0.b(), c1.b())));
+        }
+        g.tilt = g.tilt * 0.7 + tilt * 0.3;
+        if g.quick_shape_snapped {
+            if g.raw.is_some_and(|p0| p0.distance(raw) < 6.0) {
+                return;
+            }
+            // Moved significantly after QuickShape snap: keep the snapped shape clean on release.
+            return;
+        }
         g.raw = Some(raw);
+        if let Some((p0, t0)) = g.last_raw {
+            if p0.distance(raw) > 2.2 {
+                g.last_move_ms = t_ms;
+            }
+            if t_ms > t0 {
+                let v = p0.distance(raw) as f64 / (t_ms - t0);
+                g.speed = Some(g.speed.map_or(v, |s| s + (v - s) * 0.3));
+            }
+        } else {
+            g.last_move_ms = t_ms;
+        }
+        g.last_raw = Some((raw, t_ms));
         let s = match &mut g.filter {
             Some(f) => f.filter(raw.x as f64, raw.y as f64, t_ms),
             None => pt(raw.x as f64, raw.y as f64),
         };
+        let force = force.or_else(crate::pen::touch_pressure).or_else(|| crate::pen::mouse_pen().map(|p| p.pressure));
+        if force.is_some() && pressure_pref && !g.hl {
+            g.use_pressure = true;
+        }
         let mut pressure = -1.0;
         if g.use_pressure
             && let Some(f) = force
         {
-            // As the pen gives it, through the sensitivity curve, smoothed only a little (pens
-            // report noisy values, but a heavier filter lags behind a quick lift).
-            let raw = (f as f64).clamp(0.0, 1.0).powf(g.gamma);
-            // The first touch reads light (the pen has only just met the glass): lifted, so a
-            // dot or the start of a stroke isn't a hairline.
-            let p = g.pressure.map_or(raw.max(0.3), |prev| prev + (raw - prev) * 0.5);
-            g.pressure = Some(p);
-            pressure = (p * 1000.0).round() / 1000.0;
+            let f0 = *g.first_force.get_or_insert(f);
+            if (f - f0).abs() > 0.012 || (f - 0.5).abs() > 0.025 {
+                g.force_varied = true;
+            }
+            if g.force_varied || (f - 0.5).abs() > 0.025 {
+                // Real hardware pressure from Windows Ink, Wintab, or PointerEvents: map across
+                // the full 0.02..=1.0 range through the user's sensitivity curve.
+                let raw_p = (f as f64).clamp(0.02, 1.0).powf(g.gamma);
+                let p = g.pressure.map_or(raw_p, |prev| prev + (raw_p - prev) * 0.55);
+                g.pressure = Some(p);
+                pressure = (p * 1000.0).round() / 1000.0;
+            } else {
+                // Stylus driver reporting constant 0.5 dummy force: synthesize natural velocity
+                // pressure modulated by sensitivity so the stroke still varies dynamically.
+                let v = g.speed.unwrap_or(0.0);
+                let sim = ((1.0 - (v - 0.25) / 2.4).clamp(0.18, 0.98)).powf(g.gamma);
+                let p = g.pressure.map_or(sim, |prev| prev + (sim - prev) * 0.35);
+                g.pressure = Some(p);
+                pressure = (p * 1000.0).round() / 1000.0;
+            }
         } else if g.brush == Some(Brush::Brush) {
             // A brush pen with a mouse (or a pen that has no pressure): thinner where it moves fast,
             // as ink thins on a quick flick.
-            if let Some((p0, t0)) = g.last_raw
-                && t_ms > t0
-            {
-                let v = p0.distance(raw) as f64 / (t_ms - t0);
-                g.speed = Some(g.speed.map_or(v, |s| s + (v - s) * 0.3));
-            }
-            g.last_raw = Some((raw, t_ms));
             let v = g.speed.unwrap_or(0.0);
             pressure = ((1.0 - (v - 0.3) / 2.5).clamp(0.15, 1.0) * 1000.0).round() / 1000.0;
         }
@@ -1074,7 +1187,8 @@ impl Editor {
     fn commit_draw(&mut self, mut g: Box<Draw>) {
         self.presence.end_live();
         // The filter trails the pen slightly: finish exactly where it was lifted.
-        if let Some(raw) = g.raw
+        if !g.quick_shape_snapped
+            && let Some(raw) = g.raw
             && !g.pts.is_empty()
         {
             let last = g.pts[g.pts.len() - 1];
@@ -1086,8 +1200,9 @@ impl Editor {
         let z = self.cam.z;
         let flat: Vec<f32> = g.pts.iter().map(|&v| v as f32).collect();
         let thin: Vec<f64> = ink::thin_points(&flat, (0.2 / z).min(g.size * 0.08)).into_iter().map(|v| v as f64).collect();
+        let sym = self.prefs.symmetry;
         let mut el = self.ink_element(&thin, g.size, &g.color, g.hl, g.opacity, g.brush);
-        if !g.hl && self.prefs.ink_to_shape && g.snap.is_none() {
+        if !g.hl && (self.prefs.ink_to_shape || g.quick_shape_snapped) && g.snap.is_none() && sym == crate::prefs::Symmetry::Off {
             let flat: Vec<f32> = thin.iter().map(|&v| v as f32).collect();
             if let Some(r) = ink::recognize(&flat, 1.0 / z) {
                 let (color, size, op) = (g.color.clone(), g.size, g.opacity);
@@ -1136,8 +1251,14 @@ impl Editor {
                 };
             }
         }
+        let mut els = vec![el];
+        if sym != crate::prefs::Symmetry::Off {
+            for m_pts in symmetry_pts(sym, g.sym_center, &thin) {
+                els.push(self.ink_element(&m_pts, g.size, &g.color, g.hl, g.opacity, g.brush));
+            }
+        }
         self.board.stop_capturing();
-        self.board.put([el]);
+        self.board.put(els);
     }
 
     /* ---------- erasing ---------- */
@@ -2570,6 +2691,84 @@ fn push_draw_point(g: &mut Draw, cam: &Camera, s: Pt, pressure: f64, force: bool
         return;
     }
     g.pts.extend([w.x, w.y, pressure]);
+}
+
+/// Converts a recognized shape into clean stroke points (`[x, y, pressure, …]`) for QuickShape live preview.
+fn recognized_stroke_pts(rec: &Recognized) -> Vec<f64> {
+    let seg = |out: &mut Vec<f64>, a: Pt, b: Pt, steps: usize| {
+        for i in 0..=steps {
+            let t = i as f64 / steps.max(1) as f64;
+            out.extend([a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, -1.0]);
+        }
+    };
+    let closed_poly = |corners: &[Pt]| -> Vec<f64> {
+        let mut out = Vec::new();
+        for i in 0..corners.len() {
+            seg(&mut out, corners[i], corners[(i + 1) % corners.len()], 8);
+        }
+        out
+    };
+    match rec {
+        Recognized::Line { x1, y1, x2, y2 } | Recognized::Arrow { x1, y1, x2, y2 } => {
+            let mut out = Vec::new();
+            seg(&mut out, pt(*x1, *y1), pt(*x2, *y2), 20);
+            out
+        }
+        Recognized::Rect { x, y, w, h } => closed_poly(&[pt(*x, *y), pt(*x + *w, *y), pt(*x + *w, *y + *h), pt(*x, *y + *h)]),
+        Recognized::Turned { cx, cy, w, h, angle } => {
+            let (hw, hh) = (*w / 2.0, *h / 2.0);
+            let corners = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)].map(|(dx, dy)| rotate(*cx + dx, *cy + dy, *cx, *cy, *angle));
+            closed_poly(&corners)
+        }
+        Recognized::Diamond { x, y, w, h } => closed_poly(&[pt(*x + *w / 2.0, *y), pt(*x + *w, *y + *h / 2.0), pt(*x + *w / 2.0, *y + *h), pt(*x, *y + *h / 2.0)]),
+        Recognized::Triangle(p) => closed_poly(p),
+        Recognized::Polygon(p) => closed_poly(p),
+        Recognized::Star { x, y, w, h } => {
+            let (cx, cy, rx, ry) = (*x + *w / 2.0, *y + *h / 2.0, *w / 2.0, *h / 2.0);
+            let pts: Vec<Pt> = (0..10)
+                .map(|i| {
+                    let a = -std::f64::consts::FRAC_PI_2 + i as f64 * std::f64::consts::PI / 5.0;
+                    let r = if i % 2 == 0 { 1.0 } else { 0.4 };
+                    pt(cx + rx * r * a.cos(), cy + ry * r * a.sin())
+                })
+                .collect();
+            closed_poly(&pts)
+        }
+        Recognized::Ellipse { x, y, w, h } => {
+            let (cx, cy, rx, ry) = (*x + *w / 2.0, *y + *h / 2.0, *w / 2.0, *h / 2.0);
+            (0..=48)
+                .flat_map(|i| {
+                    let a = i as f64 * std::f64::consts::TAU / 48.0;
+                    [cx + rx * a.cos(), cy + ry * a.sin(), -1.0]
+                })
+                .collect()
+        }
+    }
+}
+
+/// Generates mirrored/rotated stroke copies (`[x, y, pressure, …]`) around `center` for the active symmetry mode.
+pub(crate) fn symmetry_pts(sym: crate::prefs::Symmetry, center: Pt, pts: &[f64]) -> Vec<Vec<f64>> {
+    use crate::prefs::Symmetry;
+    let map = |f: &dyn Fn(f64, f64) -> (f64, f64)| -> Vec<f64> {
+        pts.chunks_exact(3)
+            .flat_map(|p| {
+                let (nx, ny) = f(p[0] - center.x, p[1] - center.y);
+                [center.x + nx, center.y + ny, p[2]]
+            })
+            .collect()
+    };
+    match sym {
+        Symmetry::Off => Vec::new(),
+        Symmetry::Vertical => vec![map(&|dx, dy| (-dx, dy))],
+        Symmetry::Horizontal => vec![map(&|dx, dy| (dx, -dy))],
+        Symmetry::Quad => vec![map(&|dx, dy| (-dx, dy)), map(&|dx, dy| (dx, -dy)), map(&|dx, dy| (-dx, -dy))],
+        Symmetry::Radial => (1..8)
+            .map(|k| {
+                let (s, c) = (k as f64 * std::f64::consts::FRAC_PI_4).sin_cos();
+                map(&move |dx, dy| (dx * c - dy * s, dx * s + dy * c))
+            })
+            .collect(),
+    }
 }
 
 /// Text: corner handles scale the type, side handles set a wrapping width.

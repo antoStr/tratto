@@ -10,6 +10,8 @@ const SR: f32 = RATE as f32;
 pub enum Track {
     Acoustic,
     Lofi,
+    Chillhop,
+    Zen,
     Smash,
     Friday,
     Synthwave,
@@ -17,9 +19,11 @@ pub enum Track {
 }
 
 /// Every piece, as FigJam's: id (as stored on the board), title, the colour of its cover.
-pub const TRACKS: [(Track, &str, &str, &str); 6] = [
+pub const TRACKS: [(Track, &str, &str, &str); 8] = [
     (Track::Acoustic, "acoustic", "Acoustic ambient", "#14AE5C"),
     (Track::Lofi, "lofi", "Lo-fi hip hop", "#FFE24B"),
+    (Track::Chillhop, "chillhop", "Chillhop coffee", "#E5A93C"),
+    (Track::Zen, "zen", "Zen meditation", "#58B368"),
     (Track::Smash, "smash", "Button smash", "#5B5BF6"),
     (Track::Friday, "friday", "It's Friday", "#FF7A1A"),
     (Track::Synthwave, "synthwave", "Synthwave", "#C04BF2"),
@@ -391,6 +395,8 @@ pub fn render(track: Track) -> Vec<f32> {
     let mut buf = match track {
         Track::Acoustic => acoustic(),
         Track::Lofi => lofi(),
+        Track::Chillhop => chillhop(),
+        Track::Zen => zen(),
         Track::Smash => smash(),
         Track::Friday => friday(),
         Track::Synthwave => synthwave(),
@@ -638,19 +644,152 @@ fn hero() -> Vec<f32> {
     l.buf
 }
 
-/// The sound of the timer running out: a soft three-note chime.
-pub fn chime() -> Vec<f32> {
-    let mut l = Loop::new(2.6);
-    for (i, n) in [79.0, 83.0, 86.0].iter().enumerate() {
-        bell(&mut l, i as f32 * 0.16, *n, 0.25);
+fn chillhop() -> Vec<f32> {
+    let beat = 60.0 / 74.0;
+    let bar = beat * 4.0;
+    let bars = 12;
+    let mut l = Loop::new(bar * bars as f32);
+    let mut rng = Rng(0xcafe_babe);
+    // Fmaj7 – Em7 – Dm7 – Cmaj7
+    let chords: [(&[f32], f32); 4] = [
+        (&[53.0, 57.0, 60.0, 64.0], 41.0),
+        (&[52.0, 55.0, 59.0, 62.0], 40.0),
+        (&[50.0, 53.0, 57.0, 60.0], 38.0),
+        (&[48.0, 52.0, 55.0, 59.0], 36.0),
+    ];
+    let lead = [64.0, 67.0, 69.0, 72.0, 74.0, 76.0];
+    for b in 0..bars {
+        let t0 = b as f32 * bar;
+        let (notes, root) = chords[b % 4];
+        // Warm Rhodes strum
+        for (hit, at, gain) in [(0, 0.0, 0.12), (1, 1.75, 0.06), (2, 2.5, 0.08)] {
+            for (i, &n) in notes.iter().enumerate() {
+                ep(&mut l, t0 + at * beat + i as f32 * 0.015 + hit as f32 * 0.005, n, beat * 1.4, gain);
+            }
+        }
+        bass(&mut l, t0, root, beat * 1.5, 0.30);
+        bass(&mut l, t0 + 2.5 * beat, root + 7.0, beat * 1.0, 0.22);
+        // Boom-bap drums
+        kick(&mut l, t0, 0.45);
+        kick(&mut l, t0 + 2.5 * beat, 0.35);
+        snare(&mut l, t0 + beat, 0.20, &mut rng);
+        snare(&mut l, t0 + 3.0 * beat, 0.22, &mut rng);
+        for e in 0..8 {
+            let swing = if e % 2 == 1 { 0.08 } else { 0.0 };
+            hat(&mut l, t0 + (e as f32 * 0.5 + swing) * beat, if e % 2 == 0 { 0.06 } else { 0.035 }, &mut rng);
+        }
+        if b >= 4 && rng.next() < 0.7 {
+            let n = lead[(rng.next() * lead.len() as f32) as usize % lead.len()];
+            pluck(&mut l, t0 + 1.25 * beat, n, 0.22, &mut rng);
+        }
     }
-    // Not a loop: the wrapped tail is faded out.
+    warm(&mut l.buf, 0.48);
+    reverb(&mut l.buf, 0.32, 1.2);
+    l.buf
+}
+
+fn zen() -> Vec<f32> {
+    let beat = 60.0 / 60.0;
+    let bar = beat * 4.0;
+    let bars = 10;
+    let mut l = Loop::new(bar * bars as f32);
+    let mut rng = Rng(0x002e_600d);
+    // Ebmaj7 – Abmaj7 – Cm7 – Bb6
+    let chords: [&[f32]; 4] = [
+        &[51.0, 55.0, 58.0, 62.0],
+        &[44.0, 51.0, 56.0, 60.0],
+        &[48.0, 55.0, 58.0, 63.0],
+        &[46.0, 53.0, 58.0, 62.0],
+    ];
+    let pentatonic = [63.0, 65.0, 67.0, 70.0, 72.0, 75.0, 79.0];
+    for b in 0..bars {
+        let t0 = b as f32 * bar;
+        let notes = chords[b % 4];
+        for &n in notes {
+            pad(&mut l, t0, n, bar * 1.05, 0.14);
+            pad(&mut l, t0, n + 12.0, bar * 1.05, 0.08);
+        }
+        // Singing bell at bar start
+        if b % 2 == 0 {
+            bell(&mut l, t0 + 0.1, notes[0] + 12.0, 0.22);
+        }
+        // Gentle plucked notes
+        for k in 0..4 {
+            if rng.next() < 0.65 {
+                let n = pentatonic[(rng.next() * pentatonic.len() as f32) as usize % pentatonic.len()];
+                pluck(&mut l, t0 + (k as f32 + 0.5) * beat, n, 0.24, &mut rng);
+            }
+        }
+    }
+    warm(&mut l.buf, 0.50);
+    reverb(&mut l.buf, 0.45, 1.8);
+    l.buf
+}
+
+/// The sound of the timer running out, selectable and soothing.
+pub fn chime_sound(sound: crate::prefs::TimerSound) -> Vec<f32> {
+    use crate::prefs::TimerSound;
+    let mut l = match sound {
+        TimerSound::Tibetan => {
+            let mut l = Loop::new(3.5);
+            let f = midi(57.0);
+            let (mut d1, mut d2, mut d3) = (Decay::new(3.2), Decay::new(2.4), Decay::new(1.6));
+            l.add(0.0, 3.4, |t| {
+                let a = attack(t, 0.08);
+                let shimmer = 1.0 + 0.004 * sine(2.8 * t);
+                let y = d1.next() * sine(f * t * shimmer)
+                    + 0.35 * d2.next() * sine(2.756 * f * t)
+                    + 0.12 * d3.next() * sine(5.404 * f * t);
+                0.40 * a * y
+            });
+            l
+        }
+        TimerSound::Harp => {
+            let mut l = Loop::new(3.0);
+            let mut rng = Rng(0x1357_9bdf);
+            for (i, &n) in [62.0, 66.0, 69.0, 73.0, 76.0].iter().enumerate() {
+                pluck(&mut l, i as f32 * 0.12, n, 0.28, &mut rng);
+            }
+            l
+        }
+        TimerSound::Carillon => {
+            let mut l = Loop::new(2.8);
+            for (i, &n) in [76.0, 80.0, 83.0, 88.0].iter().enumerate() {
+                bell(&mut l, i as f32 * 0.15, n, 0.22);
+            }
+            l
+        }
+        TimerSound::Piano => {
+            let mut l = Loop::new(3.2);
+            for (i, &n) in [53.0, 60.0, 64.0, 67.0, 69.0].iter().enumerate() {
+                ep(&mut l, i as f32 * 0.015, n, 2.0, 0.20);
+            }
+            l
+        }
+        TimerSound::Drop => {
+            let mut l = Loop::new(2.4);
+            let mut phase = 0.0;
+            let mut d_drop = Decay::new(0.06);
+            l.add(0.0, 0.12, |t| {
+                let freq = 1200.0 - 650.0 * (t / 0.06).clamp(0.0, 1.0);
+                phase += freq / SR;
+                0.35 * d_drop.next() * sine(phase)
+            });
+            bell(&mut l, 0.05, 81.0, 0.22);
+            l
+        }
+    };
     let n = l.buf.len();
     for (i, v) in l.buf.iter_mut().enumerate() {
         *v *= (1.0 - i as f32 / n as f32).powf(0.5);
     }
-    normalize(&mut l.buf, 0.6);
+    normalize(&mut l.buf, 0.60);
     l.buf
+}
+
+/// The default sound of the timer running out.
+pub fn chime() -> Vec<f32> {
+    chime_sound(crate::prefs::TimerSound::Tibetan)
 }
 
 #[cfg(test)]
@@ -675,6 +814,10 @@ mod tests {
             assert_eq!(Track::from_id(id), Some(track));
             println!("{id}: {:.1} s in {:?}", buf.len() as f32 / SR, t.elapsed());
         }
-        assert!(chime().iter().any(|v| v.abs() > 0.3));
+        for sound in crate::prefs::TIMER_SOUNDS {
+            let buf = chime_sound(sound);
+            assert!(buf.iter().all(|v| v.is_finite()));
+            assert!(buf.iter().any(|v| v.abs() > 0.15));
+        }
     }
 }

@@ -133,7 +133,7 @@ pub fn sound(ctx: &egui::Context, ed: &Editor) {
     if was && !running && read_timer(ed).is_some_and(|t| t.done()) {
         ctx.data_mut(|d| d.insert_temp(Id::new("timer-done-at"), crate::platform::now_ms()));
         if ed.prefs.timer_sound {
-            crate::audio::chime(0.8);
+            crate::audio::chime(ed.prefs.timer_chime, ed.prefs.timer_volume);
         }
     }
     ctx.data_mut(|d| d.insert_temp(id, running));
@@ -267,6 +267,8 @@ fn timer_panel(ui: &mut egui::Ui, ed: &mut Editor) {
         line(ui);
         egui::Frame::new().inner_margin(egui::Margin::same(16)).show(ui, |ui| timer_card(ui, ed, &t));
         line(ui);
+        egui::Frame::new().inner_margin(egui::Margin::symmetric(16, 10)).show(ui, |ui| chime_card(ui, ed, &t));
+        line(ui);
         egui::Frame::new().inner_margin(egui::Margin::same(16)).show(ui, |ui| music_card(ui, ed, &t));
         line(ui);
         egui::Frame::new().inner_margin(egui::Margin::same(16)).show(ui, |ui| vote_card(ui, ed, &t));
@@ -329,10 +331,11 @@ fn timer_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
     let shown = match tm {
         Some(tm) => clock(tm.remaining()),
         None if !ro => {
-            // Typed straight onto the time: an invisible field over it takes the digits (a phone
-            // opens its number keyboard), and only digits.
             let over = Rect::from_center_size(card.center(), vec2(card.width() - 112.0, card.height() - 12.0));
-            let field = ui.put(over, egui::TextEdit::singleline(&mut digits).id(Id::new("timer-field")).frame(egui::Frame::NONE).text_color(Color32::TRANSPARENT).char_limit(6).desired_width(over.width()).font(egui::FontId::proportional(1.0)));
+            let field = ui.scope(|ui| {
+                ui.visuals_mut().text_cursor.stroke = Stroke::NONE;
+                ui.put(over, egui::TextEdit::singleline(&mut digits).id(Id::new("timer-field")).frame(egui::Frame::NONE).text_color(Color32::TRANSPARENT).char_limit(6).desired_width(over.width()).font(egui::FontId::proportional(1.0)))
+            }).inner;
             digits.retain(|c| c.is_ascii_digit());
             editing = field.has_focus();
             if field.gained_focus() {
@@ -347,21 +350,39 @@ fn timer_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
                 }
                 digits.clear();
             }
-            if editing { digits_shown(&digits) } else { clock(draft) }
+            if editing && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                if let Some(ms) = digits_ms(&digits) {
+                    draft = ms;
+                    start_timer(ed, draft);
+                    digits.clear();
+                    field.surrender_focus();
+                }
+            }
+            if editing {
+                if digits.is_empty() {
+                    "00:00".to_string()
+                } else {
+                    digits_shown(&digits)
+                }
+            } else {
+                clock(draft)
+            }
         }
         None => clock(draft),
     };
     ui.data_mut(|d| d.insert_temp(digits_id, digits.clone()));
     let color = match &tm {
         Some(tm) => time_look(ui.ctx(), tm, t),
+        None if editing && digits.is_empty() => t.text3,
         None => t.text,
     };
     let dx = shake(ui.ctx());
-    let time = big_time(ui.painter(), card.center() + vec2(dx, 0.0), &shown, 40.0, color);
+    let time = big_time(ui.painter(), card.center() + vec2(dx, if editing { -6.0 } else { 0.0 }), &shown, 40.0, color);
     if editing {
         if (crate::platform::now_ms() / 530.0) as i64 % 2 == 0 {
             ui.painter().rect_filled(Rect::from_min_size(pos2(time.max.x + 3.0, time.min.y + 4.0), vec2(2.0, time.height() - 8.0)), 1.0, t.brand);
         }
+        ui.painter().text(pos2(card.center().x, card.max.y - 12.0), egui::Align2::CENTER_CENTER, "Digita i minuti/secondi • Invio per avviare", egui::FontId::proportional(ui::px(10.0)), t.text2);
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
     }
     // While it runs, a thin bar along the bottom empties.
@@ -425,6 +446,63 @@ fn timer_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
     ui.data_mut(|d| d.insert_temp(draft_id, draft));
 }
 
+/// The chime sound setting: soft chime choices, preview button, and volume slider.
+fn chime_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
+    ui.spacing_mut().item_spacing = vec2(0.0, 8.0);
+    let p = &mut ed.prefs;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let on = p.timer_sound;
+        if ui::icon_button(ui, if on { "bell" } else { "bell-off" }, if on { "Suoneria attiva al termine" } else { "Suoneria disattivata" }, None, vec2(28.0, 28.0), 16.0, on, false).clicked() {
+            p.timer_sound = !on;
+        }
+        ui.label(RichText::new("Suoneria a fine timer").font(ui::medium(ui::px(12.0))).color(t.text));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui::small_icon_button(ui, "play", "Ascolta anteprima suoneria", false).clicked() {
+                crate::audio::chime(p.timer_chime, p.timer_volume);
+            }
+        });
+    });
+    if p.timer_sound {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let current = p.timer_chime;
+            let label = current.name();
+            let (r, resp) = ui.allocate_exact_size(vec2(145.0, 26.0), egui::Sense::click());
+            ui.painter().rect_filled(r, 6.0, t.bg2);
+            let k = ui::motion::hover(ui.ctx(), resp.id, resp.hovered());
+            if k > 0.0 {
+                ui.painter().rect_stroke(r, 6.0, Stroke::new(1.0, t.border_strong.gamma_multiply(k)), egui::StrokeKind::Inside);
+            }
+            ui.painter().text(pos2(r.min.x + 8.0, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(ui::px(11.0)), t.text);
+            icon(ui, "chevron-down", pos2(r.max.x - 12.0, r.center().y), 12.0, t.icon2);
+            let resp = ui::tip(resp, "Scegli il suono rilassante", None);
+            egui::Popup::menu(&resp).frame(ui::menu_frame(t)).show(|ui| ui::menu_body(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for sound in crate::prefs::TIMER_SOUNDS {
+                    let on = sound == current;
+                    let (ir, item) = ui.allocate_exact_size(vec2(160.0, 26.0), egui::Sense::click());
+                    if item.hovered() {
+                        ui.painter().rect_filled(ir, ui::RADIUS, t.hover);
+                    }
+                    if on {
+                        icon(ui, "check", pos2(ir.min.x + 10.0, ir.center().y), 12.0, t.brand);
+                    }
+                    ui.painter().text(pos2(ir.min.x + 24.0, ir.center().y), egui::Align2::LEFT_CENTER, sound.name(), egui::FontId::proportional(ui::px(11.0)), if on { t.brand } else { t.text });
+                    if item.clicked() {
+                        p.timer_chime = sound;
+                        crate::audio::chime(sound, p.timer_volume);
+                    }
+                }
+            }));
+            let mut v = p.timer_volume as f64;
+            if ui::slider_inline(ui, "", &mut v, 0.05, 1.0, 0.05, false, |_| String::new(), ui.available_width()) {
+                p.timer_volume = v as f32;
+            }
+        });
+    }
+}
+
 /// The time in large figures, centred on `c`, each digit in a cell of the same width so the
 /// time doesn't shift as it counts; where it went.
 fn big_time(p: &egui::Painter, c: egui::Pos2, text: &str, size: f32, color: Color32) -> Rect {
@@ -475,6 +553,21 @@ fn cover(p: &egui::Painter, r: Rect, track: Track) {
             p.circle_filled(at(10.0, 12.5), 0.8 * k, ink);
             p.circle_filled(at(14.0, 12.5), 0.8 * k, ink);
             p.add(curve([at(10.0, 15.5), at(11.0, 16.8), at(13.0, 16.8), at(14.0, 15.5)]));
+        }
+        Track::Chillhop => {
+            p.rect(Rect::from_min_max(at(7.0, 9.0), at(17.0, 19.0)), egui::CornerRadius { nw: 2, ne: 2, sw: 5, se: 5 }, ink, Stroke::NONE, egui::StrokeKind::Inside);
+            p.add(curve([at(17.0, 11.0), at(21.0, 11.0), at(21.0, 17.0), at(17.0, 17.0)]));
+            p.add(curve([at(9.0, 7.5), at(8.0, 5.5), at(10.0, 4.0), at(9.0, 2.5)]));
+            p.add(curve([at(14.0, 7.5), at(13.0, 5.5), at(15.0, 4.0), at(14.0, 2.5)]));
+        }
+        Track::Zen => {
+            let stone_a = Rect::from_center_size(at(12.0, 18.0), vec2(15.0 * k, 5.0 * k));
+            let stone_b = Rect::from_center_size(at(12.0, 13.5), vec2(11.0 * k, 4.2 * k));
+            let stone_c = Rect::from_center_size(at(12.0, 9.5), vec2(7.5 * k, 3.8 * k));
+            p.rect_filled(stone_a, 2.5 * k, ink);
+            p.rect_filled(stone_b, 2.1 * k, ink);
+            p.rect_filled(stone_c, 1.8 * k, ink);
+            p.circle_stroke(at(12.0, 5.0), 1.5 * k, Stroke::new(1.0, ink));
         }
         Track::Smash => {
             let pts: Vec<egui::Pos2> = (0..24).map(|i| {

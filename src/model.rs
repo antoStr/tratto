@@ -125,10 +125,12 @@ pub enum Brush {
     Airbrush,
     /// Chalk or pastel: coarse grain.
     Chalk,
+    /// Soft blending stump (sfumino): picks up and blends board colours softly.
+    Smudge,
 }
 
 /// The brushes offered, in order, with their names.
-pub const BRUSHES: [(Brush, &str); 7] = [
+pub const BRUSHES: [(Brush, &str); 8] = [
     (Brush::Pen, "Penna"),
     (Brush::Pencil, "Matita"),
     (Brush::Marker, "Pennarello"),
@@ -136,6 +138,7 @@ pub const BRUSHES: [(Brush, &str); 7] = [
     (Brush::Brush, "Pennello"),
     (Brush::Airbrush, "Aerografo"),
     (Brush::Chalk, "Gessetto"),
+    (Brush::Smudge, "Sfumino"),
 ];
 
 impl Brush {

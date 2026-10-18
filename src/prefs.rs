@@ -128,6 +128,60 @@ pub enum Wheel {
     Zoom,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum Symmetry {
+    #[default]
+    Off,
+    Vertical,
+    Horizontal,
+    Quad,
+    Radial,
+}
+
+impl Symmetry {
+    pub fn name(self) -> &'static str {
+        match self {
+            Symmetry::Off => "Spenta",
+            Symmetry::Vertical => "Verticale",
+            Symmetry::Horizontal => "Orizzontale",
+            Symmetry::Quad => "Quadrante",
+            Symmetry::Radial => "Radiale (8)",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum TimerSound {
+    #[default]
+    Tibetan,
+    Harp,
+    Carillon,
+    Piano,
+    Drop,
+}
+
+impl TimerSound {
+    pub fn name(self) -> &'static str {
+        match self {
+            TimerSound::Tibetan => "Campana tibetana",
+            TimerSound::Harp => "Arpa dolce",
+            TimerSound::Carillon => "Carillon",
+            TimerSound::Piano => "Pianoforte morbido",
+            TimerSound::Drop => "Goccia d'acqua",
+        }
+    }
+}
+
+pub const TIMER_SOUNDS: [TimerSound; 5] = [
+    TimerSound::Tibetan,
+    TimerSound::Harp,
+    TimerSound::Carillon,
+    TimerSound::Piano,
+    TimerSound::Drop,
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ToolbarPos {
@@ -146,10 +200,18 @@ pub struct Prefs {
     pub tape: Pen,
     pub eraser: Eraser,
     pub ink_to_shape: bool,
+    /// Holding the pen still at the end of a stroke snaps it to a geometric shape (Procreate QuickShape).
+    pub quick_shape: bool,
     /// How much tremor is smoothed out of freehand strokes.
     pub ink_smoothing: Smoothing,
+    /// Procreate-style StreamLine rope stabilization (0.0 = off, 1.0 = max).
+    pub streamline: f64,
+    /// Live symmetry guides and mirrored strokes.
+    pub symmetry: Symmetry,
     /// Use the pen's pressure for line width.
     pub pressure: bool,
+    /// Broaden and soften strokes when the stylus is tilted.
+    pub tilt_shading: bool,
     /// How hard the pen must press for a full line.
     pub sensitivity: Sensitivity,
     pub finger_draw: bool,
@@ -207,6 +269,10 @@ pub struct Prefs {
     pub music_muted: bool,
     /// A chime when the timer runs out.
     pub timer_sound: bool,
+    /// Which soft chime plays when the timer finishes.
+    pub timer_chime: TimerSound,
+    /// Volume of the timer chime (0–1).
+    pub timer_volume: f32,
     /// The "+" beside a note also draws an arrow to the new one (as for shapes); off: just a
     /// note beside it, as in FigJam.
     pub sticky_arrows: bool,
@@ -237,7 +303,7 @@ pub struct ToolbarProfile {
 
 /// Every button the toolbar can have: id, name, and the group it sits with (a thin line
 /// separates groups).
-pub const TOOLBAR_ITEMS: [(&str, &str, u8); 22] = [
+pub const TOOLBAR_ITEMS: [(&str, &str, u8); 23] = [
     ("select", "Seleziona", 0),
     ("hand", "Mano", 0),
     ("draw", "Penne e gomma", 1),
@@ -259,6 +325,7 @@ pub const TOOLBAR_ITEMS: [(&str, &str, u8); 22] = [
     ("chat", "Chat del cursore", 2),
     ("laser", "Puntatore laser", 2),
     ("minimap", "Minimappa", 3),
+    ("trash", "Cestino", 3),
     ("more", "Altri strumenti", 3),
 ];
 
@@ -314,8 +381,12 @@ impl Default for Prefs {
             tape: pen("#FFB3C7", 28.0),
             eraser: Eraser::default(),
             ink_to_shape: false,
+            quick_shape: true,
             ink_smoothing: Smoothing::Medium,
+            streamline: 0.25,
+            symmetry: Symmetry::Off,
             pressure: true,
+            tilt_shading: true,
             sensitivity: Sensitivity::Normal,
             finger_draw: false,
             wheel: Wheel::Pan,
@@ -354,6 +425,8 @@ impl Default for Prefs {
             music_volume: 0.6,
             music_muted: false,
             timer_sound: true,
+            timer_chime: TimerSound::Tibetan,
+            timer_volume: 0.5,
             sticky_arrows: false,
             peer_rulers: false,
             zoom_full: false,
@@ -398,7 +471,9 @@ impl Prefs {
             p.color.clear();
         }
         p.toolbar_profiles.truncate(20);
+        p.streamline = if p.streamline.is_finite() { p.streamline.clamp(0.0, 1.0) } else { 0.25 };
         p.music_volume = if p.music_volume.is_finite() { p.music_volume.clamp(0.0, 1.0) } else { 0.6 };
+        p.timer_volume = if p.timer_volume.is_finite() { p.timer_volume.clamp(0.0, 1.0) } else { 0.5 };
         p.toolbar_size = if p.toolbar_size.is_finite() { p.toolbar_size.clamp(0.8, 1.4) } else { 1.0 };
         p.shadow_opacity = if p.shadow_opacity.is_finite() { p.shadow_opacity.clamp(0.0, 0.6) } else { 0.14 };
         p.shadow_blur = if p.shadow_blur.is_finite() { p.shadow_blur.clamp(0.0, 40.0) } else { 10.0 };

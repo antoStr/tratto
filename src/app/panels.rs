@@ -1218,10 +1218,17 @@ pub fn background_fields(ui: &mut Ui, meta: &mut BoardMeta) {
             meta.background = hex(c);
         }
     });
-    egui::Grid::new(ui.id().with("patterns")).spacing(vec2(6.0, 6.0)).show(ui, |ui| {
+    ui.add_space(8.0);
+    let avail = ui.available_width();
+    let cols = 3;
+    let spacing = 6.0;
+    let tile_w = ((avail - (cols - 1) as f32 * spacing) / cols as f32).floor().max(62.0);
+    let tile_h = (tile_w * 0.72).clamp(50.0, 64.0);
+    let art_h = tile_h - 16.0;
+    egui::Grid::new(ui.id().with("patterns")).spacing(vec2(spacing, spacing)).show(ui, |ui| {
         for (i, p) in PATTERNS.iter().enumerate() {
-            let (r, resp) = ui.allocate_exact_size(vec2(62.0, 50.0), Sense::click());
-            let art = Rect::from_min_size(r.min, vec2(62.0, 34.0));
+            let (r, resp) = ui.allocate_exact_size(vec2(tile_w, tile_h), Sense::click());
+            let art = Rect::from_min_size(r.min, vec2(tile_w, art_h));
             let mut shapes = Vec::new();
             let m = BoardMeta { pattern: *p, grid_size: 14.0, ..meta.clone() };
             crate::paint::background(&mut shapes, art, &crate::geom::Camera { x: 7.0, y: 9.0, z: 1.0 }, &m, ui.ctx().pixels_per_point());

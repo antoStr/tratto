@@ -410,6 +410,34 @@ pub fn hit_test(el: &El, x: f64, y: f64, tol: f64, ignore_erase: bool) -> bool {
     }
 }
 
+/// Whether `(x, y)` lies inside the body of a shape element (even when its fill is transparent),
+/// used as a fallback when selecting shapes on the board so hollow shapes can be clicked and dragged.
+pub fn shape_interior(el: &El, x: f64, y: f64, tol: f64) -> bool {
+    if el.hidden {
+        return false;
+    }
+    let Kind::Shape(s) = &el.kind else { return false };
+    let p = to_local(el, x, y);
+    if !el.erase.is_empty() && erased_at(el, p.x, p.y) {
+        return false;
+    }
+    let edge = s.stroke_width / 2.0 + tol;
+    let in_box = p.x >= -edge && p.y >= -edge && p.x <= el.w + edge && p.y <= el.h + edge;
+    match s.shape {
+        ShapeKind::Rect => in_box,
+        ShapeKind::Ellipse => {
+            let (rx, ry) = (el.w / 2.0, el.h / 2.0);
+            let d = ((p.x - rx) / rx.max(1e-6)).hypot((p.y - ry) / ry.max(1e-6));
+            let band = edge / rx.min(ry).max(1e-6);
+            d <= 1.0 + band
+        }
+        k => {
+            let poly = shape_polygon(k, el.w, el.h, s.points.as_deref()).unwrap_or_default();
+            point_in_polygon(p.x, p.y, &poly) || near_polyline(&poly, 2, p.x, p.y, edge, true)
+        }
+    }
+}
+
 /// World-space sample points used by lasso selection.
 pub fn sample_points(el: &El) -> Vec<Pt> {
     match &el.kind {

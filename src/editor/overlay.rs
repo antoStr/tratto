@@ -46,19 +46,19 @@ impl Editor {
     /// A stroke (board coordinates, flat [x, y, pressure, …]) drawn on screen.
     #[allow(clippy::too_many_arguments)]
     fn stroke_shape(&self, ctx: &egui::Context, out: &mut Vec<Shape>, pts: &[f64], size: f64, hl: bool, brush: Option<Brush>, color: Color32, opacity: f64) {
-        out.extend(Self::build_stroke_shape(ctx, self.cam, self.origin, is_dark(&self.board.meta().background), pts, size, hl, brush, color, opacity));
+        out.extend(Self::build_stroke_shape(ctx, self.cam, self.origin, is_dark(&self.board.meta().background), pts, size, hl, brush, color, opacity, 0.0));
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn build_stroke_shape(ctx: &egui::Context, cam: Camera, origin: Pos2, dark_bg: bool, pts: &[f64], size: f64, hl: bool, brush: Option<Brush>, color: Color32, opacity: f64) -> Vec<Shape> {
-        let Some((prims, place)) = Self::stroke_prims(cam, origin, dark_bg, pts, size, hl, brush, color, opacity, ctx.pixels_per_point()) else { return Vec::new() };
+    fn build_stroke_shape(ctx: &egui::Context, cam: Camera, origin: Pos2, dark_bg: bool, pts: &[f64], size: f64, hl: bool, brush: Option<Brush>, color: Color32, opacity: f64, tilt: f32) -> Vec<Shape> {
+        let Some((prims, place)) = Self::stroke_prims(cam, origin, dark_bg, pts, size, hl, brush, color, opacity, ctx.pixels_per_point(), tilt) else { return Vec::new() };
         crate::paint::brush_meshes(ctx, prims, cam.z as f32, place).into_iter().map(Shape::mesh).collect()
     }
 
     /// A stroke's primitives as it will be drawn (relative to its first point), and where they
     /// go on screen.
     #[allow(clippy::too_many_arguments)]
-    fn stroke_prims(cam: Camera, origin: Pos2, dark_bg: bool, pts: &[f64], size: f64, hl: bool, brush: Option<Brush>, color: Color32, opacity: f64, ppp: f32) -> Option<(Vec<crate::prims::Prim>, impl Fn(f32, f32) -> Pos2 + Copy)> {
+    fn stroke_prims(cam: Camera, origin: Pos2, dark_bg: bool, pts: &[f64], size: f64, hl: bool, brush: Option<Brush>, color: Color32, opacity: f64, ppp: f32, tilt: f32) -> Option<(Vec<crate::prims::Prim>, impl Fn(f32, f32) -> Pos2 + Copy)> {
         if pts.len() < 3 {
             return None;
         }
@@ -67,7 +67,7 @@ impl Editor {
         // As the stroke will be drawn: the default ink light on a dark board.
         let color = if color == DARK && dark_bg { crate::prims::LIGHT_INK } else { color };
         let a = if hl { 0.45 } else { 1.0 } * opacity.clamp(0.05, 1.0) as f32;
-        let prims = crate::prims::brush_prims(&rel, size, brush, hl, alpha(color, a * color.a() as f32 / 255.0), (x0, y0), Some(1.0 / (cam.z * ppp as f64)));
+        let prims = crate::prims::brush_prims_tilted(&rel, size, brush, hl, alpha(color, a * color.a() as f32 / 255.0), (x0, y0), Some(1.0 / (cam.z * ppp as f64)), tilt);
         let place = move |x: f32, y: f32| {
             let p = cam.to_screen(x as f64 + x0, y as f64 + y0);
             pos2(p.x as f32 + origin.x, p.y as f32 + origin.y)
@@ -306,14 +306,9 @@ impl Editor {
                     d.pieces_cam = cam_key;
                     d.pieces_pts = usize::MAX;
                 }
-                // The stroke's pieces are worked out afresh (cheap), but only those that changed
-                // (the last one, as it grows) are made into meshes again: the shape of each piece
-                // is exactly that of the finished stroke, so nothing moves when the pen lifts.
-                // (See-through ink crossing itself from one piece to another shows darker there
-                // until then: the finished stroke is drawn as one shape.)
                 if d.pieces_pts != d.pts.len() {
                     d.pieces_pts = d.pts.len();
-                    if let Some((prims, place)) = Self::stroke_prims(cam, origin, dark_bg, &d.pts, d.size, d.hl, d.brush, color, d.opacity, ctx.pixels_per_point()) {
+                    if let Some((prims, place)) = Self::stroke_prims(cam, origin, dark_bg, &d.pts, d.size, d.hl, d.brush, color, d.opacity, ctx.pixels_per_point(), d.tilt) {
                         let mut old = std::mem::take(&mut d.pieces).into_iter();
                         for prim in prims {
                             match old.next() {
@@ -329,8 +324,44 @@ impl Editor {
                 for (_, shapes) in &d.pieces {
                     out.extend(shapes.iter().cloned());
                 }
+                if self.prefs.symmetry != crate::prefs::Symmetry::Off {
+                    for m_pts in super::symmetry_pts(self.prefs.symmetry, d.sym_center, &d.pts) {
+                        out.extend(Self::build_stroke_shape(&ctx, cam, origin, dark_bg, &m_pts, d.size, d.hl, d.brush, color, d.opacity, d.tilt));
+                    }
+                }
             }
             _ => {}
+        }
+
+        // Symmetry guide axes when drawing with a pen or highlighter.
+        if self.prefs.symmetry != crate::prefs::Symmetry::Off && matches!(self.tool, Tool::Pen | Tool::Highlighter) {
+            use crate::prefs::Symmetry;
+            let sc = self.symmetry_center();
+            let c = self.sp(sc.x, sc.y);
+            let guide_stroke = Stroke::new(1.2, alpha(accent, 0.42));
+            let r = (self.size.0.hypot(self.size.1)) as f32;
+            let mut axes: Vec<(f32, f32)> = Vec::new();
+            match self.prefs.symmetry {
+                Symmetry::Off => {}
+                Symmetry::Vertical => axes.push((0.0, 1.0)),
+                Symmetry::Horizontal => axes.push((1.0, 0.0)),
+                Symmetry::Quad => {
+                    axes.push((0.0, 1.0));
+                    axes.push((1.0, 0.0));
+                }
+                Symmetry::Radial => {
+                    for k in 0..4 {
+                        let (s, cs) = (k as f32 * std::f32::consts::FRAC_PI_4).sin_cos();
+                        axes.push((cs, s));
+                    }
+                }
+            }
+            for (dx, dy) in axes {
+                let a = pos2(c.x - dx * r, c.y - dy * r);
+                let b = pos2(c.x + dx * r, c.y + dy * r);
+                out.extend(Shape::dashed_line(&[a, b], guide_stroke, 7.0, 6.0));
+            }
+            out.push(Shape::circle_stroke(c, 5.0, Stroke::new(1.4, alpha(accent, 0.55))));
         }
 
         for l in &self.guides {

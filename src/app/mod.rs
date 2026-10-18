@@ -889,12 +889,15 @@ mod picture {
         let id = store.create("Diagramma di flusso", None).unwrap();
         let mut screen: Option<board::BoardScreen> = None;
         let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
-        // TRATTO_SIZE=1300x800 for a smaller window, TRATTO_MINIMAP=br for the minimap put down
-        // in the bottom right corner.
+        // TRATTO_SIZE=1300x800 for a smaller window, TRATTO_MINIMAP=br (or tl, bl) for the minimap
+        // put down in the bottom right (top left, bottom left) corner.
         let size = std::env::var("TRATTO_SIZE").ok().and_then(|s| s.split_once('x').and_then(|(w, h)| Some(egui::vec2(w.parse().ok()?, h.parse().ok()?)))).unwrap_or(egui::vec2(1440.0, 900.0));
         let mut prefs = Prefs::default();
-        if std::env::var("TRATTO_MINIMAP").is_ok_and(|v| v == "br") {
-            prefs.minimap_at = Some([1.0, 1.0]);
+        match std::env::var("TRATTO_MINIMAP").as_deref() {
+            Ok("br") => prefs.minimap_at = Some([1.0, 1.0]),
+            Ok("tl") => prefs.minimap_at = Some([0.0, 0.0]),
+            Ok("bl") => prefs.minimap_at = Some([0.0, 1.0]),
+            _ => {}
         }
         // TRATTO_CLEAN=1: both side panels closed and no minimap (FigJam's layout).
         if std::env::var_os("TRATTO_CLEAN").is_some() {
@@ -1348,6 +1351,59 @@ mod picture {
         harness.run_steps(3);
         let at = out.borrow().expect("it is on the board");
         assert!(at.distance(to) < 2.0, "centred where it was let go: {at:?}");
+    }
+
+    /// The minimap, wherever it was put, never ends up under a panel or the pills at the top.
+    #[test]
+    fn the_minimap_keeps_clear_of_panels_and_pills() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let id = store.create("Minimappa", None).unwrap();
+        let mut screen: Option<board::BoardScreen> = None;
+        let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
+        let set: std::rc::Rc<std::cell::Cell<Option<(bool, bool, [f32; 2])>>> = Default::default();
+        let next = set.clone();
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui(move |ui| {
+            let ctx = ui.ctx().clone();
+            if screen.is_none() {
+                ui::install_fonts(&ctx);
+                ui::setup(&ctx, Theme::new(false, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), 1.0);
+                screen = Some(board::BoardScreen::open(&ctx, &store, &id, Prefs { minimap: true, ..Prefs::default() }, None).unwrap());
+                return;
+            }
+            let b = screen.as_mut().unwrap();
+            if let Some((left, right, at)) = next.take() {
+                (b.editor.prefs.left_panel, b.editor.prefs.right_panel, b.editor.prefs.minimap_at) = (left, right, Some(at));
+            }
+            b.ui(ui, &mut toasts, &mut dialogs);
+        });
+        let mut wrong = Vec::new();
+        for (left, right) in [(false, false), (true, false), (false, true), (true, true)] {
+            for at in [[0.0, 0.0], [0.0, 0.5], [0.0, 1.0], [1.0, 0.0], [1.0, 0.5], [0.5, 0.0]] {
+                set.set(Some((left, right, at)));
+                // Settled (the picture of the map is drawn on another thread).
+                for _ in 0..90 {
+                    harness.step();
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                let rect = |k: &str| harness.ctx.data(|d| d.get_temp::<egui::Rect>(Id::new(k)));
+                let Some(map) = rect("minimap-rect") else {
+                    wrong.push(format!("{left} {right} {at:?}: no minimap"));
+                    continue;
+                };
+                let mut over = vec![("left pill", rect("left-pill-rect")), ("right pill", rect("right-pill-rect"))];
+                for (name, area) in [("left panel", "left-panel"), ("right panel", "right-panel")] {
+                    over.push((name, harness.ctx.memory(|m| m.area_rect(Id::new(area))).filter(|_| if name == "left panel" { left } else { right })));
+                }
+                for (name, r) in over {
+                    if let Some(r) = r
+                        && r.intersects(map)
+                    {
+                        wrong.push(format!("panels {left}/{right}, minimap at {at:?}: under the {name} ({map:?} / {r:?})"));
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
     /// The panels close and come back at the first click, however soon one follows the other

@@ -12,7 +12,8 @@ use crate::ink::{RULER_LENGTH, on_ruler, on_ruler_pill, ruler_snapper};
 pub struct InputState {
     kind: Option<PointerKind>,
     pointer: u64,
-    force: Option<f32>,
+    pub(crate) force: Option<f32>,
+    pub(crate) tilt: f32,
     /// A finger or pen touched down in this frame: the press that follows is that touch.
     touch_began: Option<(u64, Option<f32>)>,
     touch_pointer: Option<u64>,
@@ -30,6 +31,8 @@ pub struct InputState {
     pub(crate) pointer_at: Option<Pos2>,
     /// The sticky-note pad in the toolbar: dropping a sticky note back onto it deletes the note.
     pub(crate) sticky_trash: Option<egui::Rect>,
+    /// The trash bin in the toolbar: dropping any selected element onto it deletes the selection.
+    pub(crate) trash_rect: Option<egui::Rect>,
 }
 
 struct PendingUp {
@@ -55,11 +58,13 @@ fn kind_of(touch: u64) -> PointerKind {
 /// The pointer id of a pen moving the mouse pointer (touch ids are the system's, never this).
 const MOUSE_PEN: u64 = u64::MAX - 1;
 
-/// A pen touch's pressure: its own force, or the pen's pointer events' when the browser leaves
-/// the force out (or gives 0 for a pen that is touching).
+/// A pen touch's pressure: its own force, or the pen's pointer events' when the browser or OS
+/// leaves the force out (or gives 0 for a pen that is touching).
 fn pen_force(id: u64, force: Option<f32>) -> Option<f32> {
-    if crate::pen::state(id).is_some() && force.is_none_or(|f| f <= 0.0) {
-        return crate::pen::touch_pressure().or(force);
+    if let Some(st) = crate::pen::state(id) {
+        if force.is_none_or(|f| f <= 0.0) {
+            return st.pressure.or_else(crate::pen::touch_pressure).or(force);
+        }
     }
     force
 }
@@ -69,12 +74,18 @@ impl Editor {
     /// panel; `keys`: no text field or menu has the keyboard.
     pub fn handle_input(&mut self, ctx: &egui::Context, hovered: bool, keys: bool, double_click: Option<Pos2>) {
         self.input.sticky_trash = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("sticky-stack-rect")));
+        self.input.trash_rect = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("trash-slot-rect")));
         let mut events = ctx.input(|i| i.events.clone());
-        // In a browser a finger's press comes just before its touch: the touch first, so the
-        // press knows it is a finger or a pen (as with the desktop app), not a mouse.
+        // `egui-winit` emits `PointerMoved` (and on `Start`, `PointerButton`) BEFORE `Event::Touch`.
+        // Move `TouchPhase::Start` and `TouchPhase::Move` ahead of their paired pointer events so
+        // `on_down` and `on_move` always see the current touch id, pen pressure, and stylus tilt.
         for i in 1..events.len() {
-            if matches!(events[i], Event::Touch { phase: TouchPhase::Start, .. }) && matches!(events[i - 1], Event::PointerButton { pressed: true, .. }) {
-                events.swap(i - 1, i);
+            if matches!(events[i], Event::Touch { phase: TouchPhase::Start | TouchPhase::Move, .. }) {
+                let mut j = i;
+                while j > 0 && matches!(events[j - 1], Event::PointerMoved(_) | Event::PointerButton { pressed: true, .. }) {
+                    events.swap(j - 1, j);
+                    j -= 1;
+                }
             }
         }
         let t = now();
@@ -136,6 +147,7 @@ impl Editor {
                         self.input.kind = Some(kind);
                         self.input.pointer = pointer;
                         self.input.force = force;
+                        self.input.tilt = mouse_pen.map(|p| p.tilt()).or_else(|| crate::pen::state(pointer).map(|p| p.tilt())).unwrap_or(0.0);
                         if kind != PointerKind::Mouse {
                             self.input.touch_pointer = Some(pointer);
                         }
@@ -169,11 +181,18 @@ impl Editor {
                     self.input.pointer_at = Some(pos);
                     let m = ctx.input(|i| i.modifiers);
                     let t = at(&mut nth);
-                    if self.input.down
-                        && self.input.pointer == MOUSE_PEN
-                        && let Some(p) = crate::pen::mouse_pen()
-                    {
-                        self.input.force = Some(p.pressure);
+                    if self.input.down {
+                        if let Some(p) = crate::pen::mouse_pen() {
+                            self.input.force = Some(p.pressure);
+                            self.input.tilt = p.tilt();
+                        } else if let Some(id) = self.input.touch_pointer
+                            && let Some(st) = crate::pen::state(id)
+                        {
+                            if let Some(pr) = st.pressure.or_else(crate::pen::touch_pressure) {
+                                self.input.force = Some(pr);
+                            }
+                            self.input.tilt = st.tilt();
+                        }
                     }
                     // Writing, erasing or drawing a lasso with the mouse (or a tablet's pen moving
                     // the mouse pointer): first the positions the system folded into this move, so
@@ -274,6 +293,17 @@ impl Editor {
             });
         }
         self.tick();
+        if matches!(&self.gesture, Some(Gesture::Draw(g)) if self.prefs.quick_shape && !g.quick_shape_snapped && g.pts.len() >= 18) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(80));
+        }
+        let move_pos = matches!(&self.gesture, Some(Gesture::Move { moved: true, .. })).then_some(self.input.pointer_at).flatten();
+        ctx.data_mut(|d| {
+            if let Some(p) = move_pos {
+                d.insert_temp(egui::Id::new("board-move-pos"), p);
+            } else {
+                d.remove::<Pos2>(egui::Id::new("board-move-pos"));
+            }
+        });
         if hovered || self.gesture.is_some() {
             ctx.set_cursor_icon(self.cursor());
         }
@@ -315,6 +345,7 @@ impl Editor {
             TouchPhase::Move => {
                 if Some(id) == self.input.touch_pointer {
                     self.input.force = pen_force(id, force);
+                    self.input.tilt = crate::pen::state(id).map_or(0.0, |p| p.tilt());
                 }
                 if pen {
                     self.last_pen = t;
@@ -539,7 +570,7 @@ impl Editor {
                     }
                     return;
                 }
-                if tool == Tool::Lasso || (self.inside_selection(p) && self.selected().len() > 1) {
+                if tool == Tool::Lasso || (self.inside_selection(p) && !self.selection.is_empty()) {
                     if !ro {
                         self.start_move(p, s, m.alt);
                     }
@@ -849,7 +880,10 @@ impl Editor {
             Gesture::Move { moved, edit, .. } => {
                 let sel = self.selected();
                 let screen_pos = s + self.origin.to_vec2();
-                if moved && !sel.is_empty() && sel.iter().all(|e| e.sticky().is_some()) && self.input.sticky_trash.is_some_and(|r| r.expand2(egui::vec2(18.0, 56.0)).contains(screen_pos)) {
+                let dropped_sticky = sel.iter().all(|e| e.sticky().is_some())
+                    && self.input.sticky_trash.is_some_and(|r| r.expand2(egui::vec2(18.0, 56.0)).contains(screen_pos));
+                let dropped_trash = self.input.trash_rect.is_some_and(|r| r.expand2(egui::vec2(22.0, 48.0)).contains(screen_pos));
+                if moved && !sel.is_empty() && (dropped_sticky || dropped_trash) {
                     self.finish_gesture();
                     self.remove();
                     return;

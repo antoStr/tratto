@@ -58,10 +58,10 @@ fn centre_line(pts: &[f32], t: f64, radius: impl Fn(f32, f64, f64) -> f64) -> Ve
 fn brush_width(brush: Brush, p: f32, from_start: f64, to_end: f64, size: f64) -> f64 {
     let p = (p >= 0.0).then(|| p.clamp(0.0, 1.0) as f64);
     match brush {
-        Brush::Pen => p.map_or(1.0, |p| 0.12 + 1.38 * p),
-        Brush::Pencil => p.map_or(0.9, |p| 0.55 + 0.6 * p),
-        Brush::Marker => 1.0,
-        Brush::Calligraphy => p.map_or(1.0, |p| 0.45 + 0.75 * p),
+        Brush::Pen => p.map_or(1.0, |p| 0.14 + 1.36 * p),
+        Brush::Pencil => p.map_or(0.9, |p| 0.28 + 0.92 * p),
+        Brush::Marker => p.map_or(1.0, |p| 0.68 + 0.44 * p),
+        Brush::Calligraphy => p.map_or(1.0, |p| 0.24 + 1.06 * p),
         Brush::Brush => {
             // Pointed ends: it narrows over the first and last two and a half widths.
             let l = size * 2.5;
@@ -71,8 +71,23 @@ fn brush_width(brush: Brush, p: f32, from_start: f64, to_end: f64, size: f64) ->
             };
             p.map_or(1.0, |p| 0.06 + 1.54 * p) * end(from_start).min(end(to_end))
         }
-        Brush::Airbrush => p.map_or(1.0, |p| 0.6 + 0.6 * p),
-        Brush::Chalk => p.map_or(1.0, |p| 0.7 + 0.5 * p),
+        Brush::Airbrush => p.map_or(1.0, |p| 0.35 + 0.95 * p),
+        Brush::Chalk => p.map_or(1.0, |p| 0.38 + 0.87 * p),
+        Brush::Smudge => p.map_or(1.0, |p| 0.45 + 0.75 * p),
+    }
+}
+
+/// How much stylus tilt (`0.0..=1.0`) broadens a stroke for shading brushes.
+fn tilt_scale(brush: Brush, tilt: f32) -> f64 {
+    let t = tilt.clamp(0.0, 1.0) as f64;
+    if t <= 0.05 {
+        return 1.0;
+    }
+    match brush {
+        Brush::Pencil | Brush::Chalk => 1.0 + 0.65 * t,
+        Brush::Brush | Brush::Airbrush | Brush::Smudge => 1.0 + 0.45 * t,
+        Brush::Marker => 1.0 + 0.25 * t,
+        Brush::Pen | Brush::Calligraphy => 1.0 + 0.12 * t,
     }
 }
 
@@ -83,11 +98,11 @@ pub fn reach(ink: &crate::model::Ink) -> f64 {
         // Older strokes: up to 0.71 with pressure (asked often, so not checked point by point:
         // a stroke without pressure just gets a little more room).
         None => 0.71,
-        Some(Brush::Pen) => 0.75,
-        Some(Brush::Brush) => 0.8,
-        Some(Brush::Pencil) => 0.58,
-        Some(Brush::Marker) => 0.5,
-        Some(Brush::Calligraphy | Brush::Airbrush | Brush::Chalk) => 0.6,
+        Some(Brush::Pen) => 0.85,
+        Some(Brush::Brush) => 0.95,
+        Some(Brush::Pencil) => 0.85,
+        Some(Brush::Marker) => 0.65,
+        Some(Brush::Calligraphy | Brush::Airbrush | Brush::Chalk | Brush::Smudge) => 0.85,
     }
 }
 
@@ -98,6 +113,12 @@ pub const PIECE: usize = 64;
 /// the union of round dabs and bands as for the pen, a piece every `PIECE` points, or the sweep
 /// of a flat nib for calligraphy (in one piece).
 pub fn brush_paths(pts: &[f32], size: f64, brush: Brush) -> Vec<Path> {
+    brush_paths_tilted(pts, size, brush, 0.0)
+}
+
+/// Same as `brush_paths`, with optional stylus tilt (`0.0..=1.0`) broadening shading brushes.
+pub fn brush_paths_tilted(pts: &[f32], size: f64, brush: Brush, tilt: f32) -> Vec<Path> {
+    let size = size * tilt_scale(brush, tilt);
     if size <= 0.0 || !size.is_finite() || pts.len() < 3 {
         return Vec::new();
     }
@@ -197,12 +218,20 @@ const SPACING: f64 = 0.1;
 /// of their width apart, building up where they overlap. Never closer than `min_step` (on
 /// screen, about a pixel): fewer, stronger dabs then give the same build-up.
 pub fn brush_dabs(pts: &[f32], size: f64, min_step: f64) -> Vec<[f32; 4]> {
+    brush_dabs_tilted(pts, size, min_step, 0.0)
+}
+
+/// Same as `brush_dabs`, with optional stylus tilt (`0.0..=1.0`) widening and softening the spray.
+pub fn brush_dabs_tilted(pts: &[f32], size: f64, min_step: f64, tilt: f32) -> Vec<[f32; 4]> {
+    let t = tilt.clamp(0.0, 1.0) as f64;
+    let size = size * tilt_scale(Brush::Airbrush, tilt);
     let mut out = Vec::new();
     if size <= 0.0 || !size.is_finite() || pts.len() < 3 {
         return out;
     }
     // The centre line with the alpha in place of the radius, then the radius alongside.
-    let flow = |p: f32| FLOW * if p < 0.0 { 0.75 } else { 0.25 + 0.75 * p.clamp(0.0, 1.0) as f64 };
+    let flow_scale = 1.0 - 0.25 * t;
+    let flow = |p: f32| FLOW * flow_scale * if p < 0.0 { 0.75 } else { 0.18 + 0.82 * p.clamp(0.0, 1.0) as f64 };
     let c = centre_line(pts, 0.85, |p, _, _| size / 2.0 * brush_width(Brush::Airbrush, p, 0.0, 0.0, size));
     let a = centre_line(pts, 0.85, |p, _, _| flow(p));
     if c.is_empty() || a.len() != c.len() {
@@ -258,8 +287,10 @@ fn union_parts(c: &[[f64; 3]], size: f64, every: usize) -> Vec<Path> {
     let heading = |a: [f64; 3], b: [f64; 3]| (b[1] - a[1]).atan2(b[0] - a[0]);
     for i in 0..c.len() {
         dab[i] = i == 0 || i + 1 == c.len() || {
+            let d0 = (c[i][0] - c[i - 1][0]).hypot(c[i][1] - c[i - 1][1]);
+            let d1 = (c[i + 1][0] - c[i][0]).hypot(c[i + 1][1] - c[i][1]);
             let turn = (heading(c[i], c[i + 1]) - heading(c[i - 1], c[i]) + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
-            turn.abs() > 0.35 || (c[i + 1][2] - c[i][2]).abs() + (c[i][2] - c[i - 1][2]).abs() > size * 0.04
+            d0 <= 1e-6 || d1 <= 1e-6 || turn.abs() > 0.35 || (c[i + 1][2] - c[i][2]).abs() + (c[i][2] - c[i - 1][2]).abs() > size * 0.04
         };
     }
     let mut bands = Vec::with_capacity(c.len());
@@ -290,7 +321,7 @@ fn union_parts(c: &[[f64; 3]], size: f64, every: usize) -> Vec<Path> {
     }
     let left = |i: usize| {
         let (dx, dy) = (c[i + 1][0] - c[i][0], c[i + 1][1] - c[i][1]);
-        let d = dx.hypot(dy);
+        let d = dx.hypot(dy).max(1e-9);
         (-dy / d, dx / d)
     };
     // A point without a dab: the bands either side end on the same cross-section, along the
@@ -315,7 +346,17 @@ fn union_parts(c: &[[f64; 3]], size: f64, every: usize) -> Vec<Path> {
                 *e = shared(j);
             }
         }
-        let [a, b] = ends;
+        let [mut a, mut b] = ends;
+        // On tight curves where consecutive bisectors cross on the inner side, prevent the inner
+        // edge from reversing direction and forming a negative-winding bowtie hole.
+        if (b[0] - a[0]) * ux + (b[1] - a[1]) * uy < 0.0 {
+            let (mx, my) = ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5);
+            (a[0], a[1], b[0], b[1]) = (mx, my, mx, my);
+        }
+        if (b[2] - a[2]) * ux + (b[3] - a[3]) * uy < 0.0 {
+            let (mx, my) = ((a[2] + b[2]) * 0.5, (a[3] + b[3]) * 0.5);
+            (a[2], a[3], b[2], b[3]) = (mx, my, mx, my);
+        }
         paths[piece(i)].add_polygon(&[a[0], a[1], b[0], b[1], b[2], b[3], a[2], a[3]]);
     }
     paths
@@ -382,8 +423,9 @@ fn smooth3(pts: &[[f64; 3]], size: f64) -> Vec<[f64; 3]> {
     out
 }
 
-/// The "1€ filter" (Casiez et al.): heavy smoothing when the pen moves slowly, where tremor is
-/// visible, and almost none when it moves fast. Works in screen pixels.
+/// The "1€ filter" (Casiez et al.) plus an optional Procreate-style StreamLine rope/spring
+/// stabilizer: heavy smoothing when the pen moves slowly, where tremor is visible, and smooth
+/// calligraphic pull when `streamline > 0`. Works in screen pixels.
 pub struct OneEuro {
     x: f64,
     y: f64,
@@ -392,11 +434,25 @@ pub struct OneEuro {
     t: f64,
     min_cutoff: f64,
     beta: f64,
+    streamline: f64,
 }
 
 impl OneEuro {
     pub fn new(min_cutoff: f64) -> Self {
-        OneEuro { x: 0.0, y: 0.0, dx: 0.0, dy: 0.0, t: -1.0, min_cutoff, beta: 0.012 }
+        Self::with_streamline(min_cutoff, 0.0)
+    }
+    pub fn with_streamline(min_cutoff: f64, streamline: f64) -> Self {
+        let s = streamline.clamp(0.0, 1.0);
+        OneEuro {
+            x: 0.0,
+            y: 0.0,
+            dx: 0.0,
+            dy: 0.0,
+            t: -1.0,
+            min_cutoff: (min_cutoff * (1.0 - 0.65 * s)).max(0.25),
+            beta: 0.012 * (1.0 - 0.75 * s),
+            streamline: s,
+        }
     }
     fn alpha(cutoff: f64, dt: f64) -> f64 {
         let tau = 1.0 / (std::f64::consts::TAU * cutoff);
@@ -409,12 +465,26 @@ impl OneEuro {
         }
         let dt = ((t_ms - self.t) / 1000.0).max(0.001);
         self.t = t_ms;
+        // Virtual rope deadzone when StreamLine is active: absorbs tiny hand tremors before pulling.
+        let ( mut tx, mut ty) = (x, y);
+        if self.streamline > 0.01 {
+            let rope = self.streamline * 8.0;
+            let dist = (x - self.x).hypot(y - self.y);
+            if dist <= rope {
+                tx = self.x + (x - self.x) * 0.15;
+                ty = self.y + (y - self.y) * 0.15;
+            } else {
+                let pull = (dist - rope) / dist;
+                tx = self.x + (x - self.x) * pull;
+                ty = self.y + (y - self.y) * pull;
+            }
+        }
         let ad = Self::alpha(1.0, dt);
-        self.dx += ad * ((x - self.x) / dt - self.dx);
-        self.dy += ad * ((y - self.y) / dt - self.dy);
-        let a = Self::alpha(self.min_cutoff + self.beta * self.dx.hypot(self.dy), dt);
-        self.x += a * (x - self.x);
-        self.y += a * (y - self.y);
+        self.dx += ad * ((tx - self.x) / dt - self.dx);
+        self.dy += ad * ((ty - self.y) / dt - self.dy);
+        let a = Self::alpha(self.min_cutoff + self.beta * self.dx.hypot(self.dy), dt) * (1.0 - 0.62 * self.streamline);
+        self.x += a * (tx - self.x);
+        self.y += a * (ty - self.y);
         pt(self.x, self.y)
     }
 }

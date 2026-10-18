@@ -567,10 +567,15 @@ impl PieceKey {
 /// board (it lays the grain); `pixel` (a device pixel in board units, on screen) keeps the
 /// airbrush from laying more dabs than can be seen.
 pub fn brush_prims(points: &[f32], size: f64, brush: Option<Brush>, hl: bool, color: Color32, origin: (f64, f64), pixel: Option<f64>) -> Vec<Prim> {
+    brush_prims_tilted(points, size, brush, hl, color, origin, pixel, 0.0)
+}
+
+/// Same as `brush_prims`, with optional stylus tilt (`0.0..=1.0`).
+pub fn brush_prims_tilted(points: &[f32], size: f64, brush: Option<Brush>, hl: bool, color: Color32, origin: (f64, f64), pixel: Option<f64>, tilt: f32) -> Vec<Prim> {
     use crate::brush::{GRAIN_TILE, Grain};
-    use crate::ink::{brush_dabs, brush_paths};
+    use crate::ink::{brush_dabs_tilted, brush_paths_tilted};
     let offset = [origin.0.rem_euclid(GRAIN_TILE as f64) as f32, origin.1.rem_euclid(GRAIN_TILE as f64) as f32];
-    let pieces = |b: Brush| brush_paths(points, size, b).into_iter();
+    let pieces = |b: Brush| brush_paths_tilted(points, size, b, tilt).into_iter();
     match brush {
         None => vec![Prim::Fill { path: stroke_path(points, size, hl), color }],
         Some(g @ (Brush::Pencil | Brush::Chalk)) => {
@@ -578,7 +583,9 @@ pub fn brush_prims(points: &[f32], size: f64, brush: Option<Brush>, hl: bool, co
             pieces(g).map(|path| Prim::Grain { path, color, grain, offset }).collect()
         }
         // In pieces too, so a stroke being drawn remakes only its last one.
-        Some(Brush::Airbrush) => brush_dabs(points, size, pixel.unwrap_or(0.0) * 0.75).chunks(256).map(|d| Prim::Dabs { dabs: d.to_vec(), color }).collect(),
+        Some(Brush::Airbrush) => brush_dabs_tilted(points, size, pixel.unwrap_or(0.0) * 0.75, tilt).chunks(256).map(|d| Prim::Dabs { dabs: d.to_vec(), color }).collect(),
+        // Sfumino: soft overlapping blending dabs that pick up and diffuse board colours.
+        Some(Brush::Smudge) => brush_dabs_tilted(points, size * 1.15, pixel.unwrap_or(0.0) * 0.65, tilt).chunks(256).map(|d| Prim::Dabs { dabs: d.to_vec(), color: color.gamma_multiply(0.55) }).collect(),
         // Felt tip ink lets a little of what is under it through: crossings come out darker.
         Some(Brush::Marker) => pieces(Brush::Marker).map(|path| Prim::Fill { path, color: color.gamma_multiply(0.88) }).collect(),
         Some(b) => pieces(b).map(|path| Prim::Fill { path, color }).collect(),
