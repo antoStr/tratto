@@ -61,6 +61,8 @@ pub struct BoardUi {
     pub zen_near: f64,
     /// The board's size on screen last frame (None before the first).
     pub seen_size: Option<(f64, f64)>,
+    /// Rows being dragged in the layers panel.
+    pub layer_drag: Option<super::panels::LayerDrag>,
 }
 
 impl Default for BoardUi {
@@ -91,6 +93,7 @@ impl Default for BoardUi {
             zen_fullscreen: false,
             zen_near: 0.0,
             seen_size: None,
+            layer_drag: None,
         }
     }
 }
@@ -575,6 +578,14 @@ impl BoardScreen {
         } else {
             Rect::from_min_max(rect.min + vec2((panel + GAP) * kl.clamp(0.0, 1.0), 0.0), rect.max - vec2((panel + GAP) * kr.clamp(0.0, 1.0), 0.0))
         };
+        // The same part once the panels have finished moving. What comes as a panel goes (the
+        // pill that brings it back) is there at once, not riding along with the panel: a button
+        // still sliding takes the click meant for it to the board.
+        let rest = if is_mobile {
+            stage
+        } else {
+            Rect::from_min_max(stage.min + vec2(if show_left { panel + GAP } else { 0.0 }, 0.0), stage.max - vec2(if show_right { panel + GAP } else { 0.0 }, 0.0))
+        };
 
         let resp = ui.interact(stage, Id::new("board"), Sense::click_and_drag());
         let ed = &mut self.editor;
@@ -685,12 +696,13 @@ impl BoardScreen {
                 }
             }
             if !left_shown && !phone_panel {
-                if let Some(a) = super::panels::focus_pill(&ctx, rect, self, dialogs) {
+                if let Some(a) = super::panels::focus_pill(&ctx, rest, self, dialogs) {
                     action = Some(a);
                 }
             }
             if !right_shown && !self.editor.prefs.focus && !phone_panel {
-                super::panels::right_pill(&ctx, rect, self);
+                let mini = (self.editor.prefs.minimap && !is_mobile).then(|| super::toolbar::minimap_home(rest, &self.editor.prefs));
+                super::panels::right_pill(&ctx, rest, mini, self);
             }
         }
         if !zen {
@@ -1030,7 +1042,12 @@ impl BoardScreen {
             ui::menu_frame(&t).show(ui, |ui| {
                 ui.set_min_width(180.0);
                 ui.spacing_mut().item_spacing.y = 0.0;
-                close = super::panels::selection_menu(ui, &mut self.editor, &mut self.ui);
+                // Taller than the window (big text, a small window): it scrolls instead of going
+                // off the bottom.
+                let room = (ui.ctx().content_rect().height() - 32.0).max(120.0);
+                egui::ScrollArea::vertical().max_height(room).auto_shrink([true, true]).show(ui, |ui| {
+                    close = super::panels::selection_menu(ui, &mut self.editor, &mut self.ui);
+                });
             });
         });
         let clicked_out = ctx.input(|i| i.pointer.any_pressed()) && !resp.response.contains_pointer() && resp.response.ctx.input(|i| i.pointer.press_origin()).is_some_and(|p| !resp.response.rect.contains(p));

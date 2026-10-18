@@ -128,17 +128,20 @@ fn dashed(path: &LPath, on: f32, off: f32, tol: f32) -> LPath {
     b.build()
 }
 
-/// One mesh of an element: coloured, or an image.
+/// One mesh of an element: coloured, an image, or coloured through a brush's grain.
 struct Part {
     image: Option<(ImageKey, f32)>,
+    /// Pencil and chalk: `uv` holds each vertex's place on the grain.
+    grain: Option<crate::brush::Grain>,
     pos: Vec<[f32; 2]>,
     col: Vec<Color32>,
     idx: Vec<u32>,
+    uv: Vec<[f32; 2]>,
 }
 
 impl Part {
     fn colored() -> Part {
-        Part { image: None, pos: Vec::new(), col: Vec::new(), idx: Vec::new() }
+        Part { image: None, grain: None, pos: Vec::new(), col: Vec::new(), idx: Vec::new(), uv: Vec::new() }
     }
     fn append(&mut self, buf: &VertexBuffers<[f32; 2], u32>, color: Color32) {
         let base = self.pos.len() as u32;
@@ -324,19 +327,40 @@ pub struct Painter {
     born: HashMap<String, f64>,
     /// Widgets showing a change: how they were drawn before it, and when it came.
     changing: HashMap<String, (Arc<El>, f64)>,
+    /// Meshes made so far (tests count them).
+    pub builds: u64,
+    /// The last frame's shapes, and what they were made of: while nothing changes (writing on a
+    /// still board, the pointer moving over it) they are given again instead of being made anew,
+    /// which costs a copy of every vertex on screen each frame.
+    last: Option<(Seen, Vec<Shape>, bool, Vec<Arc<El>>)>,
+    /// A picture was still loading in the last frame (its placeholder must give way to it).
+    loading: bool,
+}
+
+/// What a frame of the board shows, besides its elements (those are compared by identity, a
+/// changed element being a new one, and kept alive meanwhile so no new one can take an old
+/// one's place in memory).
+#[derive(PartialEq)]
+struct Seen {
+    view: [u64; 9],
+    ppp: u32,
+    editing: Option<String>,
+    cell: Option<(usize, usize)>,
+    dark: bool,
+    settled: bool,
 }
 
 impl Painter {
     pub fn new(images: Images) -> Painter {
-        Painter { cache: HashMap::new(), erased: HashMap::new(), zoom_at: (0.0, 0.0), glyphs: HashMap::new(), fill: FillTessellator::new(), stroke: StrokeTessellator::new(), images, frame: 0, last_len: (0, 0), known: Default::default(), born: HashMap::new(), changing: HashMap::new() }
+        Painter { cache: HashMap::new(), erased: HashMap::new(), zoom_at: (0.0, 0.0), glyphs: HashMap::new(), fill: FillTessellator::new(), stroke: StrokeTessellator::new(), images, frame: 0, last_len: (0, 0), known: Default::default(), born: HashMap::new(), changing: HashMap::new(), builds: 0, last: None, loading: false }
     }
 
     /// Paints the elements that are on screen; returns whether any visible element is.
     pub fn paint(&mut self, ctx: &egui::Context, out: &mut Vec<Shape>, els: &[Arc<El>], f: &Frame) -> bool {
-        self.frame += 1;
         self.images.poll(ctx);
         if std::mem::take(&mut self.images.changed) {
             self.erased.clear();
+            self.last = None;
         }
         let z = f.cam.z;
         let pixel = 1.0 / (z * f.pixels_per_point as f64);
@@ -344,6 +368,9 @@ impl Painter {
         let mut mesh = Mesh::default();
         mesh.vertices.reserve(self.last_len.0);
         mesh.indices.reserve(self.last_len.1);
+        // Pencil and chalk strokes, through their grain: their own mesh, flushed in turn with
+        // the coloured one so everything stays in stacking order.
+        let mut grained = Mesh::default();
         let mut len = (0, 0);
         let mut on_screen = false;
         let now = crate::platform::now_ms();
@@ -365,6 +392,30 @@ impl Painter {
             self.born.retain(|_, t| now - *t < POP_MS);
             ctx.request_repaint();
         }
+        // Nothing moved, changed or is playing since the last frame: the same shapes again.
+        let seen = Seen {
+            view: [f.cam.x.to_bits(), f.cam.y.to_bits(), f.cam.z.to_bits(), f.view.x.to_bits(), f.view.y.to_bits(), f.view.w.to_bits(), f.view.h.to_bits(), f.origin.x.to_bits() as u64, f.origin.y.to_bits() as u64],
+            ppp: f.pixels_per_point.to_bits(),
+            editing: f.editing.map(str::to_string),
+            cell: f.editing_cell,
+            dark: f.dark_board,
+            settled,
+        };
+        if self.born.is_empty()
+            && self.changing.is_empty()
+            && !self.loading
+            && f.glides.is_none_or(|g| g.is_empty())
+            && let Some((last, shapes, on, last_els)) = &self.last
+            && *last == seen
+            && last_els.len() == els.len()
+            && last_els.iter().zip(els).all(|(a, b)| Arc::ptr_eq(a, b))
+        {
+            out.extend(shapes.iter().cloned());
+            return *on;
+        }
+        self.frame += 1;
+        self.loading = false;
+        let start = out.len();
         for el in els {
             if el.hidden || !intersects(&aabb(el), &f.view) {
                 continue;
@@ -372,6 +423,7 @@ impl Painter {
             on_screen = true;
             if !el.erase.is_empty() {
                 flush(out, &mut mesh);
+                flush(out, &mut grained);
                 self.paint_erased(ctx, out, el, f, settled);
                 continue;
             }
@@ -402,6 +454,7 @@ impl Painter {
                 _ => {
                     let before = change.as_ref().and_then(|(old, t0)| old.widget().map(|w| (w, ((now - t0) / crate::widgets::ANIM_MS) as f32)));
                     let env = Env { zoom: z, pixel: Some(pixel), hairline: false, editing: f.editing, comments: true, editing_cell: f.editing_cell, before, dark_board: f.dark_board };
+                    self.builds += 1;
                     let built = Rc::new(self.build(el, &env, tolerance(bucket, f.pixels_per_point)));
                     self.cache.insert(el.id.clone(), Entry { el: el.clone(), key, built: built.clone(), used: self.frame });
                     built
@@ -421,14 +474,27 @@ impl Painter {
                 if k == 1.0 { pos2(x as f32, y as f32) } else { pos2((cx + (x - cx) * k as f64) as f32, (cy + (y - cy) * k as f64) as f32) }
             };
             for part in &built.parts {
-                match &part.image {
-                    None => {
+                match (&part.image, part.grain) {
+                    (None, None) => {
+                        flush(out, &mut grained);
                         let base = mesh.vertices.len() as u32;
                         mesh.vertices.extend(part.pos.iter().zip(&part.col).map(|(&p, &c)| Vertex { pos: place(p), uv: WHITE_UV, color: if fade < 1.0 { c.gamma_multiply(fade) } else { c } }));
                         mesh.indices.extend(part.idx.iter().map(|i| i + base));
                         len = (len.0 + part.pos.len(), len.1 + part.idx.len());
                     }
-                    Some((key, alpha)) => {
+                    (None, Some(g)) => {
+                        flush(out, &mut mesh);
+                        let tex = crate::brush::grain_texture(ctx, g);
+                        if grained.texture_id != tex {
+                            flush(out, &mut grained);
+                            grained = Mesh::with_texture(tex);
+                        }
+                        let base = grained.vertices.len() as u32;
+                        grained.vertices.extend(part.pos.iter().zip(&part.col).zip(&part.uv).map(|((&p, &c), &uv)| Vertex { pos: place(p), uv: pos2(uv[0], uv[1]), color: if fade < 1.0 { c.gamma_multiply(fade) } else { c } }));
+                        grained.indices.extend(part.idx.iter().map(|i| i + base));
+                    }
+                    (Some((key, alpha)), _) => {
+                        flush(out, &mut grained);
                         let corners: Vec<Pos2> = part.pos.iter().map(|&p| place(p)).collect();
                         match self.images.texture(ctx, key) {
                             Some(Ok(tex)) => {
@@ -443,6 +509,7 @@ impl Painter {
                             }
                             // Loading, or broken: a soft placeholder of the same size.
                             other => {
+                                self.loading |= other.is_none();
                                 let c = if other.is_some() { Color32::from_rgba_unmultiplied(242, 72, 34, 20) } else { Color32::from_rgba_unmultiplied(128, 128, 128, 31) };
                                 let base = mesh.vertices.len() as u32;
                                 mesh.vertices.extend(corners.iter().map(|&p| Vertex { pos: p, uv: WHITE_UV, color: c }));
@@ -454,6 +521,7 @@ impl Painter {
             }
         }
         flush(out, &mut mesh);
+        flush(out, &mut grained);
         self.last_len = len;
         // The software copy of an erased element is kept only while it is being erased: the
         // graphics card has the picture, and each copy can take tens of megabytes.
@@ -473,6 +541,7 @@ impl Painter {
         if !settled && self.erased.values().any(|e| e.zoom != z) {
             ctx.request_repaint_after(std::time::Duration::from_millis(160));
         }
+        self.last = Some((seen, out[start..].to_vec(), on_screen, els.to_vec()));
         on_screen
     }
 
@@ -545,7 +614,9 @@ impl Painter {
             ((wx - ox) as f32, (wy - oy) as f32)
         };
         let mut parts = vec![Part::colored()];
-        for prim in prims_of(el, env) {
+        // A stroke's pieces as one shape: see-through ink crossing itself is not darker where two
+        // pieces meet (the same as in exports).
+        for prim in crate::prims::joined(prims_of(el, env)) {
             match prim {
                 Prim::Fill { path, color } => {
                     let lp = to_lyon(&path, tf);
@@ -609,7 +680,42 @@ impl Painter {
                         let (px, py) = tf(cx, cy);
                         [px, py]
                     });
-                    parts.push(Part { image: Some((key, alpha)), pos: corners.to_vec(), col: Vec::new(), idx: Vec::new() });
+                    parts.push(Part { image: Some((key, alpha)), pos: corners.to_vec(), ..Part::colored() });
+                }
+                Prim::Grain { path, color, grain, offset } => {
+                    // Tessellated in the element's own coordinates, which also place the grain:
+                    // it stays put on the stroke when the stroke moves or turns.
+                    let lp = to_lyon(&path, |x, y| (x, y));
+                    let mut buf: VertexBuffers<[f32; 2], u32> = VertexBuffers::new();
+                    let _ = self.fill.tessellate_path(&lp, &FillOptions::tolerance(tol).with_fill_rule(FillRule::NonZero), &mut BuffersBuilder::new(&mut buf, |v: FillVertex| v.position().to_array()));
+                    let k = 1.0 / crate::brush::GRAIN_TILE;
+                    let part = last_grain(&mut parts, grain);
+                    let base = part.pos.len() as u32;
+                    part.pos.extend(buf.vertices.iter().map(|&[x, y]| {
+                        let (px, py) = tf(x, y);
+                        [px, py]
+                    }));
+                    part.uv.extend(buf.vertices.iter().map(|&[x, y]| [(x + offset[0]) * k, (y + offset[1]) * k]));
+                    part.col.extend(std::iter::repeat_n(color, buf.vertices.len()));
+                    part.idx.extend(buf.indices.iter().map(|i| i + base));
+                }
+                Prim::Dabs { dabs, color } => {
+                    let part = last_colored(&mut parts);
+                    for d in &dabs {
+                        crate::brush::dab_mesh(
+                            d[0],
+                            d[1],
+                            d[2],
+                            color.gamma_multiply(d[3]),
+                            |x, y| {
+                                let (px, py) = tf(x, y);
+                                [px, py]
+                            },
+                            &mut part.pos,
+                            &mut part.col,
+                            &mut part.idx,
+                        );
+                    }
                 }
                 Prim::Shadow { x, y, w, h, radius, blur, dy, color } => {
                     // Rounded rectangles from inside the edge to beyond it, following the corners,
@@ -676,8 +782,15 @@ fn tolerance(bucket: i32, ppp: f32) -> f32 {
 }
 
 fn last_colored(parts: &mut Vec<Part>) -> &mut Part {
-    if parts.last().is_none_or(|p| p.image.is_some()) {
+    if parts.last().is_none_or(|p| p.image.is_some() || p.grain.is_some()) {
         parts.push(Part::colored());
+    }
+    parts.last_mut().unwrap()
+}
+
+fn last_grain(parts: &mut Vec<Part>, g: crate::brush::Grain) -> &mut Part {
+    if parts.last().is_none_or(|p| p.image.is_some() || p.grain != Some(g)) {
+        parts.push(Part { grain: Some(g), ..Part::colored() });
     }
     parts.last_mut().unwrap()
 }
@@ -697,6 +810,57 @@ pub fn fill_mesh(path: &Path, color: Color32) -> Mesh {
     m.vertices = buf.vertices.iter().map(|p| Vertex { pos: pos2(p[0], p[1]), uv: WHITE_UV, color }).collect();
     m.indices = buf.indices;
     m
+}
+
+/// A brush's primitives (in a stroke's own coordinates, `scale` screen points to one of its
+/// units) as meshes on screen, placed by `place`: a stroke being drawn, or a pen's sample.
+pub fn brush_meshes(ctx: &egui::Context, prims: Vec<Prim>, scale: f32, place: impl Fn(f32, f32) -> Pos2) -> Vec<Mesh> {
+    let mut out = Vec::new();
+    for prim in prims {
+        match prim {
+            Prim::Fill { path, color } => out.push(fill_mesh(
+                &path.mapped(|x, y| {
+                    let p = place(x, y);
+                    (p.x, p.y)
+                }),
+                color,
+            )),
+            Prim::Grain { path, color, grain, offset } => {
+                let lp = to_lyon(&path, |x, y| (x, y));
+                let mut buf: VertexBuffers<[f32; 2], u32> = VertexBuffers::new();
+                let _ = FillTessellator::new().tessellate_path(&lp, &FillOptions::tolerance(0.15 / scale.max(1e-3)).with_fill_rule(FillRule::NonZero), &mut BuffersBuilder::new(&mut buf, |v: FillVertex| v.position().to_array()));
+                let k = 1.0 / crate::brush::GRAIN_TILE;
+                let mut m = Mesh::with_texture(crate::brush::grain_texture(ctx, grain));
+                m.vertices = buf.vertices.iter().map(|&[x, y]| Vertex { pos: place(x, y), uv: pos2((x + offset[0]) * k, (y + offset[1]) * k), color }).collect();
+                m.indices = buf.indices;
+                out.push(m);
+            }
+            Prim::Dabs { dabs, color } => {
+                let (mut pos, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new());
+                for d in &dabs {
+                    crate::brush::dab_mesh(
+                        d[0],
+                        d[1],
+                        d[2],
+                        color.gamma_multiply(d[3]),
+                        |x, y| {
+                            let p = place(x, y);
+                            [p.x, p.y]
+                        },
+                        &mut pos,
+                        &mut col,
+                        &mut idx,
+                    );
+                }
+                let mut m = Mesh::default();
+                m.vertices = pos.iter().zip(&col).map(|(p, &c)| Vertex { pos: pos2(p[0], p[1]), uv: WHITE_UV, color: c }).collect();
+                m.indices = idx;
+                out.push(m);
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /* ---------------- images ---------------- */
@@ -847,6 +1011,47 @@ impl Images {
 mod tests {
     use super::*;
 
+    /// What a frame costs with many strokes on screen, their meshes already made:
+    /// `cargo test --release paint_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn paint_cost() {
+        use crate::model::{El, Ink, Kind};
+        let mut els = Vec::new();
+        for s in 0..300 {
+            let pts: Vec<f32> = (0..160)
+                .flat_map(|i| {
+                    let t = (s * 37 + i) as f32 * 0.02;
+                    [300.0 * (t * 0.37).sin() + 40.0 * (t * 5.0).sin(), 200.0 * (t * 0.23).cos() + 40.0 * (t * 4.0).cos(), -1.0]
+                })
+                .collect();
+            let (x0, y0) = (pts.chunks(3).map(|p| p[0]).fold(f32::MAX, f32::min), pts.chunks(3).map(|p| p[1]).fold(f32::MAX, f32::min));
+            let rel: Vec<f32> = pts.chunks(3).flat_map(|p| [p[0] - x0, p[1] - y0, p[2]]).collect();
+            let mut el = El::new(Kind::Ink(Ink { points: rel, color: "#1E1E1E".into(), size: 6.0, brush: Some(crate::model::Brush::Pen) }));
+            (el.x, el.y, el.w, el.h, el.z) = (x0 as f64, y0 as f64, 600.0, 400.0, s as f64);
+            els.push(Arc::new(el));
+        }
+        let ctx = egui::Context::default();
+        let mut p = Painter::new(Images::new(None));
+        let f = Frame { cam: Camera { x: 720.0, y: 450.0, z: 1.0 }, origin: pos2(0.0, 0.0), view: BBox { x: -720.0, y: -450.0, w: 1440.0, h: 900.0 }, pixels_per_point: 1.0, editing: None, editing_cell: None, glides: None, dark_board: false };
+        let mut out = Vec::new();
+        p.paint(&ctx, &mut out, &els, &f);
+        // Moving (each frame the view a pixel aside), then still.
+        let t = std::time::Instant::now();
+        for i in 0..20 {
+            out.clear();
+            let cam = Camera { x: 720.0 + (i % 2) as f64, ..f.cam };
+            p.paint(&ctx, &mut out, &els, &Frame { cam, ..f });
+        }
+        println!("paint, moving {:6.2} ms for {:?} vertices and indices, {} shapes", t.elapsed().as_secs_f64() * 50.0, p.last_len, out.len());
+        let t = std::time::Instant::now();
+        for _ in 0..20 {
+            out.clear();
+            p.paint(&ctx, &mut out, &els, &f);
+        }
+        println!("paint, still  {:6.3} ms", t.elapsed().as_secs_f64() * 50.0);
+    }
+
     #[test]
     fn dashes_cover_on_and_skip_off() {
         let p = to_lyon(&Path::polyline(&[0.0, 0.0, 10.0, 0.0]), |x, y| (x, y));
@@ -878,7 +1083,7 @@ mod tests {
         use crate::model::{EraseMark, Ink};
         let ctx = egui::Context::default();
         let pts: Vec<f32> = (0..=60).flat_map(|i| [i as f32 * 5.0, (i as f32 * 0.4).sin() * 30.0 + 40.0, 0.6]).collect();
-        let mut el = El::new(Kind::Ink(Ink { points: pts, color: "#1E1E1E".into(), size: 12.0 }));
+        let mut el = El::new(Kind::Ink(Ink { points: pts, color: "#1E1E1E".into(), size: 12.0, brush: None }));
         (el.x, el.y, el.w, el.h) = (10.0, 10.0, 300.0, 80.0);
         let k = 1.5;
         let env = Env { zoom: k, pixel: Some(1.0 / k), comments: true, ..Env::default() };
@@ -1067,8 +1272,8 @@ pub mod picture {
         add(440.0, 40.0, 120.0, 100.0, shape(ShapeKind::Star, "#FFE066", None));
         add(600.0, 40.0, 140.0, 100.0, shape(ShapeKind::Diamond, "transparent", Some("Sì?")));
         let pts: Vec<f32> = (0..=40).flat_map(|i| { let t = i as f32 / 40.0; [t * 180.0, (t * 9.0).sin() * 30.0 + 40.0, 0.3 + 0.6 * (t * 3.1).sin().abs()] }).collect();
-        add(40.0, 180.0, 180.0, 80.0, Kind::Ink(Ink { points: pts.clone(), color: "#1971C2".into(), size: 6.0 }));
-        add(240.0, 180.0, 180.0, 80.0, Kind::Highlighter(Ink { points: pts.iter().enumerate().map(|(i, v)| if i % 3 == 2 { -1.0 } else { *v }).collect(), color: "#FFE066".into(), size: 22.0 }));
+        add(40.0, 180.0, 180.0, 80.0, Kind::Ink(Ink { points: pts.clone(), color: "#1971C2".into(), size: 6.0, brush: None }));
+        add(240.0, 180.0, 180.0, 80.0, Kind::Highlighter(Ink { points: pts.iter().enumerate().map(|(i, v)| if i % 3 == 2 { -1.0 } else { *v }).collect(), color: "#FFE066".into(), size: 22.0, brush: None }));
         add(440.0, 200.0, 140.0, 40.0, Kind::Line(Line { points: vec![0.0, 40.0, 140.0, 0.0], stroke: "#E03131".into(), stroke_width: 3.0, dash: false, arrow_start: false, arrow_end: true, from: None, to: None, tape: false, route: crate::model::Route::Straight, label: None, ..Default::default() }));
         add(600.0, 200.0, 140.0, 40.0, Kind::Line(Line { points: vec![0.0, 20.0, 140.0, 20.0], stroke: "#FFB3C7".into(), stroke_width: 28.0, dash: false, arrow_start: false, arrow_end: false, from: None, to: None, tape: true, route: crate::model::Route::Straight, label: None, ..Default::default() }));
         add(40.0, 300.0, 220.0, 220.0, Kind::Sticky(Sticky { text: "Una nota adesiva con un po' di testo".into(), color: "#FFF3A3".into(), font: FontKind::Hand, author: Some("Anto".into()), ..Default::default() }));

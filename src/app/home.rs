@@ -52,6 +52,13 @@ pub fn time_ago(ms: i64) -> String {
     if d == 1 { "ieri".into() } else { format!("{d} giorni fa") }
 }
 
+/// The width of each card so that a row of them fills the room (20 apart), each about `w`
+/// wide; a phone's single column takes the whole width, within reason.
+fn fill_row(room: f32, w: f32) -> f32 {
+    let n = ((room + 20.0) / (w + 20.0)).floor().max(1.0);
+    ((room + 20.0) / n - 20.0).clamp(w.min(room), w * 1.6).floor()
+}
+
 const CARD_W: f32 = 240.0;
 const THUMB_H: f32 = 150.0;
 const TPL_W: f32 = 184.0;
@@ -106,7 +113,13 @@ impl Home {
         // Which part of the list is in view, for the sidebar (computed by the list below).
         let section_id = Id::new("home-section");
         let section: u8 = ctx.data(|d| d.get_temp(section_id)).unwrap_or(0);
-        let side = egui::Panel::left(Id::new("home-side")).exact_size(232.0).resizable(false).frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin { left: 12, right: 12, top: 14, bottom: 12 })).show(ui, |ui| {
+        // A narrow window (or the interface zoomed in a lot): the sidebar becomes a bar along the
+        // top, and the list's controls and cards fit the width there is.
+        let compact = ctx.content_rect().width() < 760.0;
+        if compact {
+            self.top_bar(ui, store, toasts, dialogs, &mut action);
+        }
+        let side = (!compact).then(|| egui::Panel::left(Id::new("home-side")).exact_size(232.0).resizable(false).frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin { left: 12, right: 12, top: 14, bottom: 12 })).show(ui, |ui| {
             ui::row(ui, 28.0, |ui| {
                 ui.add_space(4.0);
                 ui::logo(ui, 22.0);
@@ -170,8 +183,12 @@ impl Home {
                     }
                 }
             });
-        });
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin { left: 32, right: 32, top: 18, bottom: 0 })).show(ui, |ui| {
+        }));
+        let margin = if compact { 16 } else { 32 };
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin { left: margin, right: margin, top: if compact { 12 } else { 18 }, bottom: 0 })).show(ui, |ui| {
+            // The title, a new board, the order and the search on one line; where that doesn't fit,
+            // the search and the order go on a line of their own.
+            let wide = ui.available_width() >= 640.0;
             ui::row(ui, 32.0, |ui| {
                 ui.label(RichText::new("Recenti").font(ui::medium(ui::px(15.0))).color(t.text));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -179,10 +196,21 @@ impl Home {
                     if ui::button(ui, "Nuova lavagna", Btn::Primary, Some("plus"), false, true).clicked() {
                         action = Some(Action::New { template: None });
                     }
-                    self.sort_menu(ui, &t);
-                    search_field(ui, &mut self.query, &t);
+                    if wide {
+                        self.sort_menu(ui, &t);
+                        search_field(ui, &mut self.query, &t, 220.0);
+                    }
                 });
             });
+            if !wide {
+                ui.add_space(8.0);
+                ui::row(ui, 32.0, |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let w = (ui.available_width() - ui::px(11.0) * 9.0 - 46.0).max(120.0);
+                    search_field(ui, &mut self.query, &t, w);
+                    self.sort_menu(ui, &t);
+                });
+            }
             ui.add_space(12.0);
             let jump = self.jump.take();
             let out = ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
@@ -207,8 +235,9 @@ impl Home {
                 } else {
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = vec2(20.0, 20.0);
+                        let w = fill_row(ui.available_width(), CARD_W);
                         for b in &shown {
-                            if let Some(a) = self.card(ui, store, b, toasts) {
+                            if let Some(a) = self.card(ui, store, b, toasts, w) {
                                 action = Some(a);
                             }
                         }
@@ -223,11 +252,12 @@ impl Home {
                 ui.add_space(10.0);
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(20.0, 20.0);
-                    if template_card(ui, None, "Lavagna vuota", "Spazio infinito, tutto da scrivere").clicked() {
+                    let w = fill_row(ui.available_width(), TPL_W);
+                    if template_card(ui, None, "Lavagna vuota", "Spazio infinito, tutto da scrivere", w).clicked() {
                         action = Some(Action::New { template: None });
                     }
                     for tpl in TEMPLATES.iter() {
-                        if template_card(ui, Some(tpl), tpl.name, tpl.description).clicked() {
+                        if template_card(ui, Some(tpl), tpl.name, tpl.description, w).clicked() {
                             action = Some(Action::New { template: Some(tpl.id.into()) });
                         }
                     }
@@ -242,8 +272,10 @@ impl Home {
             ctx.data_mut(|d| d.insert_temp(section_id, section));
         });
         // Only a hairline between the sidebar and the list, as in Figma.
-        let sr = side.response.rect;
-        ctx.layer_painter(egui::LayerId::background()).vline(sr.max.x - 0.5, sr.y_range(), Stroke::new(1.0, t.border));
+        if let Some(side) = side {
+            let sr = side.response.rect;
+            ctx.layer_painter(egui::LayerId::background()).vline(sr.max.x - 0.5, sr.y_range(), Stroke::new(1.0, t.border));
+        }
         // Deleting asks first.
         if let Some(b) = self.deleting.clone() {
             let mut confirm = false;
@@ -288,6 +320,57 @@ impl Home {
         action
     }
 
+    /// A narrow window's bar along the top, standing in for the sidebar: the name, then the
+    /// sidebar's actions as icons (an update when there is one, import, settings).
+    fn top_bar(&mut self, ui: &mut Ui, store: &Store, toasts: &mut Toasts, dialogs: &mut Dialogs, action: &mut Option<Action>) {
+        let t = ui::theme(ui.ctx());
+        let bar = egui::Panel::top(Id::new("home-top")).resizable(false).show_separator_line(false).frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin { left: 16, right: 12, top: 10, bottom: 10 })).show(ui, |ui| {
+            ui::row(ui, 32.0, |ui| {
+                ui::logo(ui, 22.0);
+                ui.label(RichText::new("Tratto").font(ui::medium(ui::px(14.0))).color(t.text));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let s = vec2(ui::hit(ui.ctx(), 28.0), ui::hit(ui.ctx(), 28.0));
+                    if ui::icon_button(ui, "settings-2", "Impostazioni", None, s, 16.0, false, false).clicked() {
+                        dialogs.settings = true;
+                    }
+                    if ui::icon_button(ui, "file-up", "Importa una lavagna", None, s, 16.0, false, false).clicked() {
+                        *action = self.import(store, toasts);
+                    }
+                    match crate::updates::current() {
+                        crate::updates::State::Available { version, download_url, url, .. } => {
+                            if ui::icon_button(ui, "download", &format!("Aggiorna a {version} e riavvia"), None, s, 16.0, true, false).clicked() {
+                                if download_url.is_some() {
+                                    crate::updates::start_download(ui.ctx());
+                                } else {
+                                    let _ = webbrowser::open(&url);
+                                }
+                            }
+                        }
+                        crate::updates::State::Downloading { .. } | crate::updates::State::Installing { .. } => {
+                            ui.spinner();
+                        }
+                        crate::updates::State::ReadyToInstall { version, .. } => {
+                            if ui::icon_button(ui, "check", &format!("Installa {version} e riavvia"), None, s, 16.0, true, false).clicked() {
+                                crate::updates::install_and_restart();
+                            }
+                        }
+                        _ => {}
+                    }
+                    #[cfg(target_os = "linux")]
+                    if crate::install::appimage().is_some() && !crate::install::in_menu() && ui::icon_button(ui, "monitor", "Aggiungi al menu delle app", None, s, 16.0, false, false).clicked() {
+                        match crate::install::install() {
+                            Ok(()) => toasts.info("Aggiunto al menu delle applicazioni"),
+                            Err(e) => toasts.error(e),
+                        }
+                    }
+                });
+            });
+        });
+        let r = bar.response.rect;
+        ui.ctx().layer_painter(egui::LayerId::background()).hline(r.x_range(), r.max.y - 0.5, Stroke::new(1.0, t.border));
+    }
+
     fn sort_menu(&mut self, ui: &mut Ui, t: &ui::Theme) {
         let label = match self.sort {
             Sort::Updated => "Ultima modifica",
@@ -311,13 +394,14 @@ impl Home {
         });
     }
 
-    fn card(&mut self, ui: &mut Ui, store: &Store, b: &BoardRow, toasts: &mut Toasts) -> Option<Action> {
+    fn card(&mut self, ui: &mut Ui, store: &Store, b: &BoardRow, toasts: &mut Toasts, card_w: f32) -> Option<Action> {
         let t = ui::theme(ui.ctx());
         let ctx = ui.ctx().clone();
         let mut action = None;
-        let (rect, _) = ui.allocate_exact_size(vec2(CARD_W, THUMB_H + 50.0), Sense::hover());
+        let thumb_h = (card_w * THUMB_H / CARD_W).round();
+        let (rect, _) = ui.allocate_exact_size(vec2(card_w, thumb_h + 50.0), Sense::hover());
         let over = ui.rect_contains_pointer(rect);
-        let thumb_rect = Rect::from_min_size(rect.min, vec2(CARD_W, THUMB_H));
+        let thumb_rect = Rect::from_min_size(rect.min, vec2(card_w, thumb_h));
         let thumb = ui.interact(thumb_rect, Id::new(("open", &b.id)), Sense::click());
         // Figma's file browser: a firmer outline and a faint veil, nothing that lifts or glows.
         let k = ui::motion::hover(&ctx, thumb.id.with("h"), thumb.hovered());
@@ -342,7 +426,7 @@ impl Home {
         let meta = Rect::from_min_max(pos2(rect.min.x, thumb_rect.max.y + 10.0), rect.max);
         let renaming = self.renaming.as_deref() == Some(b.id.as_str());
         if renaming {
-            let r = ui.put(Rect::from_min_size(meta.min + vec2(0.0, -2.0), vec2(CARD_W - 34.0, 22.0)), egui::TextEdit::singleline(&mut self.rename_buf));
+            let r = ui.put(Rect::from_min_size(meta.min + vec2(0.0, -2.0), vec2(card_w - 34.0, 22.0)), egui::TextEdit::singleline(&mut self.rename_buf));
             if !r.has_focus() && !r.lost_focus() {
                 r.request_focus();
             }
@@ -357,7 +441,7 @@ impl Home {
                 }
             }
         } else {
-            ui.painter().with_clip_rect((Rect::from_min_size(meta.min, vec2(CARD_W - 34.0, 40.0))).intersect(ui.clip_rect())).text(meta.min + vec2(2.0, 9.0), egui::Align2::LEFT_CENTER, &b.title, ui::medium(ui::px(11.0)), t.text);
+            ui.painter().with_clip_rect((Rect::from_min_size(meta.min, vec2(card_w - 34.0, 40.0))).intersect(ui.clip_rect())).text(meta.min + vec2(2.0, 9.0), egui::Align2::LEFT_CENTER, &b.title, ui::medium(ui::px(11.0)), t.text);
         }
         ui.painter().text(meta.min + vec2(2.0, 27.0), egui::Align2::LEFT_CENTER, format!("Modificata {}", time_ago(b.updated_at)), egui::FontId::proportional(ui::px(10.0)), t.text2);
         // "More" shows while the pointer is on the card (or its menu is open).
@@ -407,9 +491,9 @@ impl Home {
 }
 
 /// A rounded search box with its magnifier, like Figma's.
-fn search_field(ui: &mut Ui, query: &mut String, t: &ui::Theme) {
+fn search_field(ui: &mut Ui, query: &mut String, t: &ui::Theme, width: f32) {
     let s = ui::sizes(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(vec2(220.0, 28.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(width, ui::ctl(28.0)), Sense::hover());
     ui.painter().rect_filled(rect, 6.0, t.bg2);
     icon(ui, "search", pos2(rect.min.x + 14.0, rect.center().y), 14.0, t.icon2);
     let field = Rect::from_min_max(pos2(rect.min.x + 28.0, rect.min.y), pos2(rect.max.x - 6.0, rect.max.y));
@@ -461,10 +545,11 @@ fn side_button(ui: &mut Ui, name: &str, label: &str) -> egui::Response {
     resp
 }
 
-fn template_card(ui: &mut Ui, tpl: Option<&Template>, name: &str, desc: &str) -> egui::Response {
+fn template_card(ui: &mut Ui, tpl: Option<&Template>, name: &str, desc: &str, w: f32) -> egui::Response {
     let t = ui::theme(ui.ctx());
-    let (rect, resp) = ui.allocate_exact_size(vec2(TPL_W, TPL_ART_H + 58.0), Sense::click());
-    let art = Rect::from_min_size(rect.min, vec2(TPL_W, TPL_ART_H));
+    let art_h = (w * TPL_ART_H / TPL_W).round();
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, art_h + 58.0), Sense::click());
+    let art = Rect::from_min_size(rect.min, vec2(w, art_h));
     let k = ui::motion::hover(ui.ctx(), resp.id.with("h"), resp.hovered());
     let down = ui::motion::hover(ui.ctx(), resp.id.with("down"), resp.is_pointer_button_down_on());
     super::panels::template_art(ui, tpl, art);
@@ -473,9 +558,9 @@ fn template_card(ui: &mut Ui, tpl: Option<&Template>, name: &str, desc: &str) ->
         ui.painter().rect_filled(art, 8.0, if t.dark { Color32::from_white_alpha((veil * 255.0) as u8) } else { Color32::from_black_alpha((veil * 255.0) as u8) });
     }
     ui.painter().rect_stroke(art, 8.0, Stroke::new(1.0, ui::blend(t.border, t.border_strong, k)), egui::StrokeKind::Inside);
-    ui.painter().text(rect.min + vec2(2.0, TPL_ART_H + 15.0), egui::Align2::LEFT_CENTER, name, ui::medium(ui::px(11.0)), t.text);
-    let g = ui.painter().layout(desc.to_string(), egui::FontId::proportional(ui::px(10.0)), t.text2, TPL_W - 4.0);
-    ui.painter().galley(rect.min + vec2(2.0, TPL_ART_H + 26.0), g, t.text2);
+    ui.painter().with_clip_rect(rect).text(rect.min + vec2(2.0, art_h + 15.0), egui::Align2::LEFT_CENTER, name, ui::medium(ui::px(11.0)), t.text);
+    let g = ui.painter().layout(desc.to_string(), egui::FontId::proportional(ui::px(10.0)), t.text2, w - 4.0);
+    ui.painter().galley(rect.min + vec2(2.0, art_h + 26.0), g, t.text2);
     ui::focus_ring(ui, &resp, art);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
     resp

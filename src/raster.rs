@@ -53,7 +53,7 @@ pub fn pixmap_from_rgba(w: u32, h: u32, rgba: &[u8]) -> Option<Pixmap> {
 
 fn draw_body(pm: &mut Pixmap, el: &El, env: &Env, t: Transform, images: Images) {
     let et = t.pre_concat(transform_of(&Affine::of(el)));
-    for prim in prims_of(el, env) {
+    for prim in crate::prims::joined(prims_of(el, env)) {
         match prim {
             Prim::Fill { path, color } => {
                 if let Some(p) = sk_path(&path) {
@@ -93,6 +93,22 @@ fn draw_body(pm: &mut Pixmap, el: &El, env: &Env, t: Transform, images: Images) 
                     }
                 }
             },
+            Prim::Grain { path, color, grain, offset } => {
+                if let (Some(p), Some(gp)) = (sk_path(&path), crate::brush::grain_pixmap(grain, color)) {
+                    let k = crate::brush::GRAIN_TILE / crate::brush::GRAIN_SIZE as f32;
+                    let mut paint = Paint { anti_alias: true, ..Paint::default() };
+                    paint.shader = tiny_skia::Pattern::new(gp.as_ref().as_ref(), tiny_skia::SpreadMode::Repeat, tiny_skia::FilterQuality::Bilinear, 1.0, Transform::from_row(k, 0.0, 0.0, k, -offset[0], -offset[1]));
+                    pm.fill_path(&p, &paint, FillRule::Winding, et, None);
+                }
+            }
+            Prim::Dabs { dabs, color } => {
+                for &[x, y, r, a] in &dabs {
+                    if let (Some(shader), Some(circle)) = (crate::brush::dab_shader(x, y, r, color.gamma_multiply(a)), PathBuilder::from_circle(x, y, r.max(1e-3))) {
+                        let paint = Paint { anti_alias: true, shader, ..Paint::default() };
+                        pm.fill_path(&circle, &paint, FillRule::Winding, et, None);
+                    }
+                }
+            }
             Prim::Shadow { x, y, w, h, radius, blur, dy, color } => {
                 // A few widening rounded rectangles stand in for the blur.
                 let ring = crate::prims::with_alpha(color, 0.25);
@@ -198,7 +214,7 @@ mod tests {
     use crate::model::{EraseMark, Ink, Kind};
 
     fn stroke() -> El {
-        let mut el = El::new(Kind::Ink(Ink { points: vec![0.0, 0.0, -1.0, 100.0, 0.0, -1.0], color: "#000000".into(), size: 10.0 }));
+        let mut el = El::new(Kind::Ink(Ink { points: vec![0.0, 0.0, -1.0, 100.0, 0.0, -1.0], color: "#000000".into(), size: 10.0, brush: None }));
         el.w = 100.0;
         el
     }

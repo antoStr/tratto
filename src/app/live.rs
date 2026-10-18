@@ -191,20 +191,24 @@ pub fn timer_button(ui: &mut egui::Ui, ed: &mut Editor) {
     let font = egui::FontId::new(ui::px(12.5), egui::FontFamily::Name(if tm.is_some() { "ui-medium" } else { "sans-italic" }.into()));
     let g = ui.painter().layout_no_wrap(text.clone(), font, Color32::PLACEHOLDER);
     let h = ui::hit(ui.ctx(), ui::ctl(24.0));
-    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 40.0, h), egui::Sense::click());
+    // On a phone, with no countdown going, just the record: the pill must fit beside the other.
+    let compact = tm.is_none() && ui::narrow(ui.ctx());
+    let (rect, resp) = ui.allocate_exact_size(vec2(if compact { 28.0 } else { g.size().x + 40.0 }, h), egui::Sense::click());
     let dx = shake(ui.ctx());
     let r = rect.translate(vec2(dx, 0.0));
     let hv = ui::motion::hover(ui.ctx(), resp.id, resp.hovered());
     let done = tm.is_some_and(|tm| tm.done());
     let fill = if done { t.danger.gamma_multiply(0.12) } else { ui::blend(t.bg, t.hover, hv) };
     ui.painter().rect(r, ui::RADIUS as f32, fill, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
-    let disc = pos2(r.min.x + 14.0, r.center().y);
+    let disc = if compact { r.center() } else { pos2(r.min.x + 14.0, r.center().y) };
     record_icon(ui, disc, 7.5, music.map(|m| m.0), &t);
     let color = match tm {
         Some(tm) => time_look(ui.ctx(), &tm, &t),
         None => t.text3,
     };
-    ui.painter().galley(pos2(r.min.x + 27.0, r.center().y - g.size().y / 2.0), g, color);
+    if !compact {
+        ui.painter().galley(pos2(r.min.x + 27.0, r.center().y - g.size().y / 2.0), g, color);
+    }
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Timer: {text}")));
     ui::focus_ring(ui, &resp, rect);
     let resp = ui::tip(resp, "Timer, musica e votazione", None);

@@ -98,6 +98,12 @@ pub fn appear(ctx: &Context, id: Id, shown: bool) -> f32 {
     presence(ctx, id, shown)
 }
 
+/// Whether `appear(id)` is about to start afresh: what it shows was not drawn last frame.
+pub fn coming_back(ctx: &Context, id: Id) -> bool {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data(|d| d.get_temp::<u64>(id.with("seen"))).is_none_or(|l| pass > l + 1)
+}
+
 /// Appears afresh whenever `key` changes (a new selection, a new element under the pointer).
 pub fn entering(ctx: &Context, slot: Id, key: impl std::hash::Hash) -> f32 {
     use std::hash::Hasher;

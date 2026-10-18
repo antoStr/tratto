@@ -5,7 +5,7 @@ use egui::{Color32, Id, Pos2, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 use super::board::BoardUi;
 use crate::editor::{Editor, Tool};
 use crate::geom::{BBox, union};
-use crate::model::{FONTS, FontKind, HIGHLIGHT_COLORS, INK_COLORS, STICKY_COLORS, ShapeKind, TAPE_COLORS};
+use crate::model::{BRUSHES, Brush, FONTS, FontKind, HIGHLIGHT_COLORS, INK_COLORS, STICKY_COLORS, ShapeKind, TAPE_COLORS};
 use crate::prefs::{EraserMode, Pen, ShapeTool, ToolbarPos};
 use crate::ui::{self, Theme, icon, icon_button};
 
@@ -398,7 +398,7 @@ fn more_tools(ui: &mut Ui, ed: &mut Editor, t: &Theme, top: bool) {
         (false, true) => egui::RectAlign::BOTTOM,
         (false, false) => egui::RectAlign::TOP,
     };
-    egui::Popup::menu(&r).frame(ui::float_frame(t).inner_margin(egui::Margin::same(8))).align(align).gap(10.0).show(|ui| {
+    egui::Popup::menu(&r).frame(ui::float_frame(t).inner_margin(egui::Margin::same(8))).align(align).gap(10.0).show(|ui| ui::menu_body(ui, |ui| {
         ui.label(egui::RichText::new("Aggiungi").font(ui::medium(ui::px(11.0))).color(t.text2));
         ui.add_space(4.0);
         let items: [(&str, &str, &str, Option<Payload>); 6] = [
@@ -435,7 +435,7 @@ fn more_tools(ui: &mut Ui, ed: &mut Editor, t: &Theme, top: bool) {
                 }
             }
         });
-    });
+    }));
 }
 
 /// A big tile of the "+" card: icon on a tinted square, name and a line about it.
@@ -613,7 +613,7 @@ fn toolbar_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme, id: &
                 ui.data_mut(|d| d.insert_temp(fresh, true));
             }
             let opened = ui.data_mut(|d| d.remove_temp::<bool>(fresh)).is_some();
-            egui::Popup::menu(&chevron).frame(ui::menu_frame(t)).align(if top { egui::RectAlign::BOTTOM } else { egui::RectAlign::TOP }).show(|ui| {
+            egui::Popup::menu(&chevron).frame(ui::menu_frame(t)).align(if top { egui::RectAlign::BOTTOM } else { egui::RectAlign::TOP }).show(|ui| ui::menu_body(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.spacing_mut().scroll = egui::style::ScrollStyle::floating();
                 egui::ScrollArea::vertical().max_height(room.clamp(120.0, 420.0)).show(ui, |ui| {
@@ -629,7 +629,7 @@ fn toolbar_item(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme, id: &
                         }
                     }
                 });
-            });
+            }));
         }
         "arrow" => simple(ui, ed, Tool::Arrow, "arrow-up-right", "Connettore", Some("X")),
         "line" => simple(ui, ed, Tool::Line, "minus", "Linea", Some("L")),
@@ -1148,12 +1148,12 @@ pub fn toolbar(ctx: &egui::Context, stage: Rect, ed: &mut Editor, st: &mut Board
                 if !hidden.is_empty() {
                     sep(ui, &t);
                     let r = icon_button(ui, "more-horizontal", "Altri strumenti che qui non entrano", None, vec2(btn(), btn()), icon_px(), false, false);
-                    egui::Popup::menu(&r).frame(ui::menu_frame(&t)).align(if top { egui::RectAlign::BOTTOM_END } else { egui::RectAlign::TOP_END }).show(|ui| {
+                    egui::Popup::menu(&r).frame(ui::menu_frame(&t)).align(if top { egui::RectAlign::BOTTOM_END } else { egui::RectAlign::TOP_END }).show(|ui| ui::menu_body(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         for id in &hidden {
                             overflow_item(ui, ed, st, id);
                         }
-                    });
+                    }));
                 }
             });
         });
@@ -1274,11 +1274,13 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                             pen_slot(ui, ed, i, t, top);
                         }
                         ui.spacing_mut().item_spacing.x = 8.0;
+                        brush_chip(ui, ed, t, top);
                         let p = &mut ed.prefs;
                         let i = ed.pen.min(p.pens.len() - 1);
                         sep_h(ui, t, h);
                         let pen = &mut p.pens[i];
-                        slide(ui, "Spessore", &mut pen.size, 1.0, 64.0, 0.5, true, PX, sw(196.0));
+                        let (lo, hi) = size_range(pen.brush);
+                        slide(ui, "Spessore", &mut pen.size, lo, hi, 0.5, true, PX, sw(196.0));
                         ui.add_space(8.0);
                         slide(ui, "Opacità", &mut pen.opacity, 0.1, 1.0, 0.05, false, PCT, sw(172.0));
                         sep_h(ui, t, h);
@@ -1459,8 +1461,117 @@ fn table_size_picker(ui: &mut Ui, size: &mut [u8; 2], t: &Theme) -> bool {
 /// Colours of the laser pointer.
 pub const LASER_COLORS: [&str; 6] = ["#FF3B30", "#FF9500", "#34C759", "#0D99FF", "#AF52DE", "#FF2D92"];
 
-/// A pen in the tray, drawn as a real stroke in its colour, thickness and opacity. The active
-/// one opens its colour and stroke settings.
+/// A brush drawn small in `rect`: an S of ink with the pressure rising and falling, as a pen
+/// would draw it.
+pub fn brush_sample(ui: &Ui, rect: Rect, brush: Brush, color: Color32, size: f64) {
+    let (w, h) = (rect.width(), rect.height());
+    let pts: Vec<f32> = (0..=32)
+        .flat_map(|k| {
+            let s = k as f32 / 32.0;
+            [w * 0.1 + s * w * 0.8, h * 0.5 + (s * std::f32::consts::TAU).sin() * h * 0.2, 0.2 + (s * std::f32::consts::PI).sin() * 0.8]
+        })
+        .collect();
+    // The grain lies on the board: here, on the sample's place in the window.
+    let prims = crate::prims::brush_prims(&pts, size, Some(brush), false, color, (rect.min.x as f64, rect.min.y as f64), None);
+    for m in crate::paint::brush_meshes(ui.ctx(), prims, 1.0, |x, y| rect.min + vec2(x, y)) {
+        ui.painter().add(m);
+    }
+}
+
+/// How thick a brush draws best: the range that suits it, and where it starts.
+pub(crate) fn brush_sizes(brush: Brush) -> (f64, f64, f64) {
+    match brush {
+        Brush::Pen => (1.0, 24.0, 4.0),
+        Brush::Pencil => (1.0, 16.0, 3.0),
+        Brush::Marker => (2.0, 40.0, 8.0),
+        Brush::Calligraphy => (3.0, 40.0, 10.0),
+        Brush::Brush => (2.0, 48.0, 10.0),
+        Brush::Airbrush => (12.0, 160.0, 32.0),
+        Brush::Chalk => (3.0, 48.0, 10.0),
+    }
+}
+
+/// The thickness slider's range for a brush (the airbrush sprays wide).
+fn size_range(brush: Brush) -> (f64, f64) {
+    if brush == Brush::Airbrush { (4.0, 160.0) } else { (1.0, 64.0) }
+}
+
+/// Gives a pen another brush: its thickness too, when the one it had doesn't suit the new
+/// brush (a 4 px airbrush would hardly show).
+fn set_brush(pen: &mut Pen, brush: Brush) {
+    if pen.brush == brush {
+        return;
+    }
+    pen.brush = brush;
+    let (lo, hi, start) = brush_sizes(brush);
+    if !(lo..=hi).contains(&pen.size) {
+        pen.size = start;
+    }
+}
+
+/// The brushes, each drawn as it looks, the pen's own ticked; true when one was picked.
+fn brush_list(ui: &mut Ui, pen: &mut Pen, t: &Theme) -> bool {
+    match brush_rows(ui, Some(pen.brush), &pen.color, t) {
+        Some(b) => {
+            set_brush(pen, b);
+            true
+        }
+        None => false,
+    }
+}
+
+/// A row per brush, drawn as it looks in `color` (on a light panel), `current` ticked; the one
+/// clicked.
+pub fn brush_rows(ui: &mut Ui, current: Option<Brush>, color: &str, t: &Theme) -> Option<Brush> {
+    let mut picked = None;
+    // In the pen's colour, unless it would hardly show on the panel.
+    let color = crate::model::color_or(color, crate::model::DARK);
+    let luma = (0.299 * color.r() as f32 + 0.587 * color.g() as f32 + 0.114 * color.b() as f32) / 255.0;
+    let color = if (t.dark && luma < 0.2) || (!t.dark && luma > 0.85) { t.text2 } else { color };
+    for (brush, name) in BRUSHES {
+        let h = ui::ctl(36.0);
+        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
+        let on = current == Some(brush);
+        let sel = ui::motion::hover(ui.ctx(), resp.id.with("sel"), on);
+        if sel > 0.0 {
+            ui.painter().rect_filled(rect, ui::RADIUS, t.selected.gamma_multiply(sel));
+        }
+        ui::hover_fill(ui, resp.id, rect, resp.hovered() && !on, ui::RADIUS as f32, t.hover);
+        let sample = Rect::from_min_size(rect.min + vec2(4.0, 0.0), vec2(64.0, h));
+        let (_, _, start) = brush_sizes(brush);
+        brush_sample(ui, sample, brush, color, if brush == Brush::Airbrush { 14.0 } else { start.min(8.0) });
+        let text = Rect::from_min_max(pos2(sample.max.x + 10.0, rect.min.y), rect.max);
+        ui.painter().with_clip_rect(text).text(pos2(text.min.x, rect.center().y), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(ui::px(11.0)), t.text);
+        if resp.clicked() {
+            picked = Some(brush);
+        }
+    }
+    picked
+}
+
+/// The brush of the pen in use, opening the others (Penna, Matita, Pennello…).
+fn brush_chip(ui: &mut Ui, ed: &mut Editor, t: &Theme, top: bool) {
+    if ed.prefs.pens.is_empty() {
+        return;
+    }
+    let i = ed.pen.min(ed.prefs.pens.len() - 1);
+    let brush = ed.prefs.pens[i].brush;
+    let font = egui::FontId::proportional(ui::px(11.0));
+    let galley = ui.painter().layout_no_wrap(brush.name().to_string(), font, t.text);
+    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 34.0, ui::ctl(28.0)), Sense::click());
+    ui::hover_fill(ui, resp.id, rect, resp.hovered(), ui::RADIUS as f32, t.hover);
+    ui.painter().galley(pos2(rect.min.x + 8.0, rect.center().y - galley.size().y / 2.0), galley, t.text);
+    icon(ui, if top { "chevron-up" } else { "chevron-down" }, pos2(rect.max.x - 13.0, rect.center().y), 12.0, t.icon2);
+    let resp = ui::tip(resp, "Pennello", None);
+    egui::Popup::from_toggle_button_response(&resp).frame(ui::float_frame(t).inner_margin(egui::Margin::same(6))).align(if top { egui::RectAlign::BOTTOM_START } else { egui::RectAlign::TOP_START }).gap(12.0).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
+        ui.set_width(ui::px(11.0) * 10.0 + 96.0);
+        ui.spacing_mut().item_spacing.y = 0.0;
+        brush_list(ui, &mut ed.prefs.pens[i], t);
+    });
+}
+
+/// A pen in the tray, drawn as a real stroke with its brush, colour, thickness and opacity. The
+/// active one opens its colour (with the eyedropper) and stroke settings; its brush is chosen beside.
 fn pen_slot(ui: &mut Ui, ed: &mut Editor, i: usize, t: &Theme, top: bool) {
     let pen: Pen = ed.prefs.pens[i].clone();
     let active = ed.pen == i;
@@ -1470,32 +1581,40 @@ fn pen_slot(ui: &mut Ui, ed: &mut Editor, i: usize, t: &Theme, top: bool) {
         ui.painter().rect_filled(rect, ui::RADIUS, t.selected.gamma_multiply(sel));
     }
     ui::hover_fill(ui, resp.id, rect, resp.hovered() && !active, ui::RADIUS as f32, t.hover);
-    let pts: Vec<f32> = (0..=24)
-        .flat_map(|k| {
-            let s = k as f32 / 24.0;
-            [4.0 + s * 40.0, 16.0 + (s * std::f32::consts::TAU).sin() * 6.0, 0.35 + (s * std::f32::consts::PI).sin() * 0.55]
-        })
-        .collect();
-    let path = crate::ink::stroke_path(&pts, (pen.size * 1.2).min(12.0), false).translated(rect.min.x, rect.min.y);
     let color = crate::model::color_or(&pen.color, crate::model::DARK);
     let color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), (pen.opacity.clamp(0.1, 1.0) * 255.0) as u8);
-    ui.painter().add(crate::paint::fill_mesh(&path, color));
-    let label = format!("Penna {}", i + 1);
-    let resp = ui::tip(resp, if active { "Colore della penna" } else { &label }, Some(&(i + 1).to_string()));
+    let shown = match pen.brush {
+        Brush::Airbrush => (pen.size * 0.5).clamp(8.0, 16.0),
+        Brush::Brush | Brush::Calligraphy => (pen.size * 0.7).min(6.5),
+        _ => (pen.size * 1.2).min(12.0),
+    };
+    brush_sample(ui, rect, pen.brush, color, shown);
+    let label = format!("{} {}", pen.brush.name(), i + 1);
+    let resp = ui::tip(resp, if active { "Colore e spessore" } else { &label }, Some(&(i + 1).to_string()));
     if resp.clicked() && !active {
         ed.pen = i;
     }
     if active {
         egui::Popup::from_toggle_button_response(&resp).frame(ui::float_frame(t).inner_margin(egui::Margin::same(12))).align(if top { egui::RectAlign::BOTTOM } else { egui::RectAlign::TOP }).gap(12.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
             ui.set_width(232.0);
-            ui::heading(ui, "Colore");
+            ui::row(ui, ui::ctl(24.0), |ui| {
+                ui::heading(ui, "Colore");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // The eyedropper: the next click on the board takes the colour there.
+                    if ui::small_icon_button(ui, "droplet", "Prendi un colore dalla lavagna (Alt+clic)", ed.eyedropper).clicked() {
+                        ed.eyedropper = !ed.eyedropper;
+                        ui.close();
+                    }
+                });
+            });
             let pen = &mut ed.prefs.pens[i];
             if let Some(c) = ui::swatches(ui, &INK_COLORS, &pen.color, false) {
                 pen.color = c;
             }
             ui.add_space(4.0);
             ui::heading(ui, "Tratto");
-            ui::slider(ui, "Spessore", &mut pen.size, 1.0, 64.0, 0.5, true, PX, 208.0);
+            let (lo, hi) = size_range(pen.brush);
+            ui::slider(ui, "Spessore", &mut pen.size, lo, hi, 0.5, true, PX, 208.0);
             ui::slider(ui, "Opacità", &mut pen.opacity, 0.1, 1.0, 0.05, false, PCT, 208.0);
         });
     }
@@ -1541,7 +1660,7 @@ pub fn font_picker(ui: &mut Ui, value: &mut FontKind, width: f32, t: &Theme) -> 
     icon(ui, "chevron-down", rect.right_center() - vec2(12.0, 0.0), 12.0, t.icon2);
     let resp = ui::tip(resp, "Carattere", None);
     let mut changed = false;
-    egui::Popup::menu(&resp).frame(ui::menu_frame(t)).show(|ui| {
+    egui::Popup::menu(&resp).frame(ui::menu_frame(t)).show(|ui| ui::menu_body(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         let mut group = "";
         for (k, name, g) in FONTS {
@@ -1564,7 +1683,7 @@ pub fn font_picker(ui: &mut Ui, value: &mut FontKind, width: f32, t: &Theme) -> 
                 changed = true;
             }
         }
-    });
+    }));
     changed
 }
 
@@ -1758,6 +1877,8 @@ pub struct Minimap {
     moving: Option<egui::Vec2>,
     /// The picture being drawn away from the interface, and how it maps the board.
     job: Option<std::sync::mpsc::Receiver<(Option<egui::ColorImage>, Fit)>>,
+    /// The map's size the picture was drawn for (it follows the window's).
+    drawn_size: (f64, f64),
 }
 
 /// What the minimap's picture frames: the content, but never less than a screenful at 100%
@@ -1785,6 +1906,19 @@ fn clamp_span(lo: f32, hi: f32, min: f32, max: f32, least: f32) -> (f32, f32) {
 /// The picture shows the content and is redrawn only after the board has stayed unchanged for a
 /// moment: drawing it costs tens of milliseconds on a big board, and moving around never needs it
 /// (the view rectangle is drawn on top, clamped to the edge when you are off the content).
+/// Where the minimap rests in `free` (the board the panels leave free): its corner, at its size
+/// there. Dragged, or pushed up above the toolbar, it is elsewhere for a while.
+pub fn minimap_home(free: Rect, prefs: &crate::prefs::Prefs) -> Rect {
+    // Smaller in a small window (or with the interface zoomed in): it stays a corner's worth.
+    let card_w = (free.width() * 0.2).min(free.height() * 0.3 / (MH / MW)).clamp(120.0, MW);
+    let card_h = card_w * MH / MW;
+    // A fraction of the room it can move in, so it keeps its corner when the window changes size.
+    let room = free.shrink(12.0);
+    let range = vec2((room.width() - card_w).max(0.0), (room.height() - card_h).max(0.0));
+    let at = prefs.minimap_at.unwrap_or([1.0, 0.0]);
+    Rect::from_min_size(room.min + vec2(at[0] * range.x, at[1] * range.y), vec2(card_w, card_h))
+}
+
 pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap) {
     let t = ui::theme(ctx);
     let now = crate::platform::now_ms();
@@ -1793,12 +1927,16 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
         m.seen = version;
         m.seen_at = now;
     }
-    let (mw, mh) = ((MW - PAD * 2.0) as f64, (MH - PAD * 2.0) as f64);
+    let home = minimap_home(free, &ed.prefs);
+    let (card_w, card_h) = (home.width(), home.height());
+    let (mw, mh) = ((card_w - PAD * 2.0) as f64, (card_h - PAD * 2.0) as f64);
     let quiet = now - m.seen_at;
     // The picture is drawn on another thread (tens of milliseconds on a big board, which
     // would make typing and drawing stutter), one at a time.
-    if m.job.is_none() && (m.tex.is_none() || (m.drawn != version && m.grab.is_none() && quiet > 300.0)) {
+    let resized = m.drawn_size != (mw, mh);
+    if m.job.is_none() && (m.tex.is_none() || resized || (m.drawn != version && m.grab.is_none() && quiet > 300.0)) {
         m.drawn = version;
+        m.drawn_size = (mw, mh);
         let content = union(ed.board.all().iter().filter(|e| !e.hidden).map(|e| crate::geom::aabb(e)));
         let fit = fit_for(map_area(content, ed.view(), ed.size), mw, mh);
         let ppp = ctx.pixels_per_point() as f64;
@@ -1865,12 +2003,11 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
         None => fit_for(union([area, view]).unwrap_or(area), mw, mh),
     };
     let k = ui::motion::appear(ctx, Id::new("minimap"), true);
-    // Where the card sits: a fraction of the room it can move in, so it keeps its corner when
-    // the window changes size. Dragged, it follows the pointer; let go, it glides into place.
+    // Where the card sits: its corner. Dragged, it follows the pointer; let go, it glides into
+    // place.
     let room = free.shrink(12.0);
-    let range = vec2((room.width() - MW).max(0.0), (room.height() - MH).max(0.0));
-    let at = ed.prefs.minimap_at.unwrap_or([1.0, 0.0]);
-    let target = room.min + vec2(at[0] * range.x, at[1] * range.y);
+    let range = vec2((room.width() - card_w).max(0.0), (room.height() - card_h).max(0.0));
+    let target = home.min;
     let pointer = ctx.input(|i| i.pointer.interact_pos());
     let (px, py) = match (m.moving, pointer) {
         (Some(grab), Some(p)) => {
@@ -1883,7 +2020,7 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
     };
     // Never under the toolbar or its options: up above them when it would be.
     let bars = ctx.data(|d| d.get_temp::<Rect>(Id::new("bottom-bars")));
-    let card = Rect::from_min_size(pos2(px, py), vec2(MW, MH));
+    let card = Rect::from_min_size(pos2(px, py), vec2(card_w, card_h));
     let push = match bars {
         Some(b) if m.moving.is_none() && card.expand(6.0).intersects(b) => {
             if b.center().y > free.center().y { (card.max.y - b.min.y + 10.0).max(0.0) } else { -(b.max.y - card.min.y + 10.0).max(0.0) }
@@ -1894,7 +2031,7 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
     let pos = pos2(px, py - push - ui::motion::travel(ctx, k) * 8.0);
     let resp = egui::Area::new(Id::new("minimap")).fixed_pos(pos).order(egui::Order::Middle).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
-        let (card, resp) = ui.allocate_exact_size(vec2(MW, MH), Sense::click_and_drag());
+        let (card, resp) = ui.allocate_exact_size(vec2(card_w, card_h), Sense::click_and_drag());
         let radius = egui::CornerRadius::same(12);
         for s in ui::card_shadows(&t) {
             ui.painter().add(s.as_shape(card, radius));

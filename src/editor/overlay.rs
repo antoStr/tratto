@@ -6,7 +6,7 @@ use egui::epaint::TextShape;
 use egui::{Color32, FontId, Painter, Pos2, Shape, Stroke, Vec2, pos2, vec2};
 
 use super::*;
-use crate::ink::{RULER_HEIGHT, RULER_LENGTH, stroke_path};
+use crate::ink::{RULER_HEIGHT, RULER_LENGTH};
 use crate::paint::fill_mesh;
 use crate::prims::Path;
 
@@ -44,27 +44,35 @@ impl Editor {
     }
 
     /// A stroke (board coordinates, flat [x, y, pressure, …]) drawn on screen.
-    fn stroke_shape(&self, out: &mut Vec<Shape>, pts: &[f64], size: f64, hl: bool, color: Color32, opacity: f64) {
-        if let Some(s) = Self::build_stroke_shape(self.cam, self.origin, is_dark(&self.board.meta().background), pts, size, hl, color, opacity) {
-            out.push(s);
-        }
+    #[allow(clippy::too_many_arguments)]
+    fn stroke_shape(&self, ctx: &egui::Context, out: &mut Vec<Shape>, pts: &[f64], size: f64, hl: bool, brush: Option<Brush>, color: Color32, opacity: f64) {
+        out.extend(Self::build_stroke_shape(ctx, self.cam, self.origin, is_dark(&self.board.meta().background), pts, size, hl, brush, color, opacity));
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn build_stroke_shape(cam: Camera, origin: Pos2, dark_bg: bool, pts: &[f64], size: f64, hl: bool, color: Color32, opacity: f64) -> Option<Shape> {
+    fn build_stroke_shape(ctx: &egui::Context, cam: Camera, origin: Pos2, dark_bg: bool, pts: &[f64], size: f64, hl: bool, brush: Option<Brush>, color: Color32, opacity: f64) -> Vec<Shape> {
+        let Some((prims, place)) = Self::stroke_prims(cam, origin, dark_bg, pts, size, hl, brush, color, opacity, ctx.pixels_per_point()) else { return Vec::new() };
+        crate::paint::brush_meshes(ctx, prims, cam.z as f32, place).into_iter().map(Shape::mesh).collect()
+    }
+
+    /// A stroke's primitives as it will be drawn (relative to its first point), and where they
+    /// go on screen.
+    #[allow(clippy::too_many_arguments)]
+    fn stroke_prims(cam: Camera, origin: Pos2, dark_bg: bool, pts: &[f64], size: f64, hl: bool, brush: Option<Brush>, color: Color32, opacity: f64, ppp: f32) -> Option<(Vec<crate::prims::Prim>, impl Fn(f32, f32) -> Pos2 + Copy)> {
         if pts.len() < 3 {
             return None;
         }
         let (x0, y0) = (pts[0], pts[1]);
         let rel: Vec<f32> = pts.chunks_exact(3).flat_map(|p| [(p[0] - x0) as f32, (p[1] - y0) as f32, p[2] as f32]).collect();
-        let path = stroke_path(&rel, size, hl).mapped(|x, y| {
-            let p = cam.to_screen(x as f64 + x0, y as f64 + y0);
-            (p.x as f32 + origin.x, p.y as f32 + origin.y)
-        });
         // As the stroke will be drawn: the default ink light on a dark board.
         let color = if color == DARK && dark_bg { crate::prims::LIGHT_INK } else { color };
         let a = if hl { 0.45 } else { 1.0 } * opacity.clamp(0.05, 1.0) as f32;
-        Some(Shape::mesh(fill_mesh(&path, alpha(color, a * color.a() as f32 / 255.0))))
+        let prims = crate::prims::brush_prims(&rel, size, brush, hl, alpha(color, a * color.a() as f32 / 255.0), (x0, y0), Some(1.0 / (cam.z * ppp as f64)));
+        let place = move |x: f32, y: f32| {
+            let p = cam.to_screen(x as f64 + x0, y as f64 + y0);
+            pos2(p.x as f32 + origin.x, p.y as f32 + origin.y)
+        };
+        Some((prims, place))
     }
 
     fn laser_shape(&self, out: &mut Vec<Shape>, flat: &[f64], color: Color32) {
@@ -124,7 +132,8 @@ impl Editor {
                 let c = live["color"].as_str().filter(|c| c.len() == 7).and_then(parse_color).unwrap_or(color);
                 // A guest's numbers are tamed by the host, still: nothing absurd gets drawn.
                 if pts.len() >= 3 && pts.len() % 3 == 0 && size > 0.0 && size < 1e5 {
-                    self.stroke_shape(&mut out, &pts, size, live["hl"].as_bool().unwrap_or(false), c, live["op"].as_f64().unwrap_or(1.0));
+                    let brush = serde_json::from_value::<Brush>(live["brush"].clone()).ok();
+                    self.stroke_shape(painter.ctx(), &mut out, &pts, size, live["hl"].as_bool().unwrap_or(false), brush, c, live["op"].as_f64().unwrap_or(1.0));
                 }
             }
             if let Some(l) = s["laser"].as_array() {
@@ -292,34 +301,33 @@ impl Editor {
             Some(Gesture::Draw(d)) => {
                 let color = parse_color(&d.color).unwrap_or(DARK);
                 let cam_key = ((cam.x * 100.0) as i64, (cam.y * 100.0) as i64, (cam.z * 10000.0) as i64, (origin.x * 10.0) as i64, (origin.y * 10.0) as i64);
-                if d.chunk_cam != cam_key {
-                    d.chunks.clear();
-                    d.chunk_pts = 0;
-                    d.chunk_cam = cam_key;
+                if d.pieces_cam != cam_key {
+                    d.pieces.clear();
+                    d.pieces_cam = cam_key;
+                    d.pieces_pts = usize::MAX;
                 }
-                if !d.hl && d.opacity >= 0.995 {
-                    while d.pts.len() / 3 >= d.chunk_pts + 72 {
-                        let start = d.chunk_pts.saturating_sub(2);
-                        let end = d.chunk_pts + 56;
-                        if let Some(s) = Self::build_stroke_shape(cam, origin, dark_bg, &d.pts[start * 3..end * 3], d.size, d.hl, color, d.opacity) {
-                            d.chunks.push(s);
+                // The stroke's pieces are worked out afresh (cheap), but only those that changed
+                // (the last one, as it grows) are made into meshes again: the shape of each piece
+                // is exactly that of the finished stroke, so nothing moves when the pen lifts.
+                // (See-through ink crossing itself from one piece to another shows darker there
+                // until then: the finished stroke is drawn as one shape.)
+                if d.pieces_pts != d.pts.len() {
+                    d.pieces_pts = d.pts.len();
+                    if let Some((prims, place)) = Self::stroke_prims(cam, origin, dark_bg, &d.pts, d.size, d.hl, d.brush, color, d.opacity, ctx.pixels_per_point()) {
+                        let mut old = std::mem::take(&mut d.pieces).into_iter();
+                        for prim in prims {
+                            match old.next() {
+                                Some((Some(k), shapes)) if k.matches(&prim) => d.pieces.push((Some(k), shapes)),
+                                _ => {
+                                    let key = prim.piece_key();
+                                    d.pieces.push((key, crate::paint::brush_meshes(&ctx, vec![prim], cam.z as f32, place).into_iter().map(Shape::mesh).collect()));
+                                }
+                            }
                         }
-                        d.chunk_pts = end - 1;
                     }
-                    out.extend(d.chunks.iter().cloned());
-                    let tail = d.chunk_pts.saturating_sub(2) * 3;
-                    if let Some(s) = Self::build_stroke_shape(cam, origin, dark_bg, &d.pts[tail..], d.size, d.hl, color, d.opacity) {
-                        out.push(s);
-                    }
-                } else {
-                    if d.chunk_pts != d.pts.len() {
-                        d.chunks.clear();
-                        if let Some(s) = Self::build_stroke_shape(cam, origin, dark_bg, &d.pts, d.size, d.hl, color, d.opacity) {
-                            d.chunks.push(s);
-                        }
-                        d.chunk_pts = d.pts.len();
-                    }
-                    out.extend(d.chunks.iter().cloned());
+                }
+                for (_, shapes) in &d.pieces {
+                    out.extend(shapes.iter().cloned());
                 }
             }
             _ => {}

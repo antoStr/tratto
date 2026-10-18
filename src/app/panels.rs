@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use egui::{Color32, Id, Rect, RichText, ScrollArea, Sense, Stroke, Ui, pos2, vec2};
+use egui::{Color32, Id, Pos2, Rect, RichText, ScrollArea, Sense, Stroke, Ui, pos2, vec2};
 
 use super::board::{BoardScreen, BoardUi, LeftTab};
 use super::{Action, Toasts, dialogs::Dialogs};
@@ -264,10 +264,22 @@ enum Piece {
 
 enum Row {
     /// An element; `bool`: it can be opened (a section with things in it, a table, a widget).
-    El(Arc<El>, u8, bool),
+    El(Arc<El>, u8, bool, Parent),
     /// `auto`: strokes written one after the other in the same spot, shown together.
     Folder { id: String, name: String, members: Vec<Arc<El>>, auto: bool },
     Piece { el: Arc<El>, piece: Piece, label: String, depth: u8 },
+}
+
+/// What a row is listed under.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Parent {
+    Top,
+    /// A folder made by the person.
+    Folder(String),
+    /// Strokes shown together ("Scrittura"): on the board they are loose, as at the top.
+    Run,
+    /// The section the element lies in.
+    Section(String),
 }
 
 fn row_ids(r: &Row) -> Vec<String> {
@@ -275,6 +287,60 @@ fn row_ids(r: &Row) -> Vec<String> {
         Row::El(e, ..) | Row::Piece { el: e, .. } => vec![e.id.clone()],
         Row::Folder { members, .. } => members.iter().map(|m| m.id.clone()).collect(),
     }
+}
+
+/// What a row is listed under, and how deep (folder rows are always at the top).
+fn row_parent(r: &Row) -> (Parent, u8) {
+    match r {
+        Row::El(_, d, _, p) => (p.clone(), *d),
+        Row::Folder { .. } => (Parent::Top, 0),
+        Row::Piece { el, depth, .. } => (Parent::Section(format!("piece:{}", el.id)), *depth),
+    }
+}
+
+/// The row's highest and lowest element in the stack (a folder's top and bottom members).
+fn row_ends(r: &Row) -> Option<(String, String)> {
+    match r {
+        Row::El(e, ..) => Some((e.id.clone(), e.id.clone())),
+        Row::Folder { members, .. } => Some((members.first()?.id.clone(), members.last()?.id.clone())),
+        Row::Piece { .. } => None,
+    }
+}
+
+/// Whether `r` is the row that holds what is listed under `p` (a folder, a section).
+fn holds(r: &Row, p: &Parent) -> bool {
+    match (r, p) {
+        (Row::Folder { id, auto: false, .. }, Parent::Folder(f)) => id == f,
+        (Row::Folder { auto: true, .. }, Parent::Run) => true,
+        (Row::El(e, ..), Parent::Section(s)) => e.id == *s,
+        _ => false,
+    }
+}
+
+/// Rows being dragged in the layers panel: what moves, where it may go, and its label.
+#[derive(Clone, Debug)]
+pub struct LayerDrag {
+    ids: Vec<String>,
+    /// Where they are listed now: they move among the rows of the top (folders included) or of
+    /// their own section (a section's elements are those lying in it, so they stay there).
+    home: Parent,
+    /// A whole folder or a section: it stays at the top, never inside another.
+    whole: bool,
+    label: String,
+    icon: &'static str,
+    /// The frame it was last seen in: a drag the list stopped showing (the panel closed, another
+    /// tab) is dropped, never carried out later.
+    frame: u64,
+}
+
+/// Where a drop would put the rows: next to which element, and in which folder.
+#[derive(Clone, Debug, PartialEq)]
+struct Drop {
+    to: crate::doc::Anchor,
+    group: Option<Option<String>>,
+    /// The line between rows (its y and left end), or the folder row lit up.
+    line: Option<(f32, f32)>,
+    into: Option<Rect>,
 }
 
 fn row_key(r: &Row) -> String {
@@ -340,30 +406,31 @@ struct Tree<'a> {
 }
 
 impl Tree<'_> {
-    fn element(&self, rows: &mut Vec<Row>, el: &Arc<El>, depth: u8) {
+    fn element(&self, rows: &mut Vec<Row>, el: &Arc<El>, depth: u8, parent: Parent) {
         let kids = self.children.get(&el.id);
         let parts = pieces(el);
-        rows.push(Row::El(el.clone(), depth, kids.is_some() || !parts.is_empty()));
+        rows.push(Row::El(el.clone(), depth, kids.is_some() || !parts.is_empty(), parent));
         if !self.open.contains(&open_key(&el.id)) {
             return;
         }
         if let Some(kids) = kids {
-            self.level(rows, kids, depth + 1);
+            self.level(rows, kids, depth + 1, Parent::Section(el.id.clone()));
         }
         rows.extend(parts.into_iter().map(|(piece, label)| Row::Piece { el: el.clone(), piece, label, depth: depth + 1 }));
     }
 
     fn container(&self, rows: &mut Vec<Row>, id: String, name: String, members: Vec<Arc<El>>, auto: bool) {
         let shown = if self.open.contains(&id) { members.clone() } else { Vec::new() };
+        let parent = if auto { Parent::Run } else { Parent::Folder(id.clone()) };
         rows.push(Row::Folder { id, name, members, auto });
         for m in shown {
-            self.element(rows, &m, 1);
+            self.element(rows, &m, 1, parent.clone());
         }
     }
 
-    fn flush_run(&self, rows: &mut Vec<Row>, run: &mut Vec<Arc<El>>, depth: u8) {
+    fn flush_run(&self, rows: &mut Vec<Row>, run: &mut Vec<Arc<El>>, depth: u8, parent: &Parent) {
         if run.len() == 1 {
-            self.element(rows, &run[0], depth);
+            self.element(rows, &run[0], depth, parent.clone());
         } else if run.len() > 1 && depth == 0 {
             // Keyed by the oldest stroke, so the row keeps its state while more strokes come.
             let name = if run.iter().all(|e| matches!(e.kind, Kind::Highlighter(_))) { "Evidenziature" } else { "Scrittura" };
@@ -371,7 +438,7 @@ impl Tree<'_> {
             self.container(rows, id, name.into(), std::mem::take(run), true);
         } else {
             for el in run.iter() {
-                self.element(rows, el, depth);
+                self.element(rows, el, depth, parent.clone());
             }
         }
         run.clear();
@@ -379,24 +446,24 @@ impl Tree<'_> {
 
     /// One level of the list, top to bottom; each folder sits where its top element is.
     /// Consecutive nearby strokes outside folders collapse into one row.
-    fn level(&self, rows: &mut Vec<Row>, items: &[Arc<El>], depth: u8) {
+    fn level(&self, rows: &mut Vec<Row>, items: &[Arc<El>], depth: u8, parent: Parent) {
         let mut run: Vec<Arc<El>> = Vec::new();
         let mut run_box: Option<BBox> = None;
         for el in items {
             if el.group_id.is_none() && el.is_ink() {
                 let b = aabb(el);
                 if run_box.is_some_and(|r| !near(&r, &b)) {
-                    self.flush_run(rows, &mut run, depth);
+                    self.flush_run(rows, &mut run, depth, &parent);
                     run_box = None;
                 }
                 run.push(el.clone());
                 run_box = Some(run_box.map_or(b, |r| union([r, b]).unwrap()));
                 continue;
             }
-            self.flush_run(rows, &mut run, depth);
+            self.flush_run(rows, &mut run, depth, &parent);
             run_box = None;
             match &el.group_id {
-                None => self.element(rows, el, depth),
+                None => self.element(rows, el, depth, parent.clone()),
                 Some(g) if self.folders.get(g).is_some_and(|m| m[0].id == el.id) => {
                     let name = String::new();
                     self.container(rows, g.clone(), name, self.folders[g].clone(), false);
@@ -404,7 +471,7 @@ impl Tree<'_> {
                 _ => {}
             }
         }
-        self.flush_run(rows, &mut run, depth);
+        self.flush_run(rows, &mut run, depth, &parent);
     }
 }
 
@@ -422,7 +489,7 @@ fn build_rows(ed: &mut Editor, open: &std::collections::HashSet<String>) -> Vec<
     }
     let top: Vec<Arc<El>> = items.iter().filter(|e| !parent.contains_key(&e.id)).cloned().collect();
     let mut rows = Vec::new();
-    tree.level(&mut rows, &top, 0);
+    tree.level(&mut rows, &top, 0, Parent::Top);
     // Folder names come from the board.
     for r in &mut rows {
         if let Row::Folder { id, name, auto: false, .. } = r
@@ -450,6 +517,13 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
         }
     }
     let rows = build_rows(ed, &st.open_folders);
+    let frame = ui.ctx().cumulative_frame_nr();
+    if rows.is_empty() || ed.read_only || st.layer_drag.as_ref().is_some_and(|d| d.frame + 1 < frame) {
+        st.layer_drag = None;
+    }
+    if let Some(d) = &mut st.layer_drag {
+        d.frame = frame;
+    }
     if rows.is_empty() {
         ui.add_space(16.0);
         ui.horizontal(|ui| {
@@ -464,11 +538,18 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
     let selected: std::collections::HashSet<String> = ed.selection.iter().cloned().collect();
     let ro = ed.read_only;
     let row_h = ui::ctl(32.0);
+    // Rows being dragged (to another place in the stack, or into a folder), and where the
+    // pointer would drop them.
+    let dragging: std::collections::HashSet<String> = st.layer_drag.as_ref().map(|d| d.ids.iter().cloned().collect()).unwrap_or_default();
+    let pointer = ui.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos()));
+    let mut drop: Option<Drop> = None;
+    let mut start: Option<usize> = None;
     // A little air between the tabs and the first row (its highlight would touch their line).
     ui.add_space(6.0);
     ScrollArea::vertical().auto_shrink(false).show_rows(ui, row_h, rows.len(), |ui, range| {
         ui.spacing_mut().item_spacing.y = 0.0;
-        for row in &rows[range] {
+        let mut shown: Vec<(usize, Rect)> = Vec::new();
+        for (index, row) in rows.iter().enumerate().skip(range.start).take(range.end - range.start) {
             let key = row_key(row);
             let ids = row_ids(row);
             let els: Vec<Arc<El>> = match row {
@@ -488,22 +569,28 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
                 _ => ids.iter().all(|i| selected.contains(i)),
             };
             let (label, depth, folder) = match row {
-                Row::El(e, d, _) => (element_label(e), *d, false),
+                Row::El(e, d, ..) => (element_label(e), *d, false),
                 Row::Folder { name, members, .. } => (format!("{name}  {}", members.len()), 0, true),
                 Row::Piece { label, depth, .. } => (label.clone(), *depth, false),
             };
-            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
+            // Rows move by dragging them (the pieces of a table or a widget don't).
+            let movable = !ro && piece.is_none() && st.renaming.as_deref() != Some(key.as_str());
+            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), if movable { Sense::click_and_drag() } else { Sense::click() });
+            shown.push((index, rect));
+            if movable && resp.drag_started() && st.layer_drag.is_none() {
+                start = Some(index);
+            }
             let r = rect.shrink2(vec2(8.0, 2.0));
             let sel_k = ui::motion::hover(ui.ctx(), Id::new(("layer-sel", &key)), is_sel);
             if sel_k > 0.0 {
                 ui.painter().rect_filled(r, ui::RADIUS, t.selected.gamma_multiply(sel_k));
             }
-            ui::hover_fill(ui, Id::new(("layer-h", &key)), r, resp.hovered() && !is_sel, ui::RADIUS as f32, t.hover);
+            ui::hover_fill(ui, Id::new(("layer-h", &key)), r, resp.hovered() && !is_sel && dragging.is_empty(), ui::RADIUS as f32, t.hover);
             let mut x = r.min.x + 8.0 + depth as f32 * 16.0;
             // Opens and closes folders, sections, tables and widgets.
             let toggle = match row {
                 Row::Folder { id, .. } => Some(id.clone()),
-                Row::El(e, _, true) => Some(open_key(&e.id)),
+                Row::El(e, _, true, _) => Some(open_key(&e.id)),
                 _ => None,
             };
             if let Some(tk) = &toggle {
@@ -554,7 +641,7 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
             }
             // Lock and hide, shown while the pointer is on the row (also on the buttons
             // themselves, which take the hover from the row) or when on.
-            let over = ui.rect_contains_pointer(rect);
+            let over = ui.rect_contains_pointer(rect) && dragging.is_empty();
             if !ro && piece.is_none() && (over || locked || hidden) && !renaming {
                 for (k, (name, tip, on)) in [("eye", if hidden { "Mostra" } else { "Nascondi" }, hidden), ("lock", if locked { "Sblocca" } else { "Blocca" }, locked)].into_iter().enumerate() {
                     let br = Rect::from_center_size(pos2(r.max.x - 12.0 - k as f32 * 22.0, r.center().y), vec2(20.0, 20.0));
@@ -575,6 +662,10 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
                         }
                     }
                 }
+            }
+            // The rows on the move stay where they were, faded.
+            if !dragging.is_empty() && !ids.is_empty() && ids.iter().all(|i| dragging.contains(i)) {
+                ui.painter().rect_filled(rect, 0.0, t.bg.gamma_multiply(0.6));
             }
             if let (Some(p), Row::Piece { el, .. }) = (piece, row) {
                 if resp.clicked() && !ro && !el.locked {
@@ -628,7 +719,168 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
                 st.menu = resp.interact_pointer_pos();
             }
         }
+        // Where the rows are, for tests that drag them.
+        #[cfg(test)]
+        ui.ctx().data_mut(|m| m.insert_temp(Id::new("layer-rows"), shown.clone()));
+        // Dragging: where the rows would land, shown as Figma does (a line between rows, or the
+        // folder they would go into lit up); near the top or bottom the list scrolls by itself.
+        if let (Some(d), Some(p)) = (&st.layer_drag, pointer) {
+            let clip = ui.clip_rect();
+            if clip.x_range().contains(p.x) {
+                drop = drop_target(&rows, &shown, d, p);
+                let edge = 28.0;
+                let push = if p.y < clip.min.y + edge { clip.min.y + edge - p.y } else if p.y > clip.max.y - edge { -(p.y - (clip.max.y - edge)) } else { 0.0 };
+                if push != 0.0 {
+                    ui.scroll_with_delta(vec2(0.0, push.clamp(-edge, edge) * 0.6));
+                    ui.ctx().request_repaint();
+                }
+            }
+            if let Some(dr) = &drop {
+                let painter = ui.painter().with_clip_rect(clip);
+                if let Some((y, x0)) = dr.line {
+                    painter.line_segment([pos2(x0, y), pos2(clip.max.x - 10.0, y)], Stroke::new(2.0, t.brand));
+                    painter.circle(pos2(x0, y), 3.5, t.bg, Stroke::new(2.0, t.brand));
+                }
+                if let Some(r) = dr.into {
+                    painter.rect(r.shrink2(vec2(8.0, 2.0)), ui::RADIUS, t.selected, Stroke::new(1.5, t.brand), egui::StrokeKind::Inside);
+                }
+            }
+        }
     });
+    if let Some(i) = start
+        && let Some(d) = drag_of(&rows[i], ed)
+    {
+        st.layer_drag = Some(LayerDrag { frame, ..d });
+    }
+    if let Some(d) = st.layer_drag.clone() {
+        let ctx = ui.ctx().clone();
+        ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+        if let Some(p) = pointer {
+            // What is being moved, under the pointer.
+            egui::Area::new(Id::new("layer-drag")).order(egui::Order::Tooltip).fixed_pos(p + vec2(14.0, 8.0)).interactable(false).show(&ctx, |ui| {
+                ui.set_opacity(0.92);
+                ui::float_frame(t).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                        icon(ui, d.icon, r.center(), 14.0, t.icon2);
+                        ui.label(RichText::new(&d.label).size(ui::px(11.0)).color(t.text));
+                    });
+                });
+            });
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            st.layer_drag = None;
+        } else if ui.input(|i| !i.pointer.primary_down()) {
+            st.layer_drag = None;
+            if let Some(dr) = drop {
+                ed.board.move_in_stack(&d.ids, dr.to, dr.group);
+            }
+        }
+        ctx.request_repaint();
+    }
+}
+
+/// What dragging this row moves: the row's elements, or the whole selection when the row is
+/// part of it. None when the selection lies in different places (two sections) and can't move
+/// as one.
+fn drag_of(row: &Row, ed: &mut Editor) -> Option<LayerDrag> {
+    let own = row_ids(row);
+    let selected = own.iter().all(|i| ed.selection.contains(i)) && ed.selection.len() > own.len();
+    let ids = if selected { ed.selection.clone() } else { own };
+    let items: Vec<Arc<El>> = ed.board.all().to_vec();
+    let sections = section_parents(&items);
+    let homes: std::collections::HashSet<Option<&String>> = ids.iter().map(|i| sections.get(i)).collect();
+    if homes.len() != 1 {
+        return None;
+    }
+    let home = match homes.into_iter().next().flatten() {
+        Some(s) => Parent::Section(s.clone()),
+        None => Parent::Top,
+    };
+    // A whole folder, or a section: it stays at the top level.
+    let whole = matches!(row, Row::Folder { auto: false, .. }) && !selected || ids.iter().any(|i| ed.board.get(i).is_some_and(|e| e.is_section()));
+    let (label, icon) = if selected {
+        (format!("{} livelli", ids.len()), "copy")
+    } else {
+        match row {
+            Row::El(e, ..) => (element_label(e), type_icon(e)),
+            Row::Folder { name, auto, .. } => (name.clone(), if *auto { "pen-line" } else { "folder" }),
+            Row::Piece { .. } => return None,
+        }
+    };
+    Some(LayerDrag { ids, home, whole, label, icon, frame: 0 })
+}
+
+/// Where the rows being dragged would land with the pointer at `p`: between which rows (and so
+/// next to which element in the stack, and in which folder), or into a folder's row.
+fn drop_target(rows: &[Row], shown: &[(usize, Rect)], d: &LayerDrag, p: Pos2) -> Option<Drop> {
+    let &(first, first_rect) = shown.first()?;
+    let &(i, r) = shown.iter().find(|(_, r)| p.y < r.max.y).unwrap_or(shown.last()?);
+    let (i, r) = if p.y < first_rect.min.y { (first, first_rect) } else { (i, r) };
+    let f = ((p.y - r.min.y) / r.height()).clamp(0.0, 1.0);
+    let moving = |k: usize| {
+        let ids = row_ids(&rows[k]);
+        !ids.is_empty() && ids.iter().all(|id| d.ids.contains(id))
+    };
+    // Into a folder: the middle of its row.
+    if let Row::Folder { id, members, auto: false, .. } = &rows[i]
+        && (0.28..0.72).contains(&f)
+        && d.home == Parent::Top
+        && !d.whole
+        && !moving(i)
+    {
+        return Some(Drop { to: crate::doc::Anchor::Above(members.first()?.id.clone()), group: Some(Some(id.clone())), line: None, into: Some(r) });
+    }
+    // Otherwise the gap above or below it; the neighbours are the nearest rows that stay put
+    // (the pieces of an opened table or widget don't count).
+    let gap = if f < 0.5 { i } else { i + 1 };
+    let y = if f < 0.5 { r.min.y } else { r.max.y };
+    let usable = |k: usize| !matches!(rows[k], Row::Piece { .. }) && !moving(k);
+    let a = (0..gap).rev().find(|&k| usable(k));
+    let b = (gap..rows.len()).find(|&k| usable(k));
+    let indent = |depth: u8| r.min.x + 8.0 + 16.0 + depth as f32 * 16.0;
+    let (pa, da) = a.map_or((Parent::Top, 0), |k| row_parent(&rows[k]));
+    let (pb, db) = b.map_or((Parent::Top, 0), |k| row_parent(&rows[k]));
+    // Under the row above when it ends a folder or a section and the pointer is indented as it
+    // is; otherwise with the row below.
+    let ctx = if a.is_some() && da > 0 && (b.is_none() || db < da) && p.x > indent(da) {
+        pa
+    } else if b.is_some() {
+        pb
+    } else {
+        Parent::Top
+    };
+    let fits = match (&ctx, &d.home) {
+        (Parent::Section(s), Parent::Section(h)) => s == h,
+        (Parent::Section(_), _) | (_, Parent::Section(_)) => false,
+        (Parent::Folder(_), _) => !d.whole,
+        _ => true,
+    };
+    if !fits {
+        return None;
+    }
+    let in_ctx = |k: usize| row_parent(&rows[k]).0 == ctx;
+    let to = if let Some(k) = a.filter(|&k| in_ctx(k)) {
+        crate::doc::Anchor::Below(row_ends(&rows[k])?.1)
+    } else if let Some(k) = b.filter(|&k| in_ctx(k)) {
+        crate::doc::Anchor::Above(row_ends(&rows[k])?.0)
+    } else if let Some(k) = a.filter(|&k| holds(&rows[k], &ctx)) {
+        // Right under a folder or section with nothing else left in it.
+        crate::doc::Anchor::Below(row_ends(&rows[k])?.1)
+    } else {
+        crate::doc::Anchor::Bottom
+    };
+    let group = match &ctx {
+        Parent::Folder(f) => Some(Some(f.clone())),
+        Parent::Section(_) => None,
+        _ if d.whole => None,
+        _ => Some(None),
+    };
+    let depth = match (a.filter(|&k| in_ctx(k)), b.filter(|&k| in_ctx(k))) {
+        (_, Some(k)) | (Some(k), None) => row_parent(&rows[k]).1,
+        (None, None) => a.map_or(0, |k| row_parent(&rows[k]).1 + 1),
+    };
+    Some(Drop { to, group, line: Some((y, indent(depth))), into: None })
 }
 
 /* ---------- templates ---------- */
@@ -757,14 +1009,22 @@ pub fn participants(ui: &mut Ui, ed: &mut Editor) {
 }
 
 /// The little arrow by the avatars: who is here (a click follows them), presenting, emotes.
-fn people_menu(ui: &mut Ui, ed: &mut Editor) {
+fn people_menu(ui: &mut Ui, ed: &mut Editor, alone: bool) {
     let t = ui::theme(ui.ctx());
-    let (r, resp) = ui.allocate_exact_size(vec2(16.0, ui::hit(ui.ctx(), ui::ctl(24.0))), Sense::click());
+    // Alone (a phone, where the avatars don't fit): the people's icon with the arrow, so the
+    // arrow doesn't hang there pointing at nothing.
+    let w = if alone { 34.0 } else { 16.0 };
+    let (r, resp) = ui.allocate_exact_size(vec2(w, ui::hit(ui.ctx(), ui::ctl(24.0))), Sense::click());
     ui::hover_fill(ui, resp.id, r, resp.hovered(), 4.0, t.hover);
-    ui::icon(ui, "chevron-down", r.center(), 12.0, t.icon2);
+    if alone {
+        ui::icon(ui, "users", pos2(r.min.x + 11.0, r.center().y), 16.0, t.icon);
+        ui::icon(ui, "chevron-down", pos2(r.max.x - 8.0, r.center().y), 12.0, t.icon2);
+    } else {
+        ui::icon(ui, "chevron-down", r.center(), 12.0, t.icon2);
+    }
     let resp = ui::tip(resp, "Persone, presentazione ed emote", None);
     let edit_id = Id::new("people-menu-edit-profile");
-    egui::Popup::from_toggle_button_response(&resp).frame(ui::menu_frame(&t)).align(egui::RectAlign::BOTTOM_END).gap(8.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+    egui::Popup::from_toggle_button_response(&resp).frame(ui::menu_frame(&t)).align(egui::RectAlign::BOTTOM_END).gap(8.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| ui::menu_body(ui, |ui| {
         ui.set_min_width(240.0);
         ui.spacing_mut().item_spacing.y = 0.0;
         let me = serde_json::Value::Object(ed.presence.local.clone());
@@ -813,7 +1073,7 @@ fn people_menu(ui: &mut Ui, ed: &mut Editor) {
             }
         });
         ui.add_space(4.0);
-    });
+    }));
 }
 
 /// Colours a person can pick for themselves.
@@ -870,7 +1130,27 @@ fn share_button(ui: &mut Ui, b: &mut BoardScreen) {
         return;
     }
     let sharing = b.sharing();
-    if ui::button(ui, if sharing { "Condivisa" } else { "Condividi" }, if sharing { Btn::Secondary } else { Btn::Primary }, Some("share-2"), false, true).clicked() {
+    let label = if sharing { "Condivisa" } else { "Condividi" };
+    // On a phone just its icon: the words pushed the pill over the one on the left.
+    if ui::narrow(ui.ctx()) {
+        let t = ui::theme(ui.ctx());
+        let s = ui::hit(ui.ctx(), ui::ctl(24.0));
+        let (r, resp) = ui.allocate_exact_size(vec2(s, s), Sense::click());
+        let k = ui::motion::hover(ui.ctx(), resp.id, resp.hovered());
+        let (fill, fg) = if sharing { (ui::blend(t.bg, t.hover, k), t.icon) } else { (ui::blend(t.brand_fill, t.brand_fill_hover, k), Color32::WHITE) };
+        ui.painter().rect_filled(r, ui::RADIUS, fill);
+        if sharing {
+            ui.painter().rect_stroke(r, ui::RADIUS, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+        }
+        icon(ui, "share-2", r.center(), 15.0, fg);
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+        ui::focus_ring(ui, &resp, r);
+        if ui::tip(resp, label, None).clicked() {
+            b.ui.share = true;
+        }
+        return;
+    }
+    if ui::button(ui, label, if sharing { Btn::Secondary } else { Btn::Primary }, Some("share-2"), false, true).clicked() {
         b.ui.share = true;
     }
 }
@@ -1618,7 +1898,7 @@ fn main_menu(ui: &mut Ui, b: &mut BoardScreen, dialogs: &mut Dialogs) -> Option<
     ui::focus_ring(ui, &resp, r);
     let resp = ui::tip(resp, "Menu principale", None);
     let mut action = None;
-    egui::Popup::menu(&resp).frame(ui::menu_frame(&t)).show(|ui| {
+    egui::Popup::menu(&resp).frame(ui::menu_frame(&t)).show(|ui| ui::menu_body(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         ui.set_min_width(240.0);
         if b.host {
@@ -1667,7 +1947,7 @@ fn main_menu(ui: &mut Ui, b: &mut BoardScreen, dialogs: &mut Dialogs) -> Option<
         if ui::menu_item(ui, Some("keyboard"), "Scorciatoie da tastiera", Some("?"), false).clicked() {
             b.ui.shortcuts = true;
         }
-    });
+    }));
     action
 }
 
@@ -1691,18 +1971,24 @@ pub fn zen_pill(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     });
 }
 
-/// Right panel closed: people, share and the way back, floating at the top right.
-pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
+/// Right panel closed: people, share and the way back, floating at the top right of `stage`
+/// (the board as it will be once the panels have finished moving), beside `mini`, where the
+/// minimap rests, when that is the top right corner.
+pub fn right_pill(ctx: &egui::Context, stage: Rect, mini: Option<Rect>, b: &mut BoardScreen) {
     let t = ui::theme(ctx);
     let is_mobile = stage.width() < 600.0;
-    // Beside the minimap when it sits in the top right corner.
-    let mini = if b.editor.prefs.minimap { ctx.data(|d| d.get_temp::<Rect>(Id::new("minimap-rect"))) } else { None };
     let x = match mini {
         Some(m) if m.min.y < stage.min.y + 64.0 && m.max.x > stage.max.x - 120.0 => m.min.x - 8.0,
         _ => stage.max.x - 12.0,
     };
-    let x = ui::motion::spring(ctx, Id::new("right-pill-x"), x, 0.3, 0.9);
-    let k = ui::motion::appear(ctx, Id::new("right-pill-anim"), true);
+    // Coming back, it is where it belongs straight away: it glides only while it stays, to keep
+    // beside the minimap as that comes, goes or changes corner.
+    let (glide, anim) = (Id::new("right-pill-x"), Id::new("right-pill-anim"));
+    if ui::motion::coming_back(ctx, anim) {
+        ui::motion::hold(ctx, glide, x);
+    }
+    let x = ui::motion::spring(ctx, glide, x, 0.3, 0.9);
+    let k = ui::motion::appear(ctx, anim, true);
     let lift = ui::motion::travel(ctx, k) * 6.0;
     let pill = egui::Area::new(Id::new("right-pill")).pivot(egui::Align2::RIGHT_TOP).fixed_pos(pos2(x, stage.min.y + 12.0 + lift)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
@@ -1713,7 +1999,7 @@ pub fn right_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen) {
                 if !is_mobile {
                     participants(ui, &mut b.editor);
                 }
-                people_menu(ui, &mut b.editor);
+                people_menu(ui, &mut b.editor, is_mobile);
                 ui.spacing_mut().item_spacing.x = 4.0;
                 if !is_mobile && !b.editor.read_only {
                     // Clicked again, the templates go away: back to the layers if the panel was
@@ -1831,7 +2117,7 @@ fn table_tools(ctx: &egui::Context, stage: Rect, ed: &mut Editor, el: &El, tb: &
                 }
                 // More: before this row or column.
                 let more = ui::icon_button(ui, "more-horizontal", "Altro", None, vec2(28.0, 28.0), 16.0, false, false);
-                egui::Popup::menu(&more).frame(ui::menu_frame(&t)).show(|ui| {
+                egui::Popup::menu(&more).frame(ui::menu_frame(&t)).show(|ui| ui::menu_body(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     if ui::menu_item(ui, Some("row-plus"), "Aggiungi una riga sopra", None, false).clicked() {
                         let mut tt = tb.clone();
@@ -1849,7 +2135,7 @@ fn table_tools(ctx: &egui::Context, stage: Rect, ed: &mut Editor, el: &El, tb: &
                         header = !header;
                         next = Some((Table { header, ..tb.clone() }, (r, c)));
                     }
-                });
+                }));
             });
         });
     });
@@ -1909,7 +2195,7 @@ pub fn language_picker(ui: &mut Ui, current: &str, t: &Theme) -> Option<String> 
     ui::icon(ui, "chevron-down", rect.right_center() - vec2(10.0, 0.0), 12.0, t.icon2);
     let resp = ui::tip(resp, "Linguaggio", None);
     let mut picked = None;
-    egui::Popup::menu(&resp).frame(ui::menu_frame(t)).show(|ui| {
+    egui::Popup::menu(&resp).frame(ui::menu_frame(t)).show(|ui| ui::menu_body(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         ui.set_max_height(320.0);
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
@@ -1919,7 +2205,7 @@ pub fn language_picker(ui: &mut Ui, current: &str, t: &Theme) -> Option<String> 
                 }
             }
         });
-    });
+    }));
     picked
 }
 

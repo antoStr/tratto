@@ -60,6 +60,15 @@ pub struct Board {
 
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
+/// Where moved elements go in the stack: right above or right below another element, or to
+/// the very bottom.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Anchor {
+    Above(String),
+    Below(String),
+    Bottom,
+}
+
 impl Board {
     /// `notify` is called (from any thread) whenever the document changes.
     pub fn new(doc: Doc, notify: Notify) -> Board {
@@ -428,6 +437,59 @@ impl Board {
         self.prune_groups();
     }
 
+    /// The layers panel's drag and drop: `ids` go together (keeping their order) right above or
+    /// right below another element of the stack, into folder `group` (`Some(None)`: out of any
+    /// folder; `None`: each stays where it is). One undo step; only what moves is written, unless
+    /// the stack has no room left between the two neighbours (then it is numbered afresh).
+    pub fn move_in_stack(&mut self, ids: &[String], to: Anchor, group: Option<Option<String>>) {
+        let moving: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        let all = self.all().to_vec();
+        let (going, rest): (Vec<&Arc<El>>, Vec<&Arc<El>>) = all.iter().partition(|e| moving.contains(e.id.as_str()));
+        if going.is_empty() {
+            return;
+        }
+        let at = match &to {
+            Anchor::Above(id) => rest.iter().position(|e| e.id == *id).map(|i| i + 1),
+            Anchor::Below(id) => rest.iter().position(|e| e.id == *id),
+            Anchor::Bottom => Some(0),
+        };
+        let Some(at) = at else { return };
+        let n = going.len() as f64;
+        let lo = if at == 0 { rest.first().map_or(0.0, |e| e.z) - n - 1.0 } else { rest[at - 1].z };
+        let hi = if at == rest.len() { rest.last().map_or(0.0, |e| e.z) + n + 1.0 } else { rest[at].z };
+        let step = (hi - lo) / (n + 1.0);
+        let fits = step.is_finite() && step > (hi.abs().max(lo.abs()) * 1e-12).max(1e-9);
+        let regroup = |e: &El| match &group {
+            Some(g) => g.clone(),
+            None => e.group_id.clone(),
+        };
+        let mut next: Vec<El> = Vec::new();
+        if fits {
+            for (k, e) in going.iter().enumerate() {
+                next.push(El { z: lo + step * (k + 1) as f64, group_id: regroup(e), ..(***e).clone() });
+            }
+        } else {
+            // No room: the whole stack numbered again, the moved ones in their new place.
+            let order: Vec<&Arc<El>> = rest[..at].iter().chain(going.iter()).chain(rest[at..].iter()).copied().collect();
+            for (i, e) in order.iter().enumerate() {
+                let g = if moving.contains(e.id.as_str()) { regroup(e) } else { e.group_id.clone() };
+                if e.z != i as f64 || g != e.group_id {
+                    next.push(El { z: i as f64, group_id: g, ..(***e).clone() });
+                }
+            }
+        }
+        let changed: Vec<El> = next.into_iter().filter(|e| self.get(&e.id).is_none_or(|old| old.z != e.z || old.group_id != e.group_id)).collect();
+        if changed.is_empty() {
+            return;
+        }
+        self.stop_capturing();
+        self.put(changed);
+        if let Some(Some(g)) = &group {
+            self.restack(g);
+        }
+        self.prune_groups();
+    }
+
     pub fn rename_group(&mut self, group: &str, name: &str) {
         let clean: String = name.trim().chars().take(80).collect();
         if !clean.is_empty() {
@@ -683,6 +745,36 @@ mod tests {
         b.set_group(&["a".into(), "b".into(), "y".into()], None);
         assert_eq!(b.group_list().len(), 0);
         assert_eq!(b.groups.len(&b.doc.transact()), 0);
+    }
+
+    #[test]
+    fn layers_dragged_in_the_panel_land_between_their_new_neighbours() {
+        let mut b = board();
+        b.put([r("a", 0.0), r("b", 1.0), r("c", 2.0), r("d", 3.0)]);
+        // d (the top) dragged right below b: only d is written.
+        b.move_in_stack(&["d".into()], Anchor::Below("b".into()), None);
+        assert_eq!(ids(b.all()), ["a", "d", "b", "c"]);
+        assert_eq!(b.get("a").unwrap().z, 0.0);
+        // Two at once keep their order, to the top and to the bottom.
+        b.move_in_stack(&["a".into(), "d".into()], Anchor::Above("c".into()), None);
+        assert_eq!(ids(b.all()), ["b", "c", "a", "d"]);
+        b.move_in_stack(&["c".into(), "d".into()], Anchor::Bottom, None);
+        assert_eq!(ids(b.all()), ["c", "d", "b", "a"]);
+        // Into a folder, and out of it again; the folder goes when it is empty.
+        let g = b.create_group(&["b".into(), "a".into()], None);
+        b.move_in_stack(&["c".into()], Anchor::Above("a".into()), Some(Some(g.clone())));
+        assert_eq!(ids(&b.members(&g)), ["b", "a", "c"]);
+        b.move_in_stack(&["a".into(), "b".into(), "c".into()], Anchor::Bottom, Some(None));
+        assert!(b.group_list().is_empty());
+        assert_eq!(ids(b.all()), ["b", "a", "c", "d"]);
+        // One undo puts the last move back.
+        b.undo();
+        assert_eq!(b.group_list().len(), 1);
+        // No room between two equal neighbours: the stack is numbered afresh.
+        let mut b = board();
+        b.put([r("p", 1.0), r("q", 1.0), r("s", 5.0)]);
+        b.move_in_stack(&["s".into()], Anchor::Above("p".into()), None);
+        assert_eq!(ids(b.all()), ["p", "s", "q"]);
     }
 
     #[test]

@@ -179,6 +179,8 @@ pub enum Request {
 
 pub(crate) struct Draw {
     hl: bool,
+    /// The pen's brush (None for the highlighter).
+    pub(crate) brush: Option<Brush>,
     color: String,
     size: f64,
     opacity: f64,
@@ -191,15 +193,25 @@ pub(crate) struct Draw {
     /// Smoothed pen pressure; None until the first sample.
     pressure: Option<f64>,
     use_pressure: bool,
+    /// The pressure is raised to this power (Settings ▸ Penna ▸ Sensibilità).
+    gamma: f64,
+    /// The brush pen without pressure: how fast it moves (screen points per ms, smoothed) and
+    /// where and when it was last.
+    speed: Option<f64>,
+    last_raw: Option<(Pos2, f64)>,
     /// Last raw position, added at release so the line ends exactly where the pen lifted.
     raw: Option<Pos2>,
     pointer: u64,
     /// Tells this stroke's pieces apart from the previous one's, for the others.
     sid: u64,
-    /// Settled tessellated chunks of a live stroke so long strokes stay O(1) per frame.
-    chunks: Vec<egui::Shape>,
-    chunk_pts: usize,
-    chunk_cam: (i64, i64, i64, i64, i64),
+    /// The stroke on screen a piece at a time: what each piece is and its meshes, kept while the
+    /// piece stays the same (only the last one changes as the stroke grows) and the view doesn't
+    /// move. The shape is still worked out whole at each move (quick: a few milliseconds for
+    /// thousands of points); only turning it into triangles, the slow part, is spared.
+    pub(crate) pieces: Vec<(Option<crate::prims::PieceKey>, Vec<egui::Shape>)>,
+    /// The view the pieces were made for, and how many points they show.
+    pub(crate) pieces_cam: (i64, i64, i64, i64, i64),
+    pub(crate) pieces_pts: usize,
 }
 
 pub(crate) struct Touched {
@@ -300,6 +312,8 @@ pub struct Editor {
     pub(crate) emote_spray: Option<f64>,
     /// Some were sent with clicks: letting go of E sends no more.
     pub(crate) emote_sprayed: bool,
+    /// The eyedropper is armed: the next press on the board takes the colour there for the pen.
+    pub eyedropper: bool,
     /// Emotes floating up, everyone's: emoji, board point, when it started (ms, this clock).
     pub(crate) floaters: Vec<(String, f64, f64, f64)>,
     emote_n: u64,
@@ -392,6 +406,7 @@ impl Editor {
             emote_hold: None,
             emote_spray: None,
             emote_sprayed: false,
+            eyedropper: false,
             floaters: Vec::new(),
             emote_n: 0,
             seen_emotes: HashMap::new(),
@@ -934,7 +949,7 @@ impl Editor {
         r2(screen_px / self.cam.z)
     }
 
-    fn ink_element(&mut self, pts: &[f64], size: f64, color: &str, hl: bool, opacity: f64) -> El {
+    fn ink_element(&mut self, pts: &[f64], size: f64, color: &str, hl: bool, opacity: f64, brush: Option<Brush>) -> El {
         let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
         for p in pts.chunks_exact(3) {
             x0 = x0.min(p[0]);
@@ -944,7 +959,7 @@ impl Editor {
         }
         let rnd = stroke_round(size);
         let points = pts.chunks_exact(3).flat_map(|p| [rnd(p[0] - x0), rnd(p[1] - y0), ((p[2] * 1000.0).round() / 1000.0) as f32]).collect();
-        let ink = Ink { points, color: color.into(), size };
+        let ink = Ink { points, color: color.into(), size, brush };
         let mut el = self.base(El::new(if hl { Kind::Highlighter(ink) } else { Kind::Ink(ink) }));
         (el.x, el.y, el.w, el.h, el.opacity) = (x0, y0, x1 - x0, y1 - y0, opacity);
         el
@@ -981,6 +996,7 @@ impl Editor {
         let cutoff = if kind == PointerKind::Mouse { self.prefs.ink_smoothing.cutoff() * 1.2 } else { self.prefs.ink_smoothing.cutoff() };
         self.gesture = Some(Gesture::Draw(Box::new(Draw {
             hl,
+            brush: (!hl).then_some(pen.brush),
             color: pen.color,
             size,
             opacity: pen.opacity.clamp(0.05, 1.0),
@@ -989,12 +1005,15 @@ impl Editor {
             filter: Some(OneEuro::new(cutoff)),
             pressure: None,
             use_pressure: kind == PointerKind::Pen && self.prefs.pressure && !hl,
+            gamma: self.prefs.sensitivity.gamma(),
+            speed: None,
+            last_raw: None,
             raw: None,
             pointer,
             sid: (now() * 1000.0) as u64,
-            chunks: Vec::new(),
-            chunk_pts: 0,
-            chunk_cam: (0, 0, 0, 0, 0),
+            pieces: Vec::new(),
+            pieces_cam: (0, 0, 0, 0, 0),
+            pieces_pts: usize::MAX,
         })));
     }
 
@@ -1011,9 +1030,26 @@ impl Editor {
         if g.use_pressure
             && let Some(f) = force
         {
-            let p = ink::next_pressure(g.pressure, f as f64);
+            // As the pen gives it, through the sensitivity curve, smoothed only a little (pens
+            // report noisy values, but a heavier filter lags behind a quick lift).
+            let raw = (f as f64).clamp(0.0, 1.0).powf(g.gamma);
+            // The first touch reads light (the pen has only just met the glass): lifted, so a
+            // dot or the start of a stroke isn't a hairline.
+            let p = g.pressure.map_or(raw.max(0.3), |prev| prev + (raw - prev) * 0.5);
             g.pressure = Some(p);
-            pressure = ink::stored_pressure(p) as f64;
+            pressure = (p * 1000.0).round() / 1000.0;
+        } else if g.brush == Some(Brush::Brush) {
+            // A brush pen with a mouse (or a pen that has no pressure): thinner where it moves fast,
+            // as ink thins on a quick flick.
+            if let Some((p0, t0)) = g.last_raw
+                && t_ms > t0
+            {
+                let v = p0.distance(raw) as f64 / (t_ms - t0);
+                g.speed = Some(g.speed.map_or(v, |s| s + (v - s) * 0.3));
+            }
+            g.last_raw = Some((raw, t_ms));
+            let v = g.speed.unwrap_or(0.0);
+            pressure = ((1.0 - (v - 0.3) / 2.5).clamp(0.15, 1.0) * 1000.0).round() / 1000.0;
         }
         push_draw_point(g, &cam, pt(s.x, s.y), pressure, false);
         // The others get the new points with the next presence message.
@@ -1029,7 +1065,7 @@ impl Editor {
             let from = if self.presence.live_sid == g.sid { self.presence.live_sent.min(n) } else { 0 };
             let rnd = stroke_round(g.size);
             let pts: Vec<Value> = g.pts[from * 3..].iter().enumerate().map(|(i, &v)| json!(if i % 3 == 2 { r2(v) } else { rnd(v) as f64 })).collect();
-            state.insert("live".into(), json!({ "sid": g.sid, "from": from, "pts": pts, "color": g.color, "size": g.size, "hl": g.hl, "op": g.opacity }));
+            state.insert("live".into(), json!({ "sid": g.sid, "from": from, "pts": pts, "color": g.color, "size": g.size, "hl": g.hl, "op": g.opacity, "brush": g.brush }));
             (self.presence.live_sid, self.presence.live_sent) = (g.sid, n);
         }
         Value::Object(state)
@@ -1050,7 +1086,7 @@ impl Editor {
         let z = self.cam.z;
         let flat: Vec<f32> = g.pts.iter().map(|&v| v as f32).collect();
         let thin: Vec<f64> = ink::thin_points(&flat, (0.2 / z).min(g.size * 0.08)).into_iter().map(|v| v as f64).collect();
-        let mut el = self.ink_element(&thin, g.size, &g.color, g.hl, g.opacity);
+        let mut el = self.ink_element(&thin, g.size, &g.color, g.hl, g.opacity, g.brush);
         if !g.hl && self.prefs.ink_to_shape && g.snap.is_none() {
             let flat: Vec<f32> = thin.iter().map(|&v| v as f32).collect();
             if let Some(r) = ink::recognize(&flat, 1.0 / z) {
@@ -2107,6 +2143,46 @@ impl Editor {
         self.editing = None;
     }
 
+    /// The colour seen at a board point, as it is drawn: everything there over the board's
+    /// background, see-through parts and grains included (a pixel of the board, drawn alone).
+    pub fn color_at(&mut self, p: Pt) -> String {
+        let meta = self.board.meta();
+        let bg = color_or(&meta.background, Color32::from_gray(0xF5));
+        let Some(mut pm) = tiny_skia::Pixmap::new(1, 1) else { return hex(bg) };
+        let [r, g, b, a] = bg.to_srgba_unmultiplied();
+        pm.fill(tiny_skia::Color::from_rgba8(r, g, b, a));
+        let env = crate::prims::Env { dark_board: is_dark(&meta.background), ..Default::default() };
+        let t = tiny_skia::Transform::from_translate(0.5 - p.x as f32, 0.5 - p.y as f32);
+        let images = &self.painter.images;
+        let fetch = |k: &crate::prims::ImageKey| images.pixmap(k);
+        let at = BBox { x: p.x - 0.5, y: p.y - 0.5, w: 1.0, h: 1.0 };
+        for el in self.board.paint_order().iter().filter(|e| !e.hidden && intersects(&aabb(e), &at)) {
+            crate::raster::draw_element(&mut pm, el, &env, t, &fetch);
+        }
+        let c = pm.pixel(0, 0).map(|p| p.demultiply()).map_or(bg, |c| Color32::from_rgb(c.red(), c.green(), c.blue()));
+        hex(c)
+    }
+
+    /// Takes the colour at a board point for the tool in hand (the highlighter, or the pen).
+    pub(crate) fn pick_color(&mut self, p: Pt) {
+        let c = self.color_at(p);
+        if self.tool == Tool::Highlighter {
+            self.prefs.highlighter.color = c.clone();
+        } else if let Some(pen) = self.prefs.pens.get_mut(self.pen) {
+            pen.color = c.clone();
+        }
+        self.eyedropper = false;
+        self.requests.push(Request::Notice(format!("Colore preso: {c}")));
+    }
+
+    /// Points of the stroke being drawn (0 when none is), for the frame trace.
+    pub fn live_points(&self) -> usize {
+        match &self.gesture {
+            Some(Gesture::Draw(d)) => d.pts.len() / 3,
+            _ => 0,
+        }
+    }
+
     pub fn order(&mut self, dir: Order) {
         if self.read_only || self.selection.is_empty() {
             return;
@@ -2568,6 +2644,26 @@ mod tests {
     fn editor() -> Editor {
         let board = Board::new(yrs::Doc::new(), Arc::new(|| {}));
         Editor::new(board, "b".into(), Painter::new(crate::paint::Images::new(None)), Prefs::default(), "v".into())
+    }
+
+    /// The eyedropper sees what is drawn: a shape's fill, the board where nothing is, and a
+    /// see-through stroke mixed with what is under it; the pen in use takes it.
+    #[test]
+    fn the_eyedropper_takes_the_colour_as_it_is_seen() {
+        let mut ed = editor();
+        let mut s = El::new(Kind::Shape(Shape { fill: "#E03131".into(), stroke: "transparent".into(), stroke_width: 0.0, ..Default::default() }));
+        (s.x, s.y, s.w, s.h) = (0.0, 0.0, 100.0, 100.0);
+        let mut ink = El::new(Kind::Ink(Ink { points: vec![0.0, 0.0, -1.0, 100.0, 0.0, -1.0], color: "#1971C2".into(), size: 20.0, brush: Some(Brush::Marker) }));
+        (ink.x, ink.y, ink.w, ink.h, ink.z, ink.opacity) = (0.0, 50.0, 100.0, 0.0, 1.0, 0.5);
+        ed.board.put([s, ink]);
+        assert_eq!(ed.color_at(pt(20.0, 20.0)), "#E03131");
+        assert_eq!(ed.color_at(pt(500.0, 500.0)), "#F5F5F5", "the board itself");
+        let mixed = parse_color(&ed.color_at(pt(50.0, 50.0))).unwrap();
+        assert!(mixed.r() > 0x30 && mixed.r() < 0xD0 && mixed.b() > 0x40, "blue over red, half see-through: {mixed:?}");
+        ed.tool = Tool::Pen;
+        ed.pick_color(pt(20.0, 20.0));
+        assert_eq!(ed.prefs.pens[ed.pen].color, "#E03131");
+        assert!(!ed.eyedropper);
     }
 
     #[test]

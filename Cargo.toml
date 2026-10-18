@@ -114,7 +114,7 @@ zbus = { version = "5.19.0", default-features = false, features = ["async-io", "
 cpal = "0.18.2"
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_Pointer", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_Pointer", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_StationsAndDesktops"] }
 
 # The icon of Tratto.exe (and of its shortcuts).
 [target."cfg(windows)".build-dependencies]

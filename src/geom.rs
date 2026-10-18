@@ -79,7 +79,7 @@ pub fn frame(el: &El) -> BBox {
 /// How far the visible stroke reaches past the element's box.
 pub fn stroke_pad(el: &El) -> f64 {
     match &el.kind {
-        Kind::Ink(i) | Kind::Highlighter(i) => i.size / 2.0 + 1.0,
+        Kind::Ink(i) | Kind::Highlighter(i) => i.size * crate::ink::reach(i) + 1.0,
         Kind::Line(l) => l.stroke_width * if l.arrow_end || l.arrow_start { 3.0 } else { 0.5 } + 1.0,
         Kind::Shape(s) => s.stroke_width / 2.0 + 1.0,
         _ => 0.0,
@@ -942,7 +942,7 @@ pub mod tests {
         el
     }
     fn ink(points: Vec<f32>, w: f64, h: f64, size: f64) -> El {
-        El { w, h, ..base(Kind::Ink(Ink { points, color: "#000".into(), size })) }
+        El { w, h, ..base(Kind::Ink(Ink { points, color: "#000".into(), size, brush: None })) }
     }
     pub fn line(points: Vec<f32>, width: f64) -> El {
         base(Kind::Line(Line { points, stroke: "#000000".into(), stroke_width: width, dash: false, arrow_start: false, arrow_end: false, from: None, to: None, tape: false, route: crate::model::Route::Straight, label: None, ..Default::default() }))

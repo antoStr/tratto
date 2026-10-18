@@ -1,6 +1,7 @@
 //! Freehand strokes: their shape, smoothing, pressure, ink-to-shape recognition and the ruler.
 
 use crate::geom::{Pt, dist_to_segment, pt};
+use crate::model::Brush;
 use crate::prims::Path;
 
 /// A stroke's shape. `pts` is flat [x, y, pressure, …]; pressure < 0 means the device had no
@@ -11,19 +12,36 @@ use crate::prims::Path;
 /// stroke (perfect-freehand's) did, in the tight turns of thick pens and highlighters, and
 /// left hairs and notches like a dry brush.
 pub fn stroke_path(pts: &[f32], size: f64, highlighter: bool) -> Path {
-    let mut path = Path::default();
     if size <= 0.0 || !size.is_finite() || pts.len() < 3 {
-        return path;
+        return Path::default();
     }
     let real = pts.chunks_exact(3).any(|p| p[2] >= 0.0);
     let thinning = if highlighter || !real { 0.0 } else { 0.42 };
-    let radius = |p: f32| size * (0.5 - thinning * (0.5 - if p < 0.0 { 0.5 } else { p.clamp(0.0, 1.0) as f64 }));
-    // Mouse and pen jitter smoothed out; the last point stays where the pen was lifted.
-    let t = if highlighter { 0.75 } else { 0.85 };
+    let radius = |p: f32, _: f64, _: f64| size * (0.5 - thinning * (0.5 - if p < 0.0 { 0.5 } else { p.clamp(0.0, 1.0) as f64 }));
+    let c = centre_line(pts, if highlighter { 0.75 } else { 0.85 }, radius);
+    union_path(&smooth3(&thin3(&c, size * 0.08), size), size)
+}
+
+/// The pen's centre line as (x, y, radius): mouse and pen jitter smoothed out (the last point
+/// stays where the pen was lifted), the radius from `radius(pressure, distance from the start,
+/// distance to the end)`.
+fn centre_line(pts: &[f32], t: f64, radius: impl Fn(f32, f64, f64) -> f64) -> Vec<[f64; 3]> {
     let n = pts.len() / 3;
+    let mut along = Vec::with_capacity(n);
+    let mut s = 0.0;
+    for (i, p) in pts.chunks_exact(3).enumerate() {
+        if i > 0 {
+            let d = ((p[0] - pts[i * 3 - 3]) as f64).hypot((p[1] - pts[i * 3 - 2]) as f64);
+            if d.is_finite() {
+                s += d;
+            }
+        }
+        along.push(s);
+    }
     let mut c: Vec<[f64; 3]> = Vec::with_capacity(n);
     for (i, p) in pts.chunks_exact(3).enumerate() {
-        let q = [p[0] as f64, p[1] as f64, radius(p[2])];
+        // A pressure that is not a number counts as none.
+        let q = [p[0] as f64, p[1] as f64, radius(if p[2].is_finite() { p[2] } else { -1.0 }, along[i], s - along[i])];
         if !q.iter().all(|v| v.is_finite()) {
             continue;
         }
@@ -32,7 +50,208 @@ pub fn stroke_path(pts: &[f32], size: f64, highlighter: bool) -> Path {
             _ => q,
         });
     }
-    let c = smooth3(&thin3(&c, size * 0.08), size);
+    c
+}
+
+/// How wide a brush draws at a point, as a share of its size: from the pressure (below 0: the
+/// device has none) and, for the brush pen, how far the point is from either end.
+fn brush_width(brush: Brush, p: f32, from_start: f64, to_end: f64, size: f64) -> f64 {
+    let p = (p >= 0.0).then(|| p.clamp(0.0, 1.0) as f64);
+    match brush {
+        Brush::Pen => p.map_or(1.0, |p| 0.12 + 1.38 * p),
+        Brush::Pencil => p.map_or(0.9, |p| 0.55 + 0.6 * p),
+        Brush::Marker => 1.0,
+        Brush::Calligraphy => p.map_or(1.0, |p| 0.45 + 0.75 * p),
+        Brush::Brush => {
+            // Pointed ends: it narrows over the first and last two and a half widths.
+            let l = size * 2.5;
+            let end = |d: f64| {
+                let t = (d / l).clamp(0.0, 1.0);
+                0.12 + 0.88 * (1.0 - (1.0 - t) * (1.0 - t))
+            };
+            p.map_or(1.0, |p| 0.06 + 1.54 * p) * end(from_start).min(end(to_end))
+        }
+        Brush::Airbrush => p.map_or(1.0, |p| 0.6 + 0.6 * p),
+        Brush::Chalk => p.map_or(1.0, |p| 0.7 + 0.5 * p),
+    }
+}
+
+/// How far a stroke can reach from its centre line, as a share of its size: what its box must
+/// leave around the points.
+pub fn reach(ink: &crate::model::Ink) -> f64 {
+    match ink.brush {
+        // Older strokes: up to 0.71 with pressure (asked often, so not checked point by point:
+        // a stroke without pressure just gets a little more room).
+        None => 0.71,
+        Some(Brush::Pen) => 0.75,
+        Some(Brush::Brush) => 0.8,
+        Some(Brush::Pencil) => 0.58,
+        Some(Brush::Marker) => 0.5,
+        Some(Brush::Calligraphy | Brush::Airbrush | Brush::Chalk) => 0.6,
+    }
+}
+
+/// Points of a stroke's centre line in each piece it is drawn in (see `union_parts`).
+pub const PIECE: usize = 64;
+
+/// The shape of a stroke drawn with a brush (all but the airbrush, which is dabs), in pieces:
+/// the union of round dabs and bands as for the pen, a piece every `PIECE` points, or the sweep
+/// of a flat nib for calligraphy (in one piece).
+pub fn brush_paths(pts: &[f32], size: f64, brush: Brush) -> Vec<Path> {
+    if size <= 0.0 || !size.is_finite() || pts.len() < 3 {
+        return Vec::new();
+    }
+    let c = centre_line(pts, 0.85, |p, a, b| size / 2.0 * brush_width(brush, p, a, b, size));
+    match brush {
+        Brush::Calligraphy => calligraphy_parts(&smooth3(&thin3(&c, size * 0.04), size), size, PIECE),
+        _ => union_parts(&smooth3(&thin3(&c, size * 0.08), size), size, PIECE),
+    }
+}
+
+/// A flat nib held at 45° (a thin rectangle, so moving along its edge still leaves a hairline):
+/// broad going down to the right, thin going up to the right. What it sweeps is built a run at a
+/// time: while the pen keeps crossing the nib the same way, the same two corners lead and trail,
+/// and the run is one polygon between the path shifted to those corners; the nib itself is laid
+/// where the runs meet and at the ends. A few large polygons instead of one per step: a long
+/// stroke is built ten times faster. In pieces of whole runs, each at least `every` points long
+/// (where they meet, the nib laid there overlaps the next run by its hairline thickness).
+fn calligraphy_parts(c: &[[f64; 3]], size: f64, every: usize) -> Vec<Path> {
+    let mut parts: Vec<Path> = vec![Path::default()];
+    let mut since = 0;
+    let (nx, ny) = (std::f64::consts::FRAC_1_SQRT_2, -std::f64::consts::FRAC_1_SQRT_2);
+    let (mx, my) = (-ny, nx);
+    let h = size * 0.05;
+    // All turned the same way as the round dabs of the other brushes, so overlaps add up (non-zero)
+    // instead of cancelling out.
+    let add = |path: &mut Path, mut poly: Vec<f64>| {
+        let n = poly.len() / 2;
+        let area: f64 = (0..n).map(|i| poly[i * 2] * poly[(i * 2 + 3) % (n * 2)] - poly[(i * 2 + 2) % (n * 2)] * poly[i * 2 + 1]).sum();
+        if area.abs() < 1e-12 {
+            return;
+        }
+        if area < 0.0 {
+            poly = poly.chunks_exact(2).rev().flatten().copied().collect();
+        }
+        path.add_polygon(&poly);
+    };
+    let nib = |p: &[f64; 3]| -> Vec<f64> {
+        let (ax, ay, bx, by) = (nx * p[2], ny * p[2], mx * h, my * h);
+        vec![p[0] - ax - bx, p[1] - ay - by, p[0] + ax - bx, p[1] + ay - by, p[0] + ax + bx, p[1] + ay + by, p[0] - ax + bx, p[1] - ay + by]
+    };
+    if c.is_empty() {
+        return parts;
+    }
+    // Which way each step crosses the nib (along it and across it): the leading corner.
+    let lead = |i: usize| {
+        let (dx, dy) = (c[i + 1][0] - c[i][0], c[i + 1][1] - c[i][1]);
+        let s = |v: f64| if v.abs() < 1e-12 { 0.0 } else { v.signum() };
+        (s(dx * ny - dy * nx), s(dx * my - dy * mx))
+    };
+    let mut runs: Vec<(usize, usize, (f64, f64))> = Vec::new();
+    let mut start = 0;
+    let mut cur = (0.0, 0.0);
+    for i in 0..c.len() - 1 {
+        let (a, b) = lead(i);
+        let next = (if a == 0.0 { cur.0 } else { a }, if b == 0.0 { cur.1 } else { b });
+        if i > start && next != cur && cur != (0.0, 0.0) {
+            runs.push((start, i, cur));
+            start = i;
+        }
+        cur = next;
+    }
+    runs.push((start, c.len() - 1, cur));
+    for &(a, b, (sa, sb)) in &runs {
+        // A new piece once this one is long enough, at the start of a run.
+        if since >= every {
+            parts.push(Path::default());
+            since = 0;
+        }
+        since += b - a + 1;
+        let path = parts.last_mut().unwrap();
+        if b > a {
+            let k = |p: &[f64; 3]| (sa * nx * p[2] + sb * mx * h, sa * ny * p[2] + sb * my * h);
+            let mut poly = Vec::with_capacity((b - a + 1) * 4);
+            for p in &c[a..=b] {
+                let (kx, ky) = k(p);
+                poly.extend([p[0] - kx, p[1] - ky]);
+            }
+            for p in c[a..=b].iter().rev() {
+                let (kx, ky) = k(p);
+                poly.extend([p[0] + kx, p[1] + ky]);
+            }
+            add(path, poly);
+        }
+        add(path, nib(&c[a]));
+    }
+    add(parts.last_mut().unwrap(), nib(&c[c.len() - 1]));
+    parts
+}
+
+/// How strong each airbrush dab is at full pressure: many overlap, so each adds a little.
+const FLOW: f64 = 0.17;
+/// How far apart airbrush dabs are, as a share of their width: close enough that the soft
+/// edge shows no ripple.
+const SPACING: f64 = 0.1;
+
+/// The airbrush's dabs along a stroke, `[x, y, radius, alpha]`: soft round spots a small share
+/// of their width apart, building up where they overlap. Never closer than `min_step` (on
+/// screen, about a pixel): fewer, stronger dabs then give the same build-up.
+pub fn brush_dabs(pts: &[f32], size: f64, min_step: f64) -> Vec<[f32; 4]> {
+    let mut out = Vec::new();
+    if size <= 0.0 || !size.is_finite() || pts.len() < 3 {
+        return out;
+    }
+    // The centre line with the alpha in place of the radius, then the radius alongside.
+    let flow = |p: f32| FLOW * if p < 0.0 { 0.75 } else { 0.25 + 0.75 * p.clamp(0.0, 1.0) as f64 };
+    let c = centre_line(pts, 0.85, |p, _, _| size / 2.0 * brush_width(Brush::Airbrush, p, 0.0, 0.0, size));
+    let a = centre_line(pts, 0.85, |p, _, _| flow(p));
+    if c.is_empty() || a.len() != c.len() {
+        return out;
+    }
+    // The spacing depends only on where the dabs are (never on how long the stroke has become),
+    // so the dabs already laid stay put as the stroke grows.
+    let least = (size * 0.02).max(min_step);
+    // A dab `k` times farther apart than it should be stands for `k` of them.
+    let strength = |a: f64, k: f64| if k <= 1.0 { a } else { 1.0 - (1.0 - a).powf(k) };
+    let first_k = least / (c[0][2] * 2.0 * SPACING).max(1e-9);
+    out.push([c[0][0] as f32, c[0][1] as f32, c[0][2] as f32, strength(a[0][2], first_k) as f32]);
+    let mut since = 0.0;
+    for i in 1..c.len() {
+        let (p0, p1) = (c[i - 1], c[i]);
+        let d = (p1[0] - p0[0]).hypot(p1[1] - p0[1]);
+        let mut at = 0.0;
+        loop {
+            let r = p0[2] + (p1[2] - p0[2]) * (at / d.max(1e-9));
+            let nominal = (r * 2.0 * SPACING).max(1e-9);
+            let step = nominal.max(least);
+            if since + (d - at) < step {
+                since += d - at;
+                break;
+            }
+            at += step - since;
+            since = 0.0;
+            let k = at / d.max(1e-9);
+            let lerp = |u: f64, v: f64| u + (v - u) * k;
+            out.push([lerp(p0[0], p1[0]) as f32, lerp(p0[1], p1[1]) as f32, lerp(p0[2], p1[2]) as f32, strength(lerp(a[i - 1][2], a[i][2]), step / nominal) as f32]);
+        }
+    }
+    out
+}
+
+/// The union of round dabs along the centre line and the bands joining them.
+fn union_path(c: &[[f64; 3]], size: f64) -> Path {
+    union_parts(c, size, usize::MAX).pop().unwrap_or_default()
+}
+
+/// The same union cut into pieces of about `every` points, each piece's own union, the pieces
+/// meeting edge to edge where a stretch runs smooth (a point without a dab, where the bands on
+/// either side share their cross-section): together they cover exactly what the whole does, only
+/// where the stroke crosses itself from one piece to another is it covered twice. A stroke being
+/// drawn then redraws only its last piece, the others staying exactly as they were.
+fn union_parts(c: &[[f64; 3]], size: f64, every: usize) -> Vec<Path> {
+    if c.is_empty() {
+        return vec![Path::default()];
+    }
     // A dab where the band turns sharply or changes width fast, at the ends, and on both sides of
     // a band left out; along a smooth stretch the bands meet edge to edge along the bisector.
     let mut dab = vec![false; c.len()];
@@ -55,8 +274,19 @@ pub fn stroke_path(pts: &[f32], size: f64, highlighter: bool) -> Path {
         }
         bands.push((i, d, s));
     }
-    for (&[x, y, r], _) in c.iter().zip(&dab).filter(|(_, d)| **d) {
-        circle(&mut path, x, y, r);
+    // Where the pieces meet: the first point without a dab once a piece is long enough.
+    let mut bounds = vec![0];
+    let mut next = every;
+    for (i, &d) in dab.iter().enumerate().take(c.len().saturating_sub(1)).skip(1) {
+        if i >= next && !d {
+            bounds.push(i);
+            next = i.saturating_add(every);
+        }
+    }
+    let piece = |i: usize| bounds.partition_point(|&b| b <= i).saturating_sub(1);
+    let mut paths = vec![Path::default(); bounds.len()];
+    for (i, (&[x, y, r], _)) in c.iter().zip(&dab).enumerate().filter(|(_, (_, d))| **d) {
+        circle(&mut paths[piece(i)], x, y, r);
     }
     let left = |i: usize| {
         let (dx, dy) = (c[i + 1][0] - c[i][0], c[i + 1][1] - c[i][1]);
@@ -86,9 +316,9 @@ pub fn stroke_path(pts: &[f32], size: f64, highlighter: bool) -> Path {
             }
         }
         let [a, b] = ends;
-        path.add_polygon(&[a[0], a[1], b[0], b[1], b[2], b[3], a[2], a[3]]);
+        paths[piece(i)].add_polygon(&[a[0], a[1], b[0], b[1], b[2], b[3], a[2], a[3]]);
     }
-    path
+    paths
 }
 
 /// A circle of cubic arcs, turning as `Path::ellipse` does.
@@ -187,19 +417,6 @@ impl OneEuro {
         self.y += a * (y - self.y);
         pt(self.x, self.y)
     }
-}
-
-/// Pen pressure smoothed (pens report noisy values) and lifted so a light touch still shows.
-pub fn next_pressure(prev: Option<f64>, raw: f64) -> f64 {
-    let p = raw.clamp(0.0, 1.0);
-    match prev {
-        None => p.max(0.35),
-        Some(prev) => prev + (p - prev) * 0.3,
-    }
-}
-
-pub fn stored_pressure(smoothed: f64) -> f32 {
-    ((0.2 + 0.8 * smoothed) * 1000.0).round() as f32 / 1000.0
 }
 
 /// Drops points closer than `min_dist` to the previous kept one; keeps the last point.

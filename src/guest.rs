@@ -79,6 +79,8 @@ pub fn start() {
         let _ = window().add_event_listener_with_callback_and_bool(name, only_touch.as_ref().unchecked_ref(), true);
     }
     only_touch.forget();
+    // Pens (Apple Pencil, S Pen, a tablet's pen) and their pressure.
+    crate::pen::listen_web();
     wasm_bindgen_futures::spawn_local(async move {
         let started = eframe::WebRunner::new().start(canvas, eframe::WebOptions::default(), Box::new(|cc| Ok(Box::new(GuestApp::new(cc))))).await;
         if let Some(el) = window().document().and_then(|d| d.get_element_by_id("loading")) {

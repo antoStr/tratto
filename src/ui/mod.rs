@@ -407,6 +407,13 @@ pub fn button(ui: &mut Ui, text: &str, kind: Kind, icon_name: Option<&str>, big:
     resp
 }
 
+/// The body of a menu: it scrolls when taller than the window (big text in a small window)
+/// instead of running off the bottom.
+pub fn menu_body<R>(ui: &mut Ui, body: impl FnOnce(&mut Ui) -> R) -> R {
+    let room = (ui.ctx().content_rect().height() - 32.0).max(120.0);
+    egui::ScrollArea::vertical().max_height(room).auto_shrink([true, true]).show(ui, body).inner
+}
+
 /// The keyboard focus ring (WCAG: focus visible).
 pub fn focus_ring(ui: &Ui, resp: &Response, rect: egui::Rect) {
     if resp.has_focus() && ui.ctx().input(|i| !i.pointer.any_down()) {
@@ -473,16 +480,35 @@ pub fn segmented<T: PartialEq + Clone>(ui: &mut Ui, value: &mut T, options: &[(T
     let key: Vec<&str> = options.iter().map(|o| o.1).collect();
     let base = ui.id().with(("seg", key));
     ui.painter().rect_filled(rect, RADIUS, t.bg2);
-    let w = (rect.width() - 2.0) / options.len().max(1) as f32;
+    // Equal parts when every label fits in one; otherwise each part as wide as its label, and
+    // when even that is too much, the labels a little smaller (never cut off).
+    let room = rect.width() - 2.0;
+    let natural: Vec<f32> = options.iter().map(|o| if o.1.starts_with("icon:") { 30.0 } else { ui.painter().layout_no_wrap(o.1.to_string(), medium(s.fs), t.text).size().x + 16.0 }).collect();
+    let total: f32 = natural.iter().sum();
+    let n = options.len().max(1) as f32;
+    let (widths, shrink): (Vec<f32>, f32) = if natural.iter().all(|&w| w <= room / n) {
+        (vec![room / n; options.len()], 1.0)
+    } else if total <= room {
+        (natural.iter().map(|w| w + (room - total) / n).collect(), 1.0)
+    } else {
+        let k = room / total;
+        (natural.iter().map(|w| w * k).collect(), k.max(0.72))
+    };
+    let lefts: Vec<f32> = widths.iter().scan(0.0, |x, w| {
+        let at = *x;
+        *x += w;
+        Some(at)
+    }).collect();
     let at = options.iter().position(|(v, _)| v == value);
     if let Some(i) = at {
         ctx.data_mut(|d| d.insert_temp(base.with("last"), i));
     }
     let shown = motion::hover(&ctx, base.with("shown"), at.is_some());
-    if let Some(i) = at.or_else(|| ctx.data(|d| d.get_temp::<usize>(base.with("last"))))
+    if let Some(i) = at.or_else(|| ctx.data(|d| d.get_temp::<usize>(base.with("last")))).filter(|&i| i < options.len())
         && shown > 0.0
     {
-        let x = motion::spring(&ctx, base.with("thumb"), i as f32 * w, 0.32, 0.88);
+        let x = motion::spring(&ctx, base.with("thumb"), lefts[i], 0.32, 0.88);
+        let w = motion::spring(&ctx, base.with("thumb-w"), widths[i], 0.32, 0.88);
         let thumb = Rect::from_min_size(pos2(rect.min.x + 1.0 + x, rect.min.y + 1.0), vec2(w, h - 2.0));
         let shadow = egui::Shadow { offset: [0, 1], blur: 2, spread: 0, color: black(if t.dark { 0.3 } else { 0.08 } * shown) };
         ui.painter().add(shadow.as_shape(thumb, RADIUS - 1));
@@ -490,7 +516,7 @@ pub fn segmented<T: PartialEq + Clone>(ui: &mut Ui, value: &mut T, options: &[(T
     }
     let mut changed = false;
     for (i, (v, label)) in options.iter().enumerate() {
-        let r = egui::Rect::from_min_size(pos2(rect.min.x + 1.0 + i as f32 * w, rect.min.y + 1.0), vec2(w, h - 2.0));
+        let r = egui::Rect::from_min_size(pos2(rect.min.x + 1.0 + lefts[i], rect.min.y + 1.0), vec2(widths[i], h - 2.0));
         let resp = ui.interact(r, base.with(i), Sense::click());
         let on = at == Some(i);
         let h = motion::hover(&ctx, resp.id.with("h"), resp.hovered() && !on);
@@ -498,7 +524,8 @@ pub fn segmented<T: PartialEq + Clone>(ui: &mut Ui, value: &mut T, options: &[(T
         if let Some(name) = label.strip_prefix("icon:") {
             icon(ui, name, r.center(), 14.0, color);
         } else {
-            let font = if on { medium(s.fs) } else { FontId::proportional(s.fs) };
+            let size = s.fs * shrink;
+            let font = if on { medium(size) } else { FontId::proportional(size) };
             ui.painter().with_clip_rect((r.shrink(2.0)).intersect(ui.clip_rect())).text(r.center(), egui::Align2::CENTER_CENTER, *label, font, color);
         }
         resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, label.trim_start_matches("icon:")));

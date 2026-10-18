@@ -7,7 +7,7 @@ use std::sync::Arc;
 use egui::{Color32, Id, Rect, Sense, Stroke, Ui, pos2, vec2};
 
 use crate::editor::{AlignKind, Editor, Request, Tool};
-use crate::model::{Align, El, INK_COLORS, Kind, SECTION_COLORS, STICKY_COLORS};
+use crate::model::{Align, Brush, El, INK_COLORS, Kind, SECTION_COLORS, STICKY_COLORS};
 use crate::ui::{self, Theme, icon};
 
 const B: f32 = 28.0;
@@ -45,17 +45,29 @@ pub fn context_bar(ctx: &egui::Context, free: Rect, ed: &mut Editor) {
     // Clear of the "+" handles FigJam puts around a selection.
     let gap = 36.0;
     let h = ctx.data(|d| d.get_temp::<f32>(Id::new("ctx-bar-h"))).unwrap_or(40.0);
-    let above = sel.min.y - gap - h >= free.min.y + 8.0;
-    let rise = ui::motion::travel(ctx, k) * 6.0;
-    let (pivot, at) = if above {
-        (egui::Align2::CENTER_BOTTOM, pos2(sel.center().x, sel.min.y - gap + rise))
-    } else {
-        (egui::Align2::CENTER_TOP, pos2(sel.center().x, (sel.max.y + gap).min(free.max.y - 120.0) - rise))
+    let w = ctx.data(|d| d.get_temp::<f32>(Id::new("ctx-bar-w"))).unwrap_or(320.0);
+    // What stays uncovered (last frame's places): the pills and the minimap in the corners, the
+    // toolbar at the bottom. The bar goes above the selection, else below it, else just under
+    // the pills; when nothing is free (a tiny window), above it as always.
+    let keep: Vec<Rect> = ["left-pill-rect", "right-pill-rect", "minimap-rect", "bottom-bars"].iter().filter_map(|k| ctx.data(|d| d.get_temp::<Rect>(Id::new(*k)))).collect();
+    let x0 = (sel.center().x - w / 2.0).clamp(free.min.x + 8.0, (free.max.x - 8.0 - w).max(free.min.x + 8.0));
+    let fits = |top: f32| {
+        let r = Rect::from_min_size(pos2(x0, top), vec2(w, h));
+        top >= free.min.y + 8.0 && r.max.y <= free.max.y - 8.0 && !keep.iter().any(|c| c.intersects(r.expand(4.0)))
     };
+    let pills_bottom = keep.iter().filter(|c| c.min.y < free.min.y + 80.0).map(|c| c.max.y + 8.0).fold(free.min.y + 8.0, f32::max);
+    let above_top = sel.min.y - gap - h;
+    let below_top = sel.max.y + gap;
+    let top = [above_top, below_top, pills_bottom].into_iter().find(|&y| fits(y)).unwrap_or(if above_top >= free.min.y + 8.0 { above_top } else { below_top.min(free.max.y - 120.0) });
+    let rise = ui::motion::travel(ctx, k) * 6.0;
+    // Rising in from the selection's side.
+    let (pivot, at) = if top + h <= sel.min.y { (egui::Align2::CENTER_TOP, pos2(sel.center().x, top + rise)) } else { (egui::Align2::CENTER_TOP, pos2(sel.center().x, top - rise)) };
     let light = ui::theme(ctx);
     // The bar is dark in both themes, like Figma's menus: its widgets draw with the dark theme.
     let high_contrast = light.border == Theme::new(light.dark, light.brand, true).border;
     let dark = Theme::new(true, light.brand, high_contrast);
+    // The app's own theme, for panels opened from the bar.
+    ctx.data_mut(|d| d.insert_temp(Id::new("app-theme"), light));
     let resp = egui::Area::new(Id::new("ctx-bar")).pivot(pivot).fixed_pos(at).constrain_to(free.shrink(8.0)).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
         ctx.data_mut(|d| d.insert_temp(Id::NULL, dark));
@@ -72,6 +84,7 @@ pub fn context_bar(ctx: &egui::Context, free: Rect, ed: &mut Editor) {
     });
     ctx.data_mut(|d| {
         d.insert_temp(Id::new("ctx-bar-h"), resp.response.rect.height());
+        d.insert_temp(Id::new("ctx-bar-w"), resp.response.rect.width());
         d.insert_temp(Id::new("ctx-bar-rect"), resp.response.rect);
     });
 }
@@ -105,7 +118,7 @@ fn controls(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], t: &Theme) {
             // Several notes: sort them, as in FigJam.
             if els.len() > 1 {
                 let r = ui::icon_button(ui, "list", "Ordina le note", None, vec2(B, B), 16.0, false, false);
-                egui::Popup::menu(&r).frame(ui::menu_frame(t)).show(|ui| {
+                egui::Popup::menu(&r).frame(ui::menu_frame(t)).show(|ui| ui::menu_body(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     if ui::menu_item(ui, Some("palette"), "Ordina per colore", None, false).clicked() {
                         ed.sort_stickies(false);
@@ -113,7 +126,7 @@ fn controls(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], t: &Theme) {
                     if els.iter().any(|e| e.sticky().is_some_and(|s| s.author.is_some())) && ui::menu_item(ui, Some("user-round"), "Ordina per autore", None, false).clicked() {
                         ed.sort_stickies(true);
                     }
-                });
+                }));
             }
         }
         // One element with a web address in its text: open it (Ctrl+click does it too).
@@ -290,6 +303,40 @@ fn controls(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], t: &Theme) {
                     _ => {}
                 });
             }
+        }
+        // Strokes: their brush, changed after the fact (shown as it looks).
+        if only("ink") {
+            let cur = same(els, |e| e.ink().map(|i| i.brush.unwrap_or(Brush::Pen)));
+            let color = same(els, |e| e.ink().map(|i| i.color.clone())).unwrap_or_else(|| "#FFFFFF".into());
+            let r = ui::icon_button(ui, "", &format!("Pennello: {}", cur.map_or("diversi", |b| b.name())), None, vec2(B + 24.0, B), 16.0, false, false);
+            let sample = Rect::from_min_size(r.rect.min + vec2(2.0, 4.0), vec2(B + 6.0, B - 8.0));
+            // On the dark bar, a dark ink is drawn light.
+            let ink = crate::model::color_or(&color, crate::model::DARK);
+            let ink = if crate::model::is_dark(&color) { Color32::from_gray(0xE8) } else { ink };
+            super::toolbar::brush_sample(ui, sample, cur.unwrap_or(Brush::Pen), ink, if cur == Some(Brush::Airbrush) { 9.0 } else { 4.5 });
+            icon(ui, "chevron-down", r.rect.right_center() - vec2(8.0, 0.0), 10.0, t.icon2);
+            // The list is a panel in the app's own theme (the samples show the ink as it is),
+            // not the bar's dark one.
+            let app = ui.ctx().data(|d| d.get_temp::<Theme>(Id::new("app-theme"))).unwrap_or(*t);
+            egui::Popup::menu(&r).frame(ui::float_frame(&app).inner_margin(egui::Margin::same(6))).show(|ui| {
+                ui.ctx().data_mut(|d| d.insert_temp(Id::NULL, app));
+                ui.set_width(ui::px(11.0) * 10.0 + 96.0);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                if let Some(b) = super::toolbar::brush_rows(ui, cur, &color, &app) {
+                    // A width that doesn't suit the new brush (a 4 px airbrush would hardly
+                    // show) becomes its usual one, as the stroke is seen now.
+                    let (z, (lo, hi, start)) = (ed.cam.z, super::toolbar::brush_sizes(b));
+                    ed.board.update(&ids, |el| {
+                        if let Kind::Ink(i) = &mut el.kind {
+                            i.brush = Some(b);
+                            if !(lo..=hi).contains(&(i.size * z)) {
+                                i.size = start / z;
+                            }
+                        }
+                    });
+                }
+                ui.ctx().data_mut(|d| d.insert_temp(Id::NULL, *t));
+            });
         }
         // Text on a connector, in one click (a double click on it works too).
         if let [one] = els

@@ -100,6 +100,48 @@ pub struct Ink {
     pub points: Vec<f32>,
     pub color: String,
     pub size: f64,
+    /// What it was drawn with. None: a stroke of an older Tratto, drawn as it was then (its
+    /// pressure kept between 0.2 and 1, with a gentler effect on the width).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brush: Option<Brush>,
+}
+
+/// What a pen draws like: a small brush library, as in Procreate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Brush {
+    /// Ink: thin with a light touch, thick pressing hard.
+    #[default]
+    Pen,
+    /// Graphite on paper: grainy.
+    Pencil,
+    /// Felt tip: the same width all along.
+    Marker,
+    /// A flat nib held at 45°: broad one way, a hairline the other.
+    Calligraphy,
+    /// A brush pen: pointed ends, swelling with pressure (with a mouse, where it slows down).
+    Brush,
+    /// A soft spray that builds up, for shading.
+    Airbrush,
+    /// Chalk or pastel: coarse grain.
+    Chalk,
+}
+
+/// The brushes offered, in order, with their names.
+pub const BRUSHES: [(Brush, &str); 7] = [
+    (Brush::Pen, "Penna"),
+    (Brush::Pencil, "Matita"),
+    (Brush::Marker, "Pennarello"),
+    (Brush::Calligraphy, "Calligrafica"),
+    (Brush::Brush, "Pennello"),
+    (Brush::Airbrush, "Aerografo"),
+    (Brush::Chalk, "Gessetto"),
+];
+
+impl Brush {
+    pub fn name(self) -> &'static str {
+        BRUSHES.iter().find(|b| b.0 == self).map_or("Penna", |b| b.1)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

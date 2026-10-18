@@ -52,6 +52,18 @@ fn kind_of(touch: u64) -> PointerKind {
     }
 }
 
+/// The pointer id of a pen moving the mouse pointer (touch ids are the system's, never this).
+const MOUSE_PEN: u64 = u64::MAX - 1;
+
+/// A pen touch's pressure: its own force, or the pen's pointer events' when the browser leaves
+/// the force out (or gives 0 for a pen that is touching).
+fn pen_force(id: u64, force: Option<f32>) -> Option<f32> {
+    if crate::pen::state(id).is_some() && force.is_none_or(|f| f <= 0.0) {
+        return crate::pen::touch_pressure().or(force);
+    }
+    force
+}
+
 impl Editor {
     /// Handles this frame's input. `hovered`: the pointer is over the board rather than over a
     /// panel; `keys`: no text field or menu has the keyboard.
@@ -106,11 +118,19 @@ impl Editor {
                         continue;
                     }
                     if pressed {
+                        // A pen that moves the mouse pointer (a tablet through Wintab, a pen in a
+                        // desktop browser) is a pen all the same, with its pressure.
+                        let mouse_pen = if self.input.touch_began.is_none() { crate::pen::mouse_pen() } else { None };
                         let (kind, pointer, force) = match self.input.touch_began.take() {
-                            Some((id, f)) => (kind_of(id), id, f),
-                            None => (PointerKind::Mouse, 0, None),
+                            Some((id, f)) => (kind_of(id), id, pen_force(id, f)),
+                            None => match mouse_pen {
+                                Some(p) => (PointerKind::Pen, MOUSE_PEN, Some(p.pressure)),
+                                None => (PointerKind::Mouse, 0, None),
+                            },
                         };
-                        if !hovered && kind == PointerKind::Mouse {
+                        // On a panel or the toolbar: that is theirs, the board starts nothing
+                        // (a pen's tap on a button used to leave a dot underneath).
+                        if !hovered && kind != PointerKind::Touch {
                             continue;
                         }
                         self.input.kind = Some(kind);
@@ -126,8 +146,10 @@ impl Editor {
                             }
                             continue;
                         }
-                        let barrel = crate::pen::state(pointer).is_some_and(|p| p.barrel);
-                        let eraser = crate::pen::state(pointer).is_some_and(|p| p.eraser);
+                        let (barrel, eraser) = match mouse_pen {
+                            Some(p) => (p.barrel, p.eraser),
+                            None => crate::pen::state(pointer).map_or((false, false), |p| (p.barrel, p.eraser)),
+                        };
                         self.input.down = true;
                         self.on_down(s, button, kind, force, modifiers, t, barrel, eraser);
                         if kind != PointerKind::Mouse && matches!(self.gesture, Some(Gesture::Move { .. } | Gesture::Marquee { .. } | Gesture::Pan { .. } | Gesture::Lasso { .. })) {
@@ -147,10 +169,18 @@ impl Editor {
                     self.input.pointer_at = Some(pos);
                     let m = ctx.input(|i| i.modifiers);
                     let t = at(&mut nth);
-                    // Writing, erasing or drawing a lasso with the mouse: first the positions the
-                    // system folded into this move, so fast curves keep their shape.
+                    if self.input.down
+                        && self.input.pointer == MOUSE_PEN
+                        && let Some(p) = crate::pen::mouse_pen()
+                    {
+                        self.input.force = Some(p.pressure);
+                    }
+                    // Writing, erasing or drawing a lasso with the mouse (or a tablet's pen moving
+                    // the mouse pointer): first the positions the system folded into this move, so
+                    // fast curves keep their shape.
                     let mut pts = Vec::new();
-                    if self.input.kind == Some(PointerKind::Mouse) && matches!(self.gesture, Some(Gesture::Draw(_) | Gesture::Erase { .. } | Gesture::Lasso { .. })) {
+                    let mouse_moved = self.input.kind == Some(PointerKind::Mouse) || (self.input.down && self.input.pointer == MOUSE_PEN);
+                    if mouse_moved && matches!(self.gesture, Some(Gesture::Draw(_) | Gesture::Erase { .. } | Gesture::Lasso { .. })) {
                         let ppp = ctx.pixels_per_point();
                         pts.extend(crate::pen::mouse_trail((pos.x * ppp, pos.y * ppp)).into_iter().map(|(x, y)| self.screen_pt(egui::pos2(x / ppp, y / ppp))));
                     }
@@ -284,7 +314,7 @@ impl Editor {
             }
             TouchPhase::Move => {
                 if Some(id) == self.input.touch_pointer {
-                    self.input.force = force;
+                    self.input.force = pen_force(id, force);
                 }
                 if pen {
                     self.last_pen = t;
@@ -379,6 +409,10 @@ impl Editor {
         }
         let touch_pans = kind == PointerKind::Touch && !self.prefs.finger_draw;
 
+        // The eyedropper: armed from the pen's colours, or Alt+click with a pen or the highlighter.
+        if !ro && (self.eyedropper || (m.alt && matches!(tool, Tool::Pen | Tool::Highlighter))) {
+            return self.pick_color(p);
+        }
         // The pen's eraser end, and its barrel button (lasso; a tap opens the menu).
         if !ro && eraser {
             return self.start_erase(p);
@@ -968,6 +1002,8 @@ impl Editor {
         if key == Key::Escape {
             if self.gesture.is_some() {
                 self.cancel_gesture();
+            } else if self.eyedropper {
+                self.eyedropper = false;
             } else if !self.selection.is_empty() {
                 self.selection.clear();
             } else if self.prefs.zen {
@@ -1096,6 +1132,9 @@ impl Editor {
     fn cursor(&self) -> CursorIcon {
         if matches!(self.gesture, Some(Gesture::Pan { .. })) {
             return CursorIcon::Grabbing;
+        }
+        if self.eyedropper {
+            return CursorIcon::Crosshair;
         }
         if self.space || self.tool == Tool::Hand {
             return CursorIcon::Grab;

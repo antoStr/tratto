@@ -4,7 +4,7 @@ use egui::{Color32, Id, Rect, RichText, Sense, Stroke, pos2, vec2};
 
 use super::Toasts;
 use super::board::BoardScreen;
-use crate::prefs::{Prefs, Smoothing, Theme, ToolbarPos, Wheel};
+use crate::prefs::{Prefs, Sensitivity, Smoothing, Theme, ToolbarPos, Wheel};
 use crate::ui::{self, Kind as Btn};
 
 #[derive(Default)]
@@ -85,6 +85,56 @@ pub fn dialog_opt(ctx: &egui::Context, id: &str, title: &str, width: f32, open: 
     true
 }
 
+/// A pad to try the pen on: the pressure Tratto reads from it, live, and the line it gives;
+/// and how the pen reaches Tratto (or what to do when it brings no pressure).
+fn pressure_pad(ui: &mut egui::Ui, p: &Prefs) {
+    let t = ui::theme(ui.ctx());
+    let id = Id::new("pressure-pad");
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 96.0), Sense::drag());
+    ui.painter().rect(rect, ui::RADIUS, t.bg2, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+    // The pressure now: a pen's touch (Windows Ink, a tablet, an iPad), or the pen behind the
+    // mouse pointer (Wintab, a browser).
+    let force = ui.input(|i| i.events.iter().rev().find_map(|e| if let egui::Event::Touch { force: Some(f), .. } = e { Some(*f) } else { None })).or_else(|| crate::pen::mouse_pen().map(|m| m.pressure));
+    let (mut pts, mut last): (Vec<f32>, Option<f32>) = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    if resp.drag_started() {
+        pts.clear();
+        last = None;
+    }
+    if resp.dragged()
+        && let Some(pos) = resp.interact_pointer_pos()
+    {
+        let pressure = force.map_or(-1.0, |f| f.clamp(0.0, 1.0).powf(p.sensitivity.gamma() as f32));
+        if pts.len() < 3 * 4000 {
+            pts.extend([pos.x - rect.min.x, pos.y - rect.min.y, pressure]);
+        }
+        last = Some(pressure);
+    }
+    if pts.len() >= 3 {
+        let pen = p.pens.first().cloned().unwrap_or_default();
+        let color = crate::model::color_or(&pen.color, crate::model::DARK);
+        let color = if t.dark && color == crate::model::DARK { crate::prims::LIGHT_INK } else { color };
+        let size = if pen.brush == crate::model::Brush::Airbrush { 24.0 } else { pen.size.clamp(3.0, 14.0) };
+        let prims = crate::prims::brush_prims(&pts, size, Some(pen.brush), false, color, (rect.min.x as f64, rect.min.y as f64), None);
+        let painter = ui.painter().with_clip_rect(rect.shrink(1.0));
+        for m in crate::paint::brush_meshes(ui.ctx(), prims, 1.0, |x, y| rect.min + vec2(x, y)) {
+            painter.add(m);
+        }
+    }
+    let font = egui::FontId::proportional(ui::px(10.0));
+    let text = match last {
+        Some(v) if v >= 0.0 => format!("Pressione: {:.0}%", v * 100.0),
+        Some(_) => "Nessuna pressione: mouse, o penna senza pressione".into(),
+        None => "Prova qui la penna".into(),
+    };
+    ui.painter().with_clip_rect(rect).text(rect.left_top() + vec2(10.0, 8.0), egui::Align2::LEFT_TOP, text, font.clone(), t.text2);
+    ui.data_mut(|d| d.insert_temp(id, (pts, last)));
+    let how = match crate::pen::source() {
+        Some(s) => format!("Penna collegata tramite {s}."),
+        None => "Nessuna penna ancora usata. Con una tavoletta grafica, la pressione arriva da Windows Ink o, se è spento nel suo pannello di controllo, da Wintab.".into(),
+    };
+    ui.add(egui::Label::new(RichText::new(how).font(font).color(t.text2)).wrap());
+}
+
 /// A setting: its name (and a line about it) on the left, the control on the right.
 fn row(ui: &mut egui::Ui, label: &str, hint: Option<&str>, control: impl FnOnce(&mut egui::Ui)) {
     let t = ui::theme(ui.ctx());
@@ -162,8 +212,7 @@ pub fn settings(ctx: &egui::Context, open: &mut bool, p: &mut Prefs, host: bool)
         let h = SETTINGS_H.min((ui.ctx().content_rect().height() - 160.0).max(280.0));
         // A phone: the sections as chips above, the chosen one below with the whole width.
         if ui::narrow(ui.ctx()) {
-            let h = (ui.ctx().content_rect().height() - 190.0).max(120.0);
-            ui.horizontal_wrapped(|ui| {
+            let chips = ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                 for (v, icon, label) in tabs {
                     let on = *v == tab;
@@ -180,20 +229,26 @@ pub fn settings(ctx: &egui::Context, open: &mut bool, p: &mut Prefs, host: bool)
                 }
             });
             ui.add_space(4.0);
+            // The section scrolls in what the window has left under the title and the chips
+            // (with bigger text the chips take more rows, and the dialog went off the bottom).
+            let h = (ui.ctx().content_rect().height() - 40.0 - 44.0 - 36.0 - chips.response.rect.height()).max(80.0);
             egui::ScrollArea::vertical().id_salt(("settings-scroll", tab)).auto_shrink([false, true]).max_height(h).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 12.0;
                 settings_section(ui, tab, p, host);
             });
             return;
         }
+        // As wide as its longest name needs (bigger text makes them longer), within reason.
+        let side_w = tabs.iter().map(|(_, _, l)| ui.painter().layout_no_wrap(l.to_string(), ui::medium(ui::px(11.0)), t.text).size().x).fold(0.0, f32::max) + 34.0 + 12.0 + 14.0;
+        let side_w = side_w.clamp(SIDEBAR_W, SETTINGS_W * 0.4);
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             // Sections.
             ui.vertical(|ui| {
-                ui.set_width(SIDEBAR_W);
+                ui.set_width(side_w);
                 ui.set_height(h);
                 ui.spacing_mut().item_spacing.y = 2.0;
-                let rects: Vec<egui::Rect> = tabs.iter().map(|_| ui.allocate_exact_size(vec2(SIDEBAR_W - 12.0, ui::ctl(32.0)), Sense::hover()).0).collect();
+                let rects: Vec<egui::Rect> = tabs.iter().map(|_| ui.allocate_exact_size(vec2(side_w - 12.0, ui::ctl(32.0)), Sense::hover()).0).collect();
                 let at = tabs.iter().position(|x| x.0 == tab).unwrap_or(0);
                 let y = ui::motion::spring(ui.ctx(), Id::new("settings-tab-y"), rects[at].min.y - rects[0].min.y, 0.3, 0.88);
                 ui.painter().rect_filled(rects[0].translate(vec2(0.0, y)), ui::RADIUS, t.selected);
@@ -203,7 +258,7 @@ pub fn settings(ctx: &egui::Context, open: &mut bool, p: &mut Prefs, host: bool)
                     ui::hover_fill(ui, resp.id, r, resp.hovered() && i != at, ui::RADIUS as f32, t.hover);
                     let on = i == at;
                     ui::icon(ui, icon, pos2(r.min.x + 16.0, r.center().y), 16.0, if on { t.text } else { t.icon2 });
-                    ui.painter().text(pos2(r.min.x + 34.0, r.center().y), egui::Align2::LEFT_CENTER, *label, if on { ui::medium(ui::px(11.0)) } else { egui::FontId::proportional(ui::px(11.0)) }, t.text);
+                    ui.painter().with_clip_rect(r).text(pos2(r.min.x + 34.0, r.center().y), egui::Align2::LEFT_CENTER, *label, if on { ui::medium(ui::px(11.0)) } else { egui::FontId::proportional(ui::px(11.0)) }, t.text);
                     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, *label));
                     ui::focus_ring(ui, &resp, r);
                     if resp.clicked() {
@@ -351,6 +406,12 @@ fn settings_section(ui: &mut egui::Ui, tab: SettingsTab, p: &mut Prefs, host: bo
                 ui::segmented(ui, &mut p.ink_smoothing, &[(Smoothing::Low, "Bassa"), (Smoothing::Medium, "Media"), (Smoothing::High, "Alta")], 240.0);
             });
             ui::switch(ui, &mut p.pressure, "Spessore secondo la pressione");
+            if p.pressure {
+                row(ui, "Sensibilità", Some("Quanto premere per il tratto pieno"), |ui| {
+                    ui::segmented(ui, &mut p.sensitivity, &[(Sensitivity::Light, "Leggera"), (Sensitivity::Normal, "Normale"), (Sensitivity::Firm, "Decisa")], 240.0);
+                });
+                pressure_pad(ui, p);
+            }
             ui::switch(ui, &mut p.ink_to_shape, "Riconosci le forme disegnate");
             ui::switch(ui, &mut p.finger_draw, "Disegna con le dita");
             let mut zoom = p.wheel == Wheel::Zoom;

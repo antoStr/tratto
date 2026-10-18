@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{BoardMeta, FontKind, ShapeKind};
+use crate::model::{BoardMeta, Brush, FontKind, ShapeKind};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -12,11 +12,35 @@ pub struct Pen {
     pub size: f64,
     /// 0.1–1: how strong the ink is.
     pub opacity: f64,
+    /// What it draws like (pens saved by older versions are plain pens).
+    pub brush: Brush,
 }
 
 impl Default for Pen {
     fn default() -> Self {
-        Pen { color: "#1E1E1E".into(), size: 4.0, opacity: 1.0 }
+        Pen { color: "#1E1E1E".into(), size: 4.0, opacity: 1.0, brush: Brush::Pen }
+    }
+}
+
+/// How hard the pen must press for a full line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Sensitivity {
+    /// A light hand: little pressure already gives a full line.
+    Light,
+    Normal,
+    /// A heavy hand: it takes a firm press.
+    Firm,
+}
+
+impl Sensitivity {
+    /// The pressure is raised to this power.
+    pub fn gamma(self) -> f64 {
+        match self {
+            Sensitivity::Light => 0.6,
+            Sensitivity::Normal => 1.0,
+            Sensitivity::Firm => 1.6,
+        }
     }
 }
 
@@ -126,6 +150,8 @@ pub struct Prefs {
     pub ink_smoothing: Smoothing,
     /// Use the pen's pressure for line width.
     pub pressure: bool,
+    /// How hard the pen must press for a full line.
+    pub sensitivity: Sensitivity,
     pub finger_draw: bool,
     pub wheel: Wheel,
     pub shape_style: ShapeStyle,
@@ -277,17 +303,20 @@ const LAYOUT: u32 = 4;
 
 impl Default for Prefs {
     fn default() -> Self {
-        let pen = |color: &str, size: f64| Pen { color: color.into(), size, opacity: 1.0 };
+        let pen = |color: &str, size: f64| Pen { color: color.into(), size, opacity: 1.0, brush: Brush::Pen };
+        let brush = |brush: Brush, color: &str, size: f64| Pen { brush, ..pen(color, size) };
         Prefs {
             name: String::new(),
             theme: Theme::System,
-            pens: vec![pen("#1E1E1E", 4.0), pen("#1971C2", 4.0), pen("#E03131", 4.0), pen("#2F9E44", 8.0)],
+            // A pen, and three of the other brushes to show what they do.
+            pens: vec![pen("#1E1E1E", 4.0), brush(Brush::Pencil, "#3D3D3D", 3.0), brush(Brush::Brush, "#E03131", 10.0), brush(Brush::Airbrush, "#1971C2", 32.0)],
             highlighter: pen("#FFE066", 22.0),
             tape: pen("#FFB3C7", 28.0),
             eraser: Eraser::default(),
             ink_to_shape: false,
             ink_smoothing: Smoothing::Medium,
             pressure: true,
+            sensitivity: Sensitivity::Normal,
             finger_draw: false,
             wheel: Wheel::Pan,
             shape_style: ShapeStyle { fill: "transparent".into(), stroke: "#1E1E1E".into(), stroke_width: 3.0 },

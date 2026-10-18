@@ -110,6 +110,18 @@ pub struct App {
     applied: Option<(Theme, f32)>,
     last_save: f64,
     bench: Option<Bench>,
+    /// Whether the window had the focus last frame (the tablet is told when it comes back).
+    focused: Option<bool>,
+    /// TRATTO_TRACE=file.csv: a line per frame (how long it took, what was on screen, the stroke
+    /// being drawn), to find where it slows down on someone's computer.
+    trace: Option<Trace>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct Trace {
+    out: std::io::BufWriter<std::fs::File>,
+    start: f64,
+    last: f64,
 }
 
 /// Measurements against the first Tratto (TRATTO_BENCH=1): when the first frame is drawn and,
@@ -146,6 +158,17 @@ impl App {
         if std::env::var_os("TRATTO_BENCH").is_some() {
             println!("T app_new {:.0}", crate::platform::now_ms());
         }
+        // The graphics card and driver in use, for the start-up log.
+        if let Some(rs) = &cc.wgpu_render_state {
+            let i = rs.adapter.get_info();
+            crate::diag::log(format!("Scheda video: {} ({:?}, {:?}, driver {} {})", i.name, i.backend, i.device_type, i.driver, i.driver_info));
+        }
+        if let Some(gl) = &cc.gl {
+            use eframe::glow::HasContext;
+            // SAFETY: plain queries on the context eframe just made current.
+            let (renderer, version) = unsafe { (gl.get_parameter_string(eframe::glow::RENDERER), gl.get_parameter_string(eframe::glow::VERSION)) };
+            crate::diag::log(format!("Scheda video: {renderer} (OpenGL {version})"));
+        }
         ui::install_fonts(&cc.egui_ctx);
         #[cfg(target_os = "linux")]
         crate::platform::watch_color_scheme(cc.egui_ctx.clone());
@@ -157,7 +180,14 @@ impl App {
         let saved_prefs = prefs.to_json();
         let home = home::Home::new(&store);
         let bench = std::env::var_os("TRATTO_BENCH").map(|_| Bench { open: std::env::var("TRATTO_OPEN").ok(), pan: std::env::var_os("TRATTO_PAN").is_some(), ..Default::default() });
-        App { prefs, saved_prefs, store, screen: Screen::Home(home), toasts: Toasts::default(), dialogs: dialogs::Dialogs::default(), applied: None, last_save: 0.0, bench }
+        let trace = std::env::var_os("TRATTO_TRACE").and_then(|p| std::fs::File::create(p).ok()).map(|f| {
+            use std::io::Write;
+            let mut out = std::io::BufWriter::new(f);
+            let _ = writeln!(out, "t_ms,gap_ms,ui_ms,vertices,indices,elements,live_points,events,zoom");
+            let now = crate::platform::now_ms();
+            Trace { out, start: now, last: now }
+        });
+        App { prefs, saved_prefs, store, screen: Screen::Home(home), toasts: Toasts::default(), dialogs: dialogs::Dialogs::default(), applied: None, last_save: 0.0, bench, focused: None, trace }
     }
 
     /// The preferences in use: the open board keeps its own copy while it is open.
@@ -223,8 +253,28 @@ impl App {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        crate::diag::frame(&ctx);
+        // A drawing tablet's pressure through Wintab (Windows Ink turned off in its driver):
+        // opened once the window is on screen, and told when the window comes back to the front.
+        let focused = ctx.input(|i| i.focused);
+        if crate::diag::shown() && self.focused != Some(focused) {
+            #[cfg(windows)]
+            {
+                use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                if self.focused.is_none()
+                    && let Ok(h) = frame.window_handle()
+                    && let RawWindowHandle::Win32(w) = h.as_raw()
+                {
+                    crate::pen::wintab_open(w.hwnd.get(), &crate::data_dir());
+                }
+                crate::pen::wintab_focus(focused);
+            }
+            #[cfg(not(windows))]
+            let _ = &frame;
+            self.focused = Some(focused);
+        }
         let t0 = crate::platform::now_ms();
         if let Some(open) = self.bench.as_mut().and_then(|b| {
             if b.frame == 0 {
@@ -278,6 +328,18 @@ impl eframe::App for App {
         } else if self.bench.as_ref().is_some_and(|b| b.pan) {
             ctx.request_repaint();
         }
+        if let Some(tr) = &mut self.trace {
+            use std::io::Write;
+            let now = crate::platform::now_ms();
+            let events = ctx.input(|i| i.events.len());
+            let (verts, idx, els, live, zoom) = match &mut self.screen {
+                Screen::Board(b) => (b.editor.painter.last_len.0, b.editor.painter.last_len.1, b.editor.board.len(), b.editor.live_points(), b.editor.cam.z),
+                Screen::Home(_) => (0, 0, 0, 0, 1.0),
+            };
+            let _ = writeln!(tr.out, "{:.1},{:.2},{:.2},{verts},{idx},{els},{live},{events},{zoom:.3}", now - tr.start, now - tr.last, now - t0);
+            tr.last = now;
+            let _ = tr.out.flush();
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -306,6 +368,33 @@ mod picture {
         let mut b = crate::doc::Board::new(doc.clone(), std::sync::Arc::new(|| {}));
         b.put(crate::templates::bench());
         let id = store.create("Benchmark", Some(&crate::doc::encode_state(&doc))).unwrap();
+        println!("BOARD {id}");
+    }
+
+    /// A board with every brush in a new database, to look at in the real app:
+    /// `TRATTO_BENCH_DB=dir/tratto.db cargo test make_brush_db -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn make_brush_db() {
+        let path = std::env::var("TRATTO_BENCH_DB").expect("TRATTO_BENCH_DB");
+        let store = Store::open(std::path::Path::new(&path)).unwrap();
+        let doc = yrs::Doc::new();
+        let mut b = crate::doc::Board::new(doc.clone(), std::sync::Arc::new(|| {}));
+        for (row, (brush, _)) in crate::model::BRUSHES.iter().enumerate() {
+            for col in 0..2 {
+                let size = if *brush == crate::model::Brush::Airbrush { 36.0 } else { 10.0 };
+                let pts: Vec<f32> = (0..=160)
+                    .flat_map(|i| {
+                        let t = i as f32 / 160.0;
+                        [t * 420.0, 24.0 + 22.0 * (t * std::f32::consts::TAU * 1.5).sin(), if col == 0 { (t * std::f32::consts::PI).sin().max(0.0).powf(0.7) } else { -1.0 }]
+                    })
+                    .collect();
+                let mut el = crate::model::El::new(crate::model::Kind::Ink(crate::model::Ink { points: pts, color: "#1E1E1E".into(), size, brush: Some(*brush) }));
+                (el.x, el.y, el.w, el.h, el.z) = (col as f64 * 480.0, row as f64 * 90.0, 420.0, 48.0, (row * 2 + col) as f64);
+                b.put([el]);
+            }
+        }
+        let id = store.create("Pennelli", Some(&crate::doc::encode_state(&doc))).unwrap();
         println!("BOARD {id}");
     }
 
@@ -372,6 +461,11 @@ mod picture {
             if home.is_none() {
                 ui::install_fonts(&ctx);
                 ui::setup(&ctx, Theme::new(dark, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), text_scale());
+                // TRATTO_UI=1.5: the interface zoomed as in Settings ▸ Accessibilità.
+                if let Some(z) = std::env::var("TRATTO_UI").ok().and_then(|v| v.parse::<f32>().ok()) {
+                    prefs.ui_scale = z;
+                    ctx.set_zoom_factor(z);
+                }
                 home = Some(home::Home::new(&store));
                 if let Some(tab) = settings {
                     dialogs.settings = true;
@@ -592,6 +686,103 @@ mod picture {
         assert!(ed.emote_hold.is_none() && ed.tool != crate::editor::Tool::Eraser);
     }
 
+    /// Writing for a long time, through the real input path: one very long stroke with each
+    /// brush (frame times at its start and at its end, to see whether they grow), then a long
+    /// session of strokes: `cargo test --release long_writing -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn long_writing() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let id = store.create("Scrittura lunga", None).unwrap();
+        let shared: std::rc::Rc<std::cell::RefCell<Option<board::BoardScreen>>> = Default::default();
+        let inner = shared.clone();
+        let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui(move |ui| {
+            let ctx = ui.ctx().clone();
+            let mut screen = inner.borrow_mut();
+            if screen.is_none() {
+                ui::install_fonts(&ctx);
+                ui::setup(&ctx, Theme::new(false, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), 1.0);
+                let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), None).unwrap();
+                b.editor.tool = crate::editor::Tool::Pen;
+                *screen = Some(b);
+                return;
+            }
+            screen.as_mut().unwrap().ui(ui, &mut toasts, &mut dialogs);
+        });
+        harness.run_steps(5);
+        let press = |h: &mut egui_kittest::Harness, p: egui::Pos2, down: bool| {
+            h.input_mut().events.push(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: down, modifiers: egui::Modifiers::NONE });
+        };
+        // A scribble going back and forth over the middle of the window, as when shading.
+        let at = |i: usize| {
+            let t = i as f32 * 0.02;
+            egui::pos2(720.0 + 300.0 * (t * 0.37).sin() + 40.0 * (t * 5.0).sin(), 450.0 + 200.0 * (t * 0.23).cos() + 40.0 * (t * 4.0).cos())
+        };
+        let stats = |v: &[f64]| format!("p50 {:5.2}  p95 {:5.2}  max {:5.2} ms", percentile(v, 0.5), percentile(v, 0.95), percentile(v, 1.0));
+        for (brush, name) in crate::model::BRUSHES {
+            shared.borrow_mut().as_mut().unwrap().editor.prefs.pens[0] = crate::prefs::Pen { brush, size: if brush == crate::model::Brush::Airbrush { 30.0 } else { 6.0 }, ..Default::default() };
+            harness.input_mut().events.push(egui::Event::PointerMoved(at(0)));
+            harness.step();
+            press(&mut harness, at(0), true);
+            // 3000 moves, four a frame (a 1000 Hz mouse at 250 frames a second).
+            let mut times = Vec::new();
+            for f in 0..750 {
+                for k in 0..4 {
+                    harness.input_mut().events.push(egui::Event::PointerMoved(at(f * 4 + k + 1)));
+                }
+                let t = std::time::Instant::now();
+                harness.step();
+                times.push(t.elapsed().as_secs_f64() * 1000.0);
+            }
+            press(&mut harness, at(3000), false);
+            let t = std::time::Instant::now();
+            harness.run_steps(3);
+            let commit = t.elapsed().as_secs_f64() * 1000.0 / 3.0;
+            println!("{name:<13} start {}  end {}  lift {commit:5.1} ms", stats(&times[..150]), stats(&times[600..]));
+        }
+        // A long session: 300 more strokes, then how a frame costs with all of them on screen.
+        shared.borrow_mut().as_mut().unwrap().editor.prefs.pens[0] = crate::prefs::Pen::default();
+        for s in 0..300 {
+            let base = s * 37;
+            harness.input_mut().events.push(egui::Event::PointerMoved(at(base)));
+            harness.step();
+            press(&mut harness, at(base), true);
+            for f in 0..40 {
+                for k in 0..4 {
+                    harness.input_mut().events.push(egui::Event::PointerMoved(at(base + f * 4 + k + 1)));
+                }
+                harness.step();
+            }
+            press(&mut harness, at(base + 161), false);
+            harness.step();
+        }
+        let mut times = Vec::new();
+        let builds = shared.borrow_mut().as_mut().unwrap().editor.painter.builds;
+        for _ in 0..60 {
+            let t = std::time::Instant::now();
+            harness.step();
+            times.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        println!("meshes made in 60 idle frames: {}", shared.borrow_mut().as_mut().unwrap().editor.painter.builds - builds);
+        let n = shared.borrow_mut().as_mut().unwrap().editor.board.len();
+        let verts = shared.borrow_mut().as_mut().unwrap().editor.painter.last_len;
+        println!("{n} strokes, idle frame {}, {verts:?} vertices and indices", stats(&times));
+        // Where the time goes: the board's meshes alone.
+        let mut b = shared.borrow_mut();
+        let b = b.as_mut().unwrap();
+        let els = b.editor.board.paint_order().to_vec();
+        let ctx = harness.ctx.clone();
+        let f = crate::paint::Frame { cam: b.editor.cam, origin: b.editor.origin, view: b.editor.view(), pixels_per_point: 1.0, editing: None, editing_cell: None, glides: None, dark_board: false };
+        let mut out = Vec::new();
+        let t = std::time::Instant::now();
+        for _ in 0..10 {
+            out.clear();
+            b.editor.painter.paint(&ctx, &mut out, &els, &f);
+        }
+        println!("painter.paint {:5.2} ms", t.elapsed().as_secs_f64() * 100.0);
+    }
+
     /// Frame times (the interface's own work, no drawing on the card) on a heavy board while
     /// panels open and close: `cargo test --release frame_times -- --ignored --nocapture`.
     #[test]
@@ -619,8 +810,11 @@ mod picture {
                     els.push(s);
                 }
                 for i in 0..600 {
-                    let pts: Vec<f32> = (0..150).flat_map(|k| [(k as f32 * 3.0), ((k as f32 * 0.2 + i as f32).sin() * 30.0), -1.0]).collect();
-                    let mut s = El::new(Kind::Ink(Ink { points: pts, color: "#1E1E1E".into(), size: 4.0 }));
+                    let pts: Vec<f32> = (0..150).flat_map(|k| [(k as f32 * 3.0), ((k as f32 * 0.2 + i as f32).sin() * 30.0), if i % 2 == 0 { -1.0 } else { 0.5 + 0.4 * (k as f32 * 0.1).sin() }]).collect();
+                    // Every brush, and strokes of older versions.
+                    let brush = crate::model::BRUSHES.get(i % 8).map(|b| b.0);
+                    let size = if brush == Some(crate::model::Brush::Airbrush) { 24.0 } else { 4.0 };
+                    let mut s = El::new(Kind::Ink(Ink { points: pts, color: "#1E1E1E".into(), size, brush }));
                     (s.x, s.y, s.w, s.h) = ((i % 30) as f64 * 160.0, 5000.0 + (i / 30) as f64 * 90.0, 450.0, 60.0);
                     els.push(s);
                 }
@@ -790,6 +984,27 @@ mod picture {
                     b.editor.board.put([c]);
                     b.editor.comment = Some(cid);
                 }
+                // TRATTO_PICK=ink: every brush drawn on the board (a pen's pressure rising and
+                // falling), the pencil stroke selected.
+                if std::env::var("TRATTO_PICK").is_ok_and(|v| v == "ink") {
+                    let mut els = Vec::new();
+                    for (row, (brush, _)) in crate::model::BRUSHES.iter().enumerate() {
+                        let size = if *brush == crate::model::Brush::Airbrush { 30.0 } else { 9.0 };
+                        let pts: Vec<f32> = (0..=120)
+                            .flat_map(|i| {
+                                let t = i as f32 / 120.0;
+                                [t * 360.0, 20.0 + 18.0 * (t * std::f32::consts::TAU * 1.5).sin(), (t * std::f32::consts::PI).sin().max(0.0).powf(0.7)]
+                            })
+                            .collect();
+                        let colors = ["#1E1E1E", "#3D3D3D", "#E03131", "#1971C2", "#2F9E44", "#6741D9", "#F76707"];
+                        let mut el = crate::model::El::new(crate::model::Kind::Ink(crate::model::Ink { points: pts, color: colors[row].into(), size, brush: Some(*brush) }));
+                        (el.x, el.y, el.w, el.h, el.z) = (-700.0 + (row % 2) as f64 * 420.0, -380.0 + (row / 2) as f64 * 110.0, 360.0, 40.0, 100.0 + row as f64);
+                        els.push(el);
+                    }
+                    let pick = els[1].id.clone();
+                    b.editor.board.put(els);
+                    b.editor.selection = vec![pick];
+                }
                 if std::env::var("TRATTO_PICK").is_ok_and(|v| v == "line") {
                     b.editor.selection = b.editor.board.all().iter().filter(|e| e.line().is_some()).take(1).map(|e| e.id.clone()).collect();
                 }
@@ -825,6 +1040,23 @@ mod picture {
                 harness.run_steps(1);
             }
             harness.run_steps(8);
+            harness.render().unwrap().save(&path).unwrap();
+            return;
+        }
+        // TRATTO_DRAG=x0,y0,x1,y1: a drag from one point to the other, still held.
+        if let Some(v) = std::env::var("TRATTO_DRAG").ok() {
+            let n: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+            let (a, b) = (egui::pos2(n[0], n[1]), egui::pos2(n[2], n[3]));
+            harness.run_steps(20);
+            harness.event(egui::Event::PointerMoved(a));
+            harness.run_steps(2);
+            harness.event(egui::Event::PointerButton { pos: a, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+            harness.run_steps(2);
+            for k in 1..=12 {
+                harness.event(egui::Event::PointerMoved(a + (b - a) * (k as f32 / 12.0)));
+                harness.run_steps(1);
+            }
+            harness.run_steps(6);
             harness.render().unwrap().save(&path).unwrap();
             return;
         }
@@ -1006,6 +1238,79 @@ mod picture {
         dragged_lands(super::toolbar::Payload::Sticky, |e| e.sticky().is_some());
     }
 
+    /// The layers panel: a row dragged between two others goes there in the stack, and one
+    /// dropped on a folder goes into it.
+    #[test]
+    fn layers_move_by_dragging_their_rows() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let id = store.create("Livelli", None).unwrap();
+        let mut screen: Option<board::BoardScreen> = None;
+        let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
+        type Seen = (Vec<String>, Vec<(String, Option<String>)>);
+        let out: std::rc::Rc<std::cell::RefCell<Seen>> = Default::default();
+        let seen = out.clone();
+        let folder = std::rc::Rc::new(std::cell::Cell::new(false));
+        let make_folder = folder.clone();
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui(move |ui| {
+            let ctx = ui.ctx().clone();
+            if screen.is_none() {
+                ui::install_fonts(&ctx);
+                ui::setup(&ctx, Theme::new(false, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), 1.0);
+                let prefs = Prefs { left_panel: true, ..Prefs::default() };
+                let mut b = board::BoardScreen::open(&ctx, &store, &id, prefs, None).unwrap();
+                let els: Vec<crate::model::El> = ["a", "b", "c", "d"]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| {
+                        let mut e = crate::model::El::new(crate::model::Kind::Shape(crate::model::Shape::default()));
+                        (e.id, e.x, e.y, e.w, e.h, e.z, e.name) = (n.to_string(), i as f64 * 300.0, 0.0, 100.0, 80.0, i as f64, Some(n.to_uppercase()));
+                        e
+                    })
+                    .collect();
+                b.editor.board.put(els);
+                screen = Some(b);
+                return;
+            }
+            let b = screen.as_mut().unwrap();
+            if make_folder.take() {
+                b.editor.board.create_group(&["a".into(), "b".into()], Some("Cartella".into()));
+            }
+            b.ui(ui, &mut toasts, &mut dialogs);
+            *seen.borrow_mut() = (b.editor.board.all().iter().map(|e| e.id.clone()).collect(), b.editor.board.all().iter().map(|e| (e.id.clone(), e.group_id.clone())).collect());
+        });
+        harness.run_steps(5);
+        let rows = |h: &egui_kittest::Harness| h.ctx.data(|d| d.get_temp::<Vec<(usize, egui::Rect)>>(egui::Id::new("layer-rows"))).expect("the layers are listed");
+        let drag = |h: &mut egui_kittest::Harness, from: egui::Pos2, to: egui::Pos2| {
+            h.input_mut().events.push(egui::Event::PointerMoved(from));
+            h.step();
+            h.input_mut().events.push(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+            h.step();
+            for k in 1..=12 {
+                h.input_mut().events.push(egui::Event::PointerMoved(from + (to - from) * (k as f32 / 12.0)));
+                h.step();
+            }
+            h.input_mut().events.push(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+            h.run_steps(3);
+        };
+        // Top to bottom the list shows D, C, B, A. D goes between B and A.
+        let r = rows(&harness);
+        assert_eq!(r.len(), 4);
+        drag(&mut harness, r[0].1.center(), egui::pos2(r[3].1.center().x, r[3].1.min.y + 4.0));
+        assert_eq!(out.borrow().0, ["a", "d", "b", "c"], "bottom to top");
+        // A folder of A and B; C dropped on its row goes in, at its top.
+        folder.set(true);
+        harness.run_steps(3);
+        let r = rows(&harness);
+        let order = out.borrow().0.clone();
+        let c_row = order.iter().rev().position(|i| i == "c").unwrap();
+        let folder_row = r.iter().find(|(i, _)| *i != c_row && *i != order.iter().rev().position(|x| x == "d").unwrap()).unwrap().1;
+        drag(&mut harness, r[c_row].1.center(), folder_row.center());
+        let groups = out.borrow().1.clone();
+        let g = |id: &str| groups.iter().find(|(i, _)| i == id).unwrap().1.clone();
+        assert!(g("c").is_some() && g("c") == g("a") && g("a") == g("b"), "c is in the folder: {groups:?}");
+        assert!(g("d").is_none());
+    }
+
     fn dragged_lands(what: super::toolbar::Payload, is: fn(&crate::model::El) -> bool) {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let id = store.create("Trascina", None).unwrap();
@@ -1043,6 +1348,83 @@ mod picture {
         harness.run_steps(3);
         let at = out.borrow().expect("it is on the board");
         assert!(at.distance(to) < 2.0, "centred where it was let go: {at:?}");
+    }
+
+    /// The panels close and come back at the first click, however soon one follows the other
+    /// (from the second frame of what appears: in the first one egui only measures it), with the
+    /// mouse and with a pen's tap (a touch, with the pointer it moves). The pills that bring the
+    /// panels back used to ride along with the panel going away: clicked as they appeared, they
+    /// had already slid off.
+    #[test]
+    fn panels_close_and_open_at_the_first_click() {
+        use egui_kittest::kittest::Queryable;
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let id = store.create("Pannelli", None).unwrap();
+        let mut screen: Option<board::BoardScreen> = None;
+        let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui(move |ui| {
+            let ctx = ui.ctx().clone();
+            if screen.is_none() {
+                ui::install_fonts(&ctx);
+                ui::setup(&ctx, Theme::new(false, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), 1.0);
+                let prefs = Prefs { left_panel: true, right_panel: true, ..Prefs::default() };
+                screen = Some(board::BoardScreen::open(&ctx, &store, &id, prefs, None).unwrap());
+                return;
+            }
+            screen.as_mut().unwrap().ui(ui, &mut toasts, &mut dialogs);
+        });
+        harness.run_steps(5);
+        let shown = |h: &egui_kittest::Harness| h.ctx.data(|d| d.get_temp::<(bool, bool)>(Id::new("panels-shown"))).unwrap();
+        // Where a button is now: of those with this name, the one farthest left (or right).
+        let find = |h: &egui_kittest::Harness, label: &str, left: bool| {
+            let mut rects: Vec<egui::Rect> = h.get_all_by_label(label).map(|n| n.rect()).collect();
+            rects.sort_by(|a, b| a.center().x.total_cmp(&b.center().x));
+            (if left { rects.first() } else { rects.last() }).unwrap_or_else(|| panic!("no {label}")).center()
+        };
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let touch = |pos, phase| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(7), phase, pos, force: Some(0.5) };
+        let mut missed = Vec::new();
+        for way in ["mouse", "pen", "quick pen"] {
+            for wait in [2, 4, 8, 30] {
+                for left in [true, false] {
+                    for (label, open) in [("Nascondi il pannello", false), (if left { "Mostra il pannello dei livelli" } else { "Mostra il pannello" }, true)] {
+                        let p = find(&harness, label, left);
+                        match way {
+                            // Over it, pressed, let go: a frame each.
+                            "mouse" => {
+                                harness.input_mut().events.push(egui::Event::PointerMoved(p));
+                                harness.step();
+                                harness.input_mut().events.push(button(p, true));
+                                harness.step();
+                                harness.input_mut().events.push(button(p, false));
+                            }
+                            // As the window hands a pen's tap over: the touch, then the pointer
+                            // it moves and presses; let go a frame later.
+                            "pen" => {
+                                harness.input_mut().events.extend([touch(p, egui::TouchPhase::Start), egui::Event::PointerMoved(p), button(p, true)]);
+                                harness.step();
+                                harness.input_mut().events.extend([touch(p, egui::TouchPhase::End), button(p, false), egui::Event::PointerGone]);
+                            }
+                            // Down and up between two frames.
+                            _ => harness.input_mut().events.extend([touch(p, egui::TouchPhase::Start), egui::Event::PointerMoved(p), button(p, true), touch(p, egui::TouchPhase::End), button(p, false), egui::Event::PointerGone]),
+                        }
+                        // The frame that takes the release, then the waiting ones (the first of
+                        // which shows what the click did).
+                        harness.step();
+                        harness.run_steps(wait);
+                        let now = shown(&harness);
+                        if (if left { now.0 } else { now.1 }) != open {
+                            missed.push(format!("{way}, {wait} frames after the last: {label} ({})", if left { "left" } else { "right" }));
+                            // As someone would: wait, and click again.
+                            harness.run_steps(30);
+                            harness.get_by_label(label).click();
+                            harness.run_steps(30);
+                        }
+                    }
+                }
+            }
+        }
+        assert!(missed.is_empty(), "missed clicks: {missed:#?}");
     }
 
     /// A comment written with the keyboard: the pin goes down, its box takes the typing, Enter
@@ -1158,13 +1540,21 @@ mod picture {
         let mut screen: Option<board::BoardScreen> = None;
         let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
         let mut frame = 0;
-        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).with_pixels_per_point(ppp()).wgpu().build_ui(move |ui| {
+        // TRATTO_SIZE=800x540 a smaller window, TRATTO_UI=1.5 the interface zoomed in.
+        let size = std::env::var("TRATTO_SIZE").ok().and_then(|s| s.split_once('x').and_then(|(w, h)| Some(egui::vec2(w.parse().ok()?, h.parse().ok()?)))).unwrap_or(egui::vec2(1440.0, 900.0));
+        let zoom: Option<f32> = std::env::var("TRATTO_UI").ok().and_then(|v| v.parse().ok());
+        let mut harness = egui_kittest::Harness::builder().with_size(size).with_pixels_per_point(ppp()).wgpu().build_ui(move |ui| {
             let ctx = ui.ctx().clone();
             frame += 1;
             if screen.is_none() {
                 ui::install_fonts(&ctx);
                 ui::setup(&ctx, Theme::new(dark, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), text_scale());
-                let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs::default(), template.clone()).unwrap();
+                let mut prefs = Prefs::default();
+                if let Some(z) = zoom {
+                    prefs.ui_scale = z;
+                    ctx.set_zoom_factor(z);
+                }
+                let mut b = board::BoardScreen::open(&ctx, &store, &id, prefs, template.clone()).unwrap();
                 b.editor.tool = crate::editor::Tool::Select;
                 if let Ok(bg) = std::env::var("TRATTO_BG") {
                     let meta = crate::model::BoardMeta { background: bg, ..b.editor.board.meta() };
@@ -1224,7 +1614,7 @@ mod picture {
                     }
                     "menu-main" => (ed.prefs.left_panel, ed.prefs.right_panel, ed.prefs.minimap) = (false, false, false),
                     "dot" => {
-                        let mut d = crate::model::El::new(crate::model::Kind::Ink(crate::model::Ink { points: vec![0.0, 0.0, 0.5, 1.0, 1.0, 0.5], color: "#1E1E1E".into(), size: 6.0 }));
+                        let mut d = crate::model::El::new(crate::model::Kind::Ink(crate::model::Ink { points: vec![0.0, 0.0, 0.5, 1.0, 1.0, 0.5], color: "#1E1E1E".into(), size: 6.0, brush: None }));
                         (d.w, d.h) = (1.0, 1.0);
                         ed.board.put([d]);
                     }

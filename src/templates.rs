@@ -249,7 +249,7 @@ pub fn bench() -> Vec<El> {
             p[0] -= minx;
             p[1] -= miny;
         }
-        let ink = Ink { points: pts, color: colors[i % colors.len()].into(), size: 4.0 };
+        let ink = Ink { points: pts, color: colors[i % colors.len()].into(), size: 4.0, brush: None };
         out.push(el(Kind::Ink(ink), ox + minx as f64, oy + miny as f64, (maxx - minx) as f64, (maxy - miny) as f64));
     }
     for i in 0..300 {

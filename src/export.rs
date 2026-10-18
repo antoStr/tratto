@@ -190,11 +190,16 @@ pub fn svg(els: &[Arc<El>], meta: &BoardMeta, opts: &Options, images: raster::Im
     let (els, b) = collect(els, opts.ids.as_deref(), None)?;
     let mut parts = Vec::new();
     let mut defs = Vec::new();
+    // Brush grains (one picture per grain and colour) and airbrush dabs (one gradient per
+    // colour), defined once and used by every stroke.
+    let mut grains: HashMap<(crate::brush::Grain, [u8; 4]), String> = HashMap::new();
+    let mut dab_fills: HashMap<[u8; 4], String> = HashMap::new();
+    let mut patterns = 0;
     for (n, el) in els.iter().enumerate() {
         let tr = Affine::of(el);
         let t = |x: f32, y: f32| tr.apply(x as f64, y as f64);
         let mut body = String::new();
-        for prim in prims_of(el, &Env { dark_board: opts.background && crate::model::is_dark(&meta.background), ..Env::default() }) {
+        for prim in crate::prims::joined(prims_of(el, &Env { dark_board: opts.background && crate::model::is_dark(&meta.background), ..Env::default() })) {
             match prim {
                 Prim::Fill { path, color } => {
                     let (c, a) = rgba_attr(color);
@@ -232,6 +237,54 @@ pub fn svg(els: &[Arc<El>], meta: &BoardMeta, opts: &Options, images: raster::Im
                             f(cx),
                             f(cy)
                         );
+                    }
+                }
+                Prim::Grain { path, color, grain, offset } => {
+                    let tile = crate::brush::GRAIN_TILE as f64;
+                    let next = grains.len();
+                    let img = match grains.get(&(grain, color.to_array())) {
+                        Some(id) => id.clone(),
+                        None => {
+                            let Some(url) = crate::brush::grain_pixmap(grain, color).and_then(|pm| png_data_url(&pm)) else { continue };
+                            let id = format!("tratto-grain-{next}");
+                            defs.push(format!(r#"<image id="{id}" width="{}" height="{}" href="{url}"/>"#, f(tile), f(tile)));
+                            grains.insert((grain, color.to_array()), id.clone());
+                            id
+                        }
+                    };
+                    // The grain follows the stroke (turned with it), as on screen.
+                    let pid = format!("tratto-grain-p{patterns}");
+                    patterns += 1;
+                    defs.push(format!(
+                        r##"<pattern id="{pid}" patternUnits="userSpaceOnUse" width="{}" height="{}" patternTransform="matrix({} {} {} {} {} {}) translate({} {})"><use href="#{img}"/></pattern>"##,
+                        f(tile),
+                        f(tile),
+                        f(tr.a),
+                        f(tr.b),
+                        f(tr.c),
+                        f(tr.d),
+                        f(tr.e),
+                        f(tr.f),
+                        f(-offset[0] as f64),
+                        f(-offset[1] as f64)
+                    ));
+                    body += &format!(r#"<path d="{}" fill="url(#{pid})" fill-rule="nonzero"/>"#, path_data(&path, t));
+                }
+                Prim::Dabs { dabs, color } => {
+                    let next = dab_fills.len();
+                    let id = dab_fills
+                        .entry(color.to_array())
+                        .or_insert_with(|| {
+                            let (c, a) = rgba_attr(color);
+                            let id = format!("tratto-dab-{next}");
+                            let stops: String = crate::brush::DAB_RINGS.iter().map(|&(d, k)| format!(r#"<stop offset="{}" stop-color="{c}" stop-opacity="{}"/>"#, f(d as f64), f(a.parse::<f64>().unwrap_or(1.0) * k as f64))).collect();
+                            defs.push(format!(r#"<radialGradient id="{id}">{stops}</radialGradient>"#));
+                            id
+                        })
+                        .clone();
+                    for &[x, y, r, a] in &dabs {
+                        let (cx, cy) = t(x, y);
+                        body += &format!(r#"<circle cx="{}" cy="{}" r="{}" fill="url(#{id})" fill-opacity="{}"/>"#, f(cx), f(cy), f(r as f64), f(a as f64));
                     }
                 }
                 Prim::Shadow { x, y, w, h, radius, blur, dy, color } => {
@@ -381,5 +434,36 @@ mod tests {
         assert!(thumbnail(&els, &meta, &none).is_some());
         assert_eq!(safe_filename("a/b:c?. "), "abc");
         assert!(collect(&[], None, None).is_err());
+    }
+
+    /// Strokes of every brush come out in each format: the grains as patterns and the airbrush
+    /// as soft circles in the SVG, all of them in the picture.
+    #[test]
+    fn every_brush_exports() {
+        use crate::model::{BRUSHES, Ink, Kind};
+        let els: Vec<Arc<El>> = BRUSHES
+            .iter()
+            .enumerate()
+            .map(|(row, (brush, _))| {
+                let pts: Vec<f32> = (0..=40).flat_map(|i| [i as f32 * 5.0, (i as f32 * 0.3).sin() * 10.0 + 10.0, 0.6]).collect();
+                let mut el = El::new(Kind::Ink(Ink { points: pts, color: "#1971C2".into(), size: 8.0, brush: Some(*brush) }));
+                (el.x, el.y, el.w, el.h) = (0.0, row as f64 * 40.0, 200.0, 20.0);
+                Arc::new(el)
+            })
+            .collect();
+        let meta = BoardMeta::default();
+        let opts = Options { ids: None, scale: 1.0, background: false, a4: false };
+        let none = |_: &ImageKey| None;
+        let png = png(&els, &meta, &opts, &none, false).unwrap();
+        assert_eq!(&png[1..4], b"PNG");
+        let svg = svg(&els, &meta, &opts, &none).unwrap();
+        assert!(svg.contains("<pattern") && svg.contains("<radialGradient") && svg.contains("<circle"));
+        // The picture has every row inked.
+        let (pm, b) = raster_of(&els, &meta, &opts, &none, false).unwrap();
+        let k = pm.height() as f64 / b.h;
+        for row in 0..BRUSHES.len() {
+            let y = ((row as f64 * 40.0 + 10.0 - b.y) * k) as u32;
+            assert!((0..pm.width()).any(|x| pm.pixel(x, y).is_some_and(|p| p.alpha() > 40)), "row {row} drawn");
+        }
     }
 }
