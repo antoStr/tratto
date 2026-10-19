@@ -1,4 +1,4 @@
-//! Pictures bundled with the app. Reactions are Microsoft Fluent Emoji 3D (MIT,
+//! Pictures bundled with the app. Reactions are Fluent Emoji 3D (MIT,
 //! assets/emoji/LICENSE), glossy like Apple's and the same on every computer and in exports.
 
 pub struct Stamp {

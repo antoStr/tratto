@@ -1,4 +1,4 @@
-//! The look of Figma UI3 (Inter 11 px, 24 px controls, 5 px radii, dark menus and tooltips),
+//! The clean modern UI (Inter 11 px, 24 px controls, 5 px radii, dark menus and tooltips),
 //! with the WCAG AA adjustments of the first Tratto, and the small widgets built on it.
 
 pub mod icon_data;
@@ -131,7 +131,7 @@ impl Theme {
                 border: hex(0xE6E6E6),
                 border_strong: hex(0xD9D9D9),
                 text: black(0.9),
-                // 0.58 instead of Figma's 0.5: secondary text needs 4.5:1 (WCAG AA).
+                // 0.58 instead of 0.5: secondary text needs 4.5:1 (WCAG AA).
                 text2: black(0.58),
                 text3: black(0.3),
                 icon: black(0.9),
@@ -242,7 +242,7 @@ pub fn setup(ctx: &egui::Context, t: Theme, text_scale: f32) {
             (TextStyle::Monospace, FontId::monospace(s.fs)),
         ]
         .into();
-        // Short, quiet fades for popups and tooltips, as in Figma.
+        // Short, quiet fades for popups and tooltips.
         style.animation_time = 0.12;
         let sp = &mut style.spacing;
         sp.item_spacing = vec2(8.0, 4.0);
@@ -320,7 +320,7 @@ pub fn wrap_row<R>(ui: &mut Ui, h: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
     .inner
 }
 
-/// A rounded highlight that eases in and out under the pointer (Apple's and Figma's hovers:
+/// A rounded highlight that eases in and out under the pointer (smooth hovers:
 /// a flat tint, no shadows).
 pub fn hover_fill(ui: &Ui, id: Id, rect: Rect, on: bool, radius: f32, color: Color32) {
     let k = motion::hover(ui.ctx(), id.with("hover-fill"), on);
@@ -331,7 +331,7 @@ pub fn hover_fill(ui: &Ui, id: Id, rect: Rect, on: bool, radius: f32, color: Col
 
 /* ---------------- widgets ---------------- */
 
-/// A dark tooltip with an optional shortcut, like Figma's.
+/// A dark tooltip with an optional shortcut.
 pub fn tip(resp: Response, label: &str, kbd: Option<&str>) -> Response {
     if label.is_empty() {
         return resp;
@@ -386,7 +386,7 @@ pub fn button(ui: &mut Ui, text: &str, kind: Kind, icon_name: Option<&str>, big:
         Kind::Danger => (blend(hex(0xC8331A), mix(hex(0xC8331A), 0.88, Color32::BLACK), k.max(down)), Color32::WHITE, None),
         Kind::DangerText => (blend(blend(t.bg, t.hover, k), t.press, down), t.danger_text, Some(t.border)),
     };
-    // Disabled: grey like Figma's, so it doesn't look clickable.
+    // Disabled: neutral grey so it doesn't look clickable.
     let (fill, fg) = match kind {
         _ if enabled => (fill, fg),
         Kind::Primary | Kind::Danger => (t.bg3, t.text3),
@@ -562,6 +562,25 @@ pub fn switch(ui: &mut Ui, value: &mut bool, label: &str) -> bool {
     false
 }
 
+/// A compact switch without label, allocating only its own track width (28x20 px).
+pub fn switch_bare(ui: &mut Ui, value: &mut bool) -> Response {
+    let t = theme(ui.ctx());
+    let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 20.0), Sense::click());
+    let track = egui::Rect::from_min_size(pos2(rect.min.x, rect.center().y - 8.0), vec2(28.0, 16.0));
+    let k = motion::spring(ui.ctx(), resp.id.with("knob"), if *value { 1.0 } else { 0.0 }, 0.26, 0.86).clamp(-0.1, 1.1);
+    let hk = motion::hover(ui.ctx(), resp.id.with("h"), resp.hovered());
+    ui.painter().rect_filled(track, 8, blend(blend(t.bg3, t.border_strong, hk * 0.6), t.brand_fill, k.clamp(0.0, 1.0)));
+    let knob = pos2(track.min.x + 8.0 + k * 12.0, track.center().y);
+    ui.painter().circle_filled(knob + vec2(0.0, 0.6), 6.4, black(0.18));
+    ui.painter().circle_filled(knob, 6.0, Color32::WHITE);
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, *value, ""));
+    focus_ring(ui, &resp, track);
+    if resp.clicked() {
+        *value = !*value;
+    }
+    resp
+}
+
 /// One colour chip of a palette (20 px, rounded square).
 fn chip(ui: &mut Ui, c: &str, on: bool) -> Response {
     let t = theme(ui.ctx());
@@ -604,7 +623,7 @@ pub fn swatches(ui: &mut Ui, colors: &[&str], value: &str, transparent: bool) ->
     picked
 }
 
-/// A palette plus a "custom" chip that opens a full colour picker in place, as in Figma's fill
+/// A palette plus a "custom" chip that opens a full colour picker in place, as in standard fill
 /// panel. Returns the colour picked (continuously while the picker is dragged).
 pub fn palette(ui: &mut Ui, colors: &[&str], value: &str, transparent: bool) -> Option<String> {
     let t = theme(ui.ctx());
@@ -703,7 +722,7 @@ pub fn to_hsv(c: Color32) -> (f32, f32, f32) {
     (h, if max <= 0.0 { 0.0 } else { d / max }, max)
 }
 
-/// Figma's colour picker in the colours of the interface: saturation and brightness in a square,
+/// Colour picker in the colours of the interface: saturation and brightness in a square,
 /// the hue on a bar and the hex code in a field. Returns true while the colour changes.
 pub fn color_picker(ui: &mut Ui, id: Id, c: &mut Color32, width: f32) -> bool {
     let t = theme(ui.ctx());
@@ -821,6 +840,13 @@ pub fn color_well(ui: &mut Ui, label: &str, value: Color32) -> Option<Color32> {
     let h = motion::hover(ui.ctx(), resp.id.with("h"), resp.hovered());
     ui.painter().circle_filled(rect.center(), 10.0 + h * 0.5, value);
     ui.painter().circle_stroke(rect.center(), 10.0 + h * 0.5, Stroke::new(1.0, black(0.15)));
+    let [r, g, b, _] = value.to_srgba_unmultiplied();
+    let luma = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+    let plus_col = if luma > 160.0 { Color32::from_black_alpha(150) } else { Color32::from_white_alpha(200) };
+    let c = rect.center();
+    ui.painter().line_segment([c - vec2(3.5, 0.0), c + vec2(3.5, 0.0)], Stroke::new(1.5, plus_col));
+    ui.painter().line_segment([c - vec2(0.0, 3.5), c + vec2(0.0, 3.5)], Stroke::new(1.5, plus_col));
+    focus_ring(ui, &resp, rect);
     let resp = tip(resp, label, None);
     let mut out = None;
     egui::Popup::from_toggle_button_response(&resp).frame(float_frame(&t).inner_margin(egui::Margin::same(12))).gap(8.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
@@ -945,7 +971,7 @@ fn track(ui: &mut Ui, label: &str, value: &mut f64, min: f64, max: f64, step: f6
     changed
 }
 
-/// A number field in the manner of Figma's: a short label (or an icon, "icon:name") in front of
+/// A number field with a scrubbable label: a short label (or an icon, "icon:name") in front of
 /// the value; drag the label sideways to change it (Shift for ten steps at a time), or use the
 /// arrow keys while typing. None shows "Misto". Returns the new value, continuously while dragged.
 pub struct Num<'a> {
@@ -1034,7 +1060,7 @@ impl<'a> Num<'a> {
         let resp = tip(resp, title, None);
         let parse = |s: &str| s.trim().trim_end_matches(suffix).trim().replace(',', ".").parse::<f64>().ok().filter(|v| v.is_finite());
         if resp.has_focus() {
-            // Up and down step the value while typing, as in Figma.
+            // Up and down step the value while typing.
             let (up, down, fast) = ui.input_mut(|i| {
                 let fast = i.modifiers.shift;
                 let m = if fast { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
@@ -1069,7 +1095,7 @@ impl<'a> Num<'a> {
     }
 }
 
-/// A number field with a short label in front (Figma's X, Y, W, H…). None shows "Misto".
+/// A number field with a short label in front (e.g. X, Y, W, H…). None shows "Misto".
 pub fn number_field(ui: &mut Ui, id: Id, label: &str, title: &str, value: Option<f64>, decimals: usize, width: f32) -> Option<f64> {
     Num::new(id, label, title, value).decimals(decimals).width(width).step(1.0 / 10f64.powi(decimals.min(1) as i32)).show(ui)
 }
@@ -1137,7 +1163,7 @@ pub fn float_frame(t: &Theme) -> egui::Frame {
         .stroke(Stroke::new(1.0, t.border))
 }
 
-/// Figma's elevation for floating cards: a tight contact shadow under a soft wide one.
+/// Elevation for floating cards: a tight contact shadow under a soft wide one.
 pub fn card_shadows(t: &Theme) -> [egui::Shadow; 2] {
     let k = if t.dark { 2.5 } else { 1.0 };
     [

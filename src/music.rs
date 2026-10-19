@@ -18,7 +18,7 @@ pub enum Track {
     Hero,
 }
 
-/// Every piece, as FigJam's: id (as stored on the board), title, the colour of its cover.
+/// Track list: id (as stored on the board), title, the colour of its cover.
 pub const TRACKS: [(Track, &str, &str, &str); 8] = [
     (Track::Acoustic, "acoustic", "Acoustic ambient", "#14AE5C"),
     (Track::Lofi, "lofi", "Lo-fi hip hop", "#FFE24B"),

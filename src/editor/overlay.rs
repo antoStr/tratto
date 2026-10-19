@@ -51,27 +51,30 @@ impl Editor {
 
     #[allow(clippy::too_many_arguments)]
     fn build_stroke_shape(ctx: &egui::Context, cam: Camera, origin: Pos2, dark_bg: bool, pts: &[f64], size: f64, hl: bool, brush: Option<Brush>, color: Color32, opacity: f64, colors: &[u32]) -> Vec<Shape> {
-        let Some((prims, place)) = Self::stroke_prims(cam, origin, dark_bg, pts, size, hl, brush, color, opacity, ctx.pixels_per_point(), colors) else { return Vec::new() };
+        if pts.len() < 3 {
+            return Vec::new();
+        }
+        let (x0, y0) = (pts[0], pts[1]);
+        let rel: Vec<f32> = pts.chunks_exact(3).flat_map(|p| [(p[0] - x0) as f32, (p[1] - y0) as f32, p[2] as f32]).collect();
+        let Some((prims, place)) = Self::stroke_prims(cam, origin, dark_bg, &rel, x0, y0, size, hl, brush, color, opacity, ctx.pixels_per_point(), colors) else { return Vec::new() };
         crate::paint::brush_meshes(ctx, prims, cam.z as f32, place).into_iter().map(Shape::mesh).collect()
     }
 
     /// A stroke's primitives as it will be drawn (relative to its first point), and where they
     /// go on screen. `colors`: the sfumino's, one a point.
     #[allow(clippy::too_many_arguments)]
-    fn stroke_prims(cam: Camera, origin: Pos2, dark_bg: bool, pts: &[f64], size: f64, hl: bool, brush: Option<Brush>, color: Color32, opacity: f64, ppp: f32, colors: &[u32]) -> Option<(Vec<crate::prims::Prim>, impl Fn(f32, f32) -> Pos2 + Copy)> {
-        if pts.len() < 3 {
+    fn stroke_prims(cam: Camera, origin: Pos2, dark_bg: bool, rel: &[f32], x0: f64, y0: f64, size: f64, hl: bool, brush: Option<Brush>, color: Color32, opacity: f64, ppp: f32, colors: &[u32]) -> Option<(Vec<crate::prims::Prim>, impl Fn(f32, f32) -> Pos2 + Copy)> {
+        if rel.len() < 3 {
             return None;
         }
-        let (x0, y0) = (pts[0], pts[1]);
-        let rel: Vec<f32> = pts.chunks_exact(3).flat_map(|p| [(p[0] - x0) as f32, (p[1] - y0) as f32, p[2] as f32]).collect();
         // As the stroke will be drawn: the default ink light on a dark board.
         let color = if color == DARK && dark_bg { crate::prims::LIGHT_INK } else { color };
         let a = if hl { 0.45 } else { 1.0 } * opacity.clamp(0.05, 1.0) as f32;
         let color = alpha(color, a * color.a() as f32 / 255.0);
         let pixel = Some(1.0 / (cam.z * ppp as f64));
         let prims = match brush {
-            Some(Brush::Smudge) if !hl => crate::prims::smudge_prims(&rel, colors, size, color, pixel),
-            _ => crate::prims::brush_prims(&rel, size, brush, hl, color, (x0, y0), pixel),
+            Some(Brush::Smudge) if !hl => crate::prims::smudge_prims(rel, colors, size, color, pixel),
+            _ => crate::prims::brush_prims(rel, size, brush, hl, color, (x0, y0), pixel),
         };
         let place = move |x: f32, y: f32| {
             let p = cam.to_screen(x as f64 + x0, y as f64 + y0);
@@ -148,7 +151,7 @@ impl Editor {
             }
         }
 
-        // Hover outline (Figma style), fading in.
+        // Hover outline, fading in.
         let ctx = painter.ctx().clone();
         let g = &self.gesture;
         let quiet = g.is_none();
@@ -228,7 +231,7 @@ impl Editor {
                         if !quiet {
                             continue;
                         }
-                        // FigJam's "+": a filled dot that grows on a spring when the pointer is on it.
+                        // The "+": a filled dot that grows on a spring when the pointer is on it.
                         let r = crate::ui::motion::spring(&ctx, egui::Id::new(("add-handle", h as u8)), if self.hover_handle == Some(h) { 9.0 } else { 7.0 }, 0.25, 0.6) * k;
                         out.push(Shape::circle_filled(p, r, accent));
                         let st = Stroke::new(1.5, Color32::WHITE);
@@ -240,7 +243,7 @@ impl Editor {
                     if matches!(h, Handle::Rot | Handle::P0 | Handle::P1) {
                         out.push(circle(p, 4.5 * k, Color32::WHITE, st));
                     } else if matches!(h, Handle::Nw | Handle::Ne | Handle::Se | Handle::Sw) {
-                        // FigJam's handles: white squares with round corners at the corners;
+                        // Selection handles: white squares with round corners at the corners;
                         // the sides still resize, from the line itself.
                         let r = egui::Rect::from_center_size(pos2(p.x.round(), p.y.round()), vec2(10.0 * k, 10.0 * k));
                         out.push(Shape::rect_filled(r, 2.5, Color32::WHITE));
@@ -307,20 +310,59 @@ impl Editor {
                 let color = parse_color(&d.color).unwrap_or(DARK);
                 let cam_key = ((cam.x * 100.0) as i64, (cam.y * 100.0) as i64, (cam.z * 10000.0) as i64, (origin.x * 10.0) as i64, (origin.y * 10.0) as i64);
                 if d.pieces_cam != cam_key {
-                    d.pieces.clear();
-                    d.pieces_cam = cam_key;
-                    d.pieces_pts = usize::MAX;
+                    if d.pieces_cam != (0, 0, 0, 0, 0) && !d.pieces.is_empty() {
+                        let old_cx = d.pieces_cam.0 as f64 / 100.0;
+                        let old_cy = d.pieces_cam.1 as f64 / 100.0;
+                        let old_cz = d.pieces_cam.2 as f64 / 10000.0;
+                        let old_ox = d.pieces_cam.3 as f64 / 10.0;
+                        let old_oy = d.pieces_cam.4 as f64 / 10.0;
+                        if old_cz > 1e-6 {
+                            let scale = (cam.z / old_cz) as f32;
+                            let old_ax = (old_cx + old_ox) as f32;
+                            let old_ay = (old_cy + old_oy) as f32;
+                            let new_ax = (cam.x + origin.x as f64) as f32;
+                            let new_ay = (cam.y + origin.y as f64) as f32;
+                            for (_, shapes) in &mut d.pieces {
+                                for shape in shapes {
+                                    if let egui::Shape::Mesh(m) = shape {
+                                        let m = std::sync::Arc::make_mut(m);
+                                        for v in &mut m.vertices {
+                                            v.pos.x = (v.pos.x - old_ax) * scale + new_ax;
+                                            v.pos.y = (v.pos.y - old_ay) * scale + new_ay;
+                                        }
+                                    }
+                                }
+                            }
+                            d.pieces_cam = cam_key;
+                        } else {
+                            d.pieces.clear();
+                            d.pieces_cam = cam_key;
+                            d.pieces_pts = usize::MAX;
+                        }
+                    } else {
+                        d.pieces.clear();
+                        d.pieces_cam = cam_key;
+                        d.pieces_pts = usize::MAX;
+                    }
                 }
                 if d.pieces_pts != d.pts.len() {
                     d.pieces_pts = d.pts.len();
-                    if let Some((prims, place)) = Self::stroke_prims(cam, origin, dark_bg, &d.pts, d.size, d.hl, d.brush, color, d.opacity, ctx.pixels_per_point(), &d.colors) {
-                        let mut old = std::mem::take(&mut d.pieces).into_iter();
-                        for prim in prims {
-                            match old.next() {
-                                Some((Some(k), shapes)) if k.matches(&prim) => d.pieces.push((Some(k), shapes)),
-                                _ => {
-                                    let key = prim.piece_key();
-                                    d.pieces.push((key, crate::paint::brush_meshes(&ctx, vec![prim], cam.z as f32, place).into_iter().map(Shape::mesh).collect()));
+                    if d.pts.len() >= 3 {
+                        let (x0, y0) = (d.pts[0], d.pts[1]);
+                        d.scratch_rel.clear();
+                        d.scratch_rel.reserve(d.pts.len());
+                        for p in d.pts.chunks_exact(3) {
+                            d.scratch_rel.extend([(p[0] - x0) as f32, (p[1] - y0) as f32, p[2] as f32]);
+                        }
+                        if let Some((prims, place)) = Self::stroke_prims(cam, origin, dark_bg, &d.scratch_rel, x0, y0, d.size, d.hl, d.brush, color, d.opacity, ctx.pixels_per_point(), &d.colors) {
+                            let mut old = std::mem::take(&mut d.pieces).into_iter();
+                            for prim in prims {
+                                match old.next() {
+                                    Some((Some(k), shapes)) if k.matches(&prim) => d.pieces.push((Some(k), shapes)),
+                                    _ => {
+                                        let key = prim.piece_key();
+                                        d.pieces.push((key, crate::paint::brush_meshes(&ctx, vec![prim], cam.z as f32, place).into_iter().map(Shape::mesh).collect()));
+                                    }
                                 }
                             }
                         }
@@ -417,11 +459,11 @@ impl Editor {
     /// While the size or opacity is set with Alt and a drag (or [ and ]): the tip as it will
     /// draw, true to size, and the value beside it.
     fn brush_feel_shapes(&mut self, painter: &Painter, out: &mut Vec<Shape>, dark_ui: bool) {
-        let (at, opacity_shown) = match &self.gesture {
-            Some(Gesture::BrushAdjust { s0, opacity, .. }) => (*s0 + self.origin.to_vec2(), *opacity),
+        let at = match &self.gesture {
+            Some(Gesture::BrushAdjust { s0, .. }) => *s0 + self.origin.to_vec2(),
             _ => match self.flash_size {
                 Some(t0) if now() - t0 < 900.0 => match painter.ctx().input(|i| i.pointer.hover_pos()) {
-                    Some(p) => (p, false),
+                    Some(p) => p,
                     None => return,
                 },
                 _ => {
@@ -444,7 +486,12 @@ impl Editor {
             None => out.push(Shape::circle_filled(at, r, ring.gamma_multiply(0.15 * op as f32))),
         }
         out.push(Shape::circle_stroke(at, r + 0.5, Stroke::new(1.0, ring)));
-        let text = if opacity_shown { format!("{:.0}%", op * 100.0) } else { format!("{:.0} px", size) };
+        let is_smudge = self.tool == Tool::Pen && self.prefs.pens.get(self.pen).is_some_and(|p| p.brush == Brush::Smudge);
+        let text = if is_smudge {
+            format!("{:.0} px  ·  Forza {:.0}%", size, op * 100.0)
+        } else {
+            format!("{:.0} px  ·  Opacità {:.0}%", size, op * 100.0)
+        };
         let g = painter.layout_no_wrap(text, medium(11.0), Color32::WHITE);
         let pill = egui::Rect::from_min_size(at + vec2(r + 10.0, -g.size().y / 2.0 - 4.0), g.size() + vec2(14.0, 8.0));
         out.push(Shape::rect_filled(pill, 6, Color32::from_black_alpha(200)));
@@ -528,7 +575,7 @@ impl Editor {
             if !x.is_finite() || !y.is_finite() {
                 continue;
             }
-            // Positions arrive a few times a second: the cursor glides to each one, as in Figma,
+            // Positions arrive a few times a second: the cursor glides to each one,
             // in board units so it does not lag behind when you move the view.
             let id = egui::Id::new(("peer-cursor", key));
             let (x, y) = match ctx.data(|d| d.get_temp::<(f64, f64)>(id)) {
@@ -623,7 +670,7 @@ impl Editor {
         let k = crate::ui::motion::appear(&ctx, wheel, true).clamp(0.0, 1.2);
         let pointer = ctx.input(|i| i.pointer.hover_pos());
         let on = pointer.and_then(|p| self.emote_under(p));
-        // Held on an emoji: a stream of them, as in FigJam.
+        // Held on an emoji: a stream of them.
         if let (Some(last), Some(p), Some(e)) = (self.emote_spray, pointer, on) {
             if !ctx.input(|i| i.pointer.primary_down()) {
                 self.emote_spray = None;

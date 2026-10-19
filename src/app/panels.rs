@@ -242,8 +242,15 @@ fn title(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts, width: f32) {
     }
 }
 
-/// A guest's way to the settings and to zen mode (the desktop app has them in its tab bar).
+/// A guest's way to the settings, theme switch and zen mode (the desktop app has them in its tab bar).
 fn guest_buttons(ui: &mut Ui, b: &mut BoardScreen, dialogs: &mut Dialogs) {
+    let t = ui::theme(ui.ctx());
+    let is_dark = t.dark;
+    let theme_icon = if is_dark { "sun" } else { "moon" };
+    let theme_label = if is_dark { "Passa al tema chiaro" } else { "Passa al tema scuro" };
+    if small_icon_button(ui, theme_icon, theme_label, false).clicked() {
+        b.editor.prefs.theme = if is_dark { crate::prefs::Theme::Light } else { crate::prefs::Theme::Dark };
+    }
     if small_icon_button(ui, "scan", "Modalità zen", false).clicked() {
         b.editor.toggle_zen();
     }
@@ -380,7 +387,7 @@ fn near(a: &BBox, b: &BBox) -> bool {
     a.x - RUN_GAP <= b.right() && b.x - RUN_GAP <= a.right() && a.y - RUN_GAP <= b.bottom() && b.y - RUN_GAP <= a.bottom()
 }
 
-/// The section each element lies in (the smallest that holds it), as in Figma's frames. Elements
+/// The section each element lies in (the smallest that holds it). Elements
 /// in folders stay in their folder.
 fn section_parents(items: &[Arc<El>]) -> std::collections::HashMap<String, String> {
     let sections: Vec<(&Arc<El>, BBox)> = items.iter().filter(|e| e.is_section()).map(|e| (e, frame_box(e))).collect();
@@ -580,7 +587,14 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
             if movable && resp.drag_started() && st.layer_drag.is_none() {
                 start = Some(index);
             }
-            let r = rect.shrink2(vec2(8.0, 2.0));
+            let drop_slot: Option<usize> = if st.layer_drag.is_some() {
+                ui.ctx().data(|d| d.get_temp(Id::new("layer-drop-slot")))
+            } else {
+                None
+            };
+            let open = drop_slot.map_or(false, |slot| index >= slot);
+            let gap_y = ui::motion::spring(ui.ctx(), Id::new(("layer-row-gap", &key)), if open { 24.0 } else { 0.0 }, 0.25, 0.9);
+            let r = rect.translate(vec2(0.0, gap_y)).shrink2(vec2(8.0, 2.0));
             let sel_k = ui::motion::hover(ui.ctx(), Id::new(("layer-sel", &key)), is_sel);
             if sel_k > 0.0 {
                 ui.painter().rect_filled(r, ui::RADIUS, t.selected.gamma_multiply(sel_k));
@@ -722,7 +736,7 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
         // Where the rows are, for tests that drag them.
         #[cfg(test)]
         ui.ctx().data_mut(|m| m.insert_temp(Id::new("layer-rows"), shown.clone()));
-        // Dragging: where the rows would land, shown as Figma does (a line between rows, or the
+        // Dragging: where the rows would land (a line between rows, or the
         // folder they would go into lit up); near the top or bottom the list scrolls by itself.
         if let (Some(d), Some(p)) = (&st.layer_drag, pointer) {
             let clip = ui.clip_rect();
@@ -736,6 +750,12 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
                 }
             }
             if let Some(dr) = &drop {
+                if let Some((y, _)) = dr.line {
+                    let slot = shown.iter().position(|(_, r)| y <= r.center().y).unwrap_or(shown.len());
+                    ui.ctx().data_mut(|d| d.insert_temp(Id::new("layer-drop-slot"), slot));
+                } else {
+                    ui.ctx().data_mut(|d| d.remove::<usize>(Id::new("layer-drop-slot")));
+                }
                 let painter = ui.painter().with_clip_rect(clip);
                 if let Some((y, x0)) = dr.line {
                     painter.line_segment([pos2(x0, y), pos2(clip.max.x - 10.0, y)], Stroke::new(2.0, t.brand));
@@ -744,7 +764,11 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
                 if let Some(r) = dr.into {
                     painter.rect(r.shrink2(vec2(8.0, 2.0)), ui::RADIUS, t.selected, Stroke::new(1.5, t.brand), egui::StrokeKind::Inside);
                 }
+            } else {
+                ui.ctx().data_mut(|d| d.remove::<usize>(Id::new("layer-drop-slot")));
             }
+        } else {
+            ui.ctx().data_mut(|d| d.remove::<usize>(Id::new("layer-drop-slot")));
         }
     });
     if let Some(i) = start
@@ -756,8 +780,11 @@ fn layers(ui: &mut Ui, ed: &mut Editor, st: &mut BoardUi, t: &Theme) {
         let ctx = ui.ctx().clone();
         ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
         if let Some(p) = pointer {
-            // What is being moved, under the pointer.
-            egui::Area::new(Id::new("layer-drag")).order(egui::Order::Tooltip).fixed_pos(p + vec2(14.0, 8.0)).interactable(false).show(&ctx, |ui| {
+            // What is being moved, under the pointer, clamped within the panel bounds.
+            let clip = ui.clip_rect().shrink(8.0);
+            let ghost_x = (p.x + 14.0).clamp(clip.min.x, (clip.max.x - 110.0).max(clip.min.x));
+            let ghost_y = (p.y + 8.0).clamp(clip.min.y, (clip.max.y - 32.0).max(clip.min.y));
+            egui::Area::new(Id::new("layer-drag")).order(egui::Order::Tooltip).fixed_pos(pos2(ghost_x, ghost_y)).interactable(false).show(&ctx, |ui| {
                 ui.set_opacity(0.92);
                 ui::float_frame(t).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -923,7 +950,7 @@ pub fn right(ui: &mut Ui, b: &mut BoardScreen, toasts: &mut Toasts) {
     ui.scope_builder(egui::UiBuilder::new().max_rect(head.shrink2(vec2(10.0, 8.0))), |ui| {
         ui.horizontal_centered(|ui| {
             participants(ui, &mut b.editor);
-            // As in FigJam: the timer (and music) beside Share.
+            // The timer (and music) beside Share.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.set_min_height(ui.available_height());
                 share_button(ui, b);
@@ -1243,7 +1270,7 @@ fn tool_props(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
         _ => {}
     }
     section(ui, None, |ui| {
-        ui::hint(ui, "Alt + trascina: spessore  ·  col tasto destro: opacità  ·  Alt + clic: prendi un colore  ·  [ e ]: spessore");
+        ui::hint(ui, "Alt + trascina: spessore (orizzontale) e opacità (verticale)  ·  Alt + clic: campiona colore  ·  [ e ]: spessore");
     });
 }
 
@@ -1371,7 +1398,8 @@ fn smudge_sample(ui: &Ui, r: Rect, size: f64, strength: f64) {
         let x = w * 0.08 + s * w * 0.84;
         pts.extend([x, h * 0.55 + (s * std::f32::consts::TAU).sin() * h * 0.12, 0.6]);
         let under = crate::ink::to_oklab(if x < half { left } else { right });
-        let kk = 1.0 - (-((x - last) as f64) / (size * 1.1)).exp();
+        let pull = size * (0.4 + 2.4 * strength.clamp(0.05, 1.0).powf(1.2));
+        let kk = 1.0 - (-((x - last) as f64) / pull.max(1e-6)).exp();
         carried = crate::ink::mix_lab(carried, under, kk);
         last = x;
         colors.push(crate::ink::from_oklab(carried));
@@ -1434,6 +1462,11 @@ pub fn background_fields(ui: &mut Ui, meta: &mut BoardMeta) {
             if ui::tip(resp, name, None).clicked() {
                 meta.background = value.into();
             }
+        }
+        let is_custom = !BACKGROUNDS.iter().any(|(_, value)| meta.background.eq_ignore_ascii_case(value));
+        if is_custom {
+            let center = ui.cursor().min + vec2(12.0, 12.0);
+            ui.painter().circle_stroke(center, 12.5, Stroke::new(2.0, t.brand));
         }
         if let Some(c) = ui::color_well(ui, "Colore personalizzato dello sfondo", parse_color(&meta.background).unwrap_or(Color32::WHITE)) {
             meta.background = hex(c);
@@ -2113,7 +2146,7 @@ pub fn focus_pill(ctx: &egui::Context, stage: Rect, b: &mut BoardScreen, dialogs
     action
 }
 
-/// The logo with its menu, as in FigJam: the board, what to add or export, what to show, and
+/// The logo with its menu: the board, what to add or export, what to show, and
 /// the way to the settings.
 fn main_menu(ui: &mut Ui, b: &mut BoardScreen, dialogs: &mut Dialogs) -> Option<Action> {
     let t = ui::theme(ui.ctx());
@@ -2222,7 +2255,7 @@ pub fn right_pill(ctx: &egui::Context, stage: Rect, mini: Option<Rect>, b: &mut 
         ui::float_frame(&t).inner_margin(egui::Margin::symmetric(if is_mobile { 6 } else { 8 }, 6)).show(ui, |ui| {
             let row_h = ui::hit(ui.ctx(), ui::ctl(24.0));
             ui::row(ui, row_h, |ui| {
-                // FigJam's: the people (and their menu), the templates, the timer, Share.
+                // Top controls: the people (and their menu), the templates, the timer, Share.
                 if !is_mobile {
                     participants(ui, &mut b.editor);
                 }

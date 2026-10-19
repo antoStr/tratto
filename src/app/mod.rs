@@ -25,7 +25,7 @@ pub struct Toast {
     until: f64,
 }
 
-/// Short messages at the bottom of the window, dark like Figma's.
+/// Short messages at the bottom of the window.
 #[derive(Default)]
 pub struct Toasts(Vec<Toast>);
 
@@ -825,7 +825,7 @@ mod picture {
             screen.as_mut().unwrap().ui(ui, &mut toasts, &mut dialogs);
         });
         harness.run_steps(5);
-        let mut measure = |name: &str, harness: &mut egui_kittest::Harness<'_>, n: usize| {
+        let measure = |name: &str, harness: &mut egui_kittest::Harness<'_>, n: usize| {
             let mut v = Vec::new();
             for _ in 0..n {
                 let t = std::time::Instant::now();
@@ -899,7 +899,7 @@ mod picture {
             Ok("bl") => prefs.minimap_at = Some([0.0, 1.0]),
             _ => {}
         }
-        // TRATTO_CLEAN=1: both side panels closed and no minimap (FigJam's layout).
+        // TRATTO_CLEAN=1: both side panels closed and no minimap.
         if std::env::var_os("TRATTO_CLEAN").is_some() {
             (prefs.left_panel, prefs.right_panel, prefs.minimap) = (false, false, false);
         }
@@ -1538,8 +1538,8 @@ mod picture {
         assert_eq!(out.borrow().as_slice(), ["Ciao a tutti"], "the message is in the thread");
     }
 
-    /// Alt and a drag with the pen: to the right, the left button makes it thicker, the right
-    /// button more opaque; Alt and a click still picks a colour. [ and ] step the size.
+    /// Alt and a 2D drag with the pen: horizontally (X) it adjusts thickness, vertically (Y)
+    /// it adjusts opacity; Alt and a click samples colour under the pointer. [ and ] step the size.
     #[test]
     fn alt_and_a_drag_set_the_pen_size_and_opacity() {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
@@ -1548,6 +1548,8 @@ mod picture {
         let (mut toasts, mut dialogs) = (Toasts::default(), dialogs::Dialogs::default());
         let out: std::rc::Rc<std::cell::Cell<(f64, f64, usize)>> = Default::default();
         let seen = out.clone();
+        let color_out: std::rc::Rc<std::cell::RefCell<String>> = Default::default();
+        let seen_color = color_out.clone();
         let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui(move |ui| {
             let ctx = ui.ctx().clone();
             if screen.is_none() {
@@ -1555,7 +1557,18 @@ mod picture {
                 ui::setup(&ctx, Theme::new(false, crate::model::parse_color(crate::prefs::DEFAULT_ACCENT).unwrap(), false), 1.0);
                 let mut b = board::BoardScreen::open(&ctx, &store, &id, Prefs { left_panel: false, right_panel: false, ..Prefs::default() }, None).unwrap();
                 b.editor.tool = crate::editor::Tool::Pen;
-                b.editor.prefs.pens[0] = crate::prefs::Pen { size: 4.0, opacity: 0.5, ..Default::default() };
+                b.editor.prefs.pens[0] = crate::prefs::Pen { size: 4.0, opacity: 0.5, color: "#1E1E1E".into(), ..Default::default() };
+                let mut target = crate::model::El::new(crate::model::Kind::Shape(crate::model::Shape {
+                    fill: "#E03131".into(),
+                    stroke: "transparent".into(),
+                    stroke_width: 0.0,
+                    ..Default::default()
+                }));
+                target.x = 200.0;
+                target.y = 100.0;
+                target.w = 600.0;
+                target.h = 600.0;
+                b.editor.board.put(vec![target]);
                 screen = Some(b);
                 return;
             }
@@ -1563,30 +1576,51 @@ mod picture {
             b.ui(ui, &mut toasts, &mut dialogs);
             let p = &b.editor.prefs.pens[b.editor.pen];
             seen.set((p.size, p.opacity, b.editor.board.len()));
+            *seen_color.borrow_mut() = p.color.clone();
         });
         harness.run_steps(5);
         let alt = egui::Modifiers { alt: true, ..Default::default() };
-        let drag = |h: &mut egui_kittest::Harness, button: egui::PointerButton, dx: f32| {
+        let drag_2d = |h: &mut egui_kittest::Harness, button: egui::PointerButton, dx: f32, dy: f32| {
             let a = egui::pos2(500.0, 400.0);
             h.input_mut().events.push(egui::Event::PointerMoved(a));
             h.step();
             h.input_mut().events.push(egui::Event::PointerButton { pos: a, button, pressed: true, modifiers: alt });
             h.step();
             for k in 1..=6 {
-                h.input_mut().events.push(egui::Event::PointerMoved(a + egui::vec2(dx * k as f32 / 6.0, 0.0)));
+                h.input_mut().events.push(egui::Event::PointerMoved(a + egui::vec2(dx * k as f32 / 6.0, dy * k as f32 / 6.0)));
                 h.step();
             }
-            h.input_mut().events.push(egui::Event::PointerButton { pos: a + egui::vec2(dx, 0.0), button, pressed: false, modifiers: alt });
+            h.input_mut().events.push(egui::Event::PointerButton { pos: a + egui::vec2(dx, dy), button, pressed: false, modifiers: alt });
             h.run_steps(2);
         };
-        drag(&mut harness, egui::PointerButton::Primary, 120.0);
+        // 1. Horizontal drag (dx = 120.0, dy = 0.0) doubles size from 4.0 to ~8.0 without altering opacity
+        drag_2d(&mut harness, egui::PointerButton::Primary, 120.0, 0.0);
         let (size, opacity, n) = out.get();
         assert!((size - 8.0).abs() < 0.6, "twice as thick: {size}");
-        assert_eq!((opacity, n), (0.5, 0), "nothing else changes, nothing drawn");
-        drag(&mut harness, egui::PointerButton::Secondary, 150.0);
-        let (_, opacity, n) = out.get();
-        assert!((opacity - 1.0).abs() < 0.01 && n == 0, "fully opaque: {opacity}");
+        assert_eq!((opacity, n), (0.5, 1), "opacity unchanged, nothing drawn (sticky remains)");
+
+        // 2. Vertical drag (dx = 0.0, dy = -150.0) increases opacity from 0.5 to ~1.0 without altering size
+        drag_2d(&mut harness, egui::PointerButton::Primary, 0.0, -150.0);
+        let (size, opacity, n) = out.get();
+        assert!((size - 8.0).abs() < 0.6, "size unchanged: {size}");
+        assert!((opacity - 1.0).abs() < 0.01 && n == 1, "fully opaque: {opacity}");
         assert!(!egui::Popup::is_any_open(&harness.ctx), "no menu");
+
+        // 3. Alt + click (no drag displacement) samples the color under the cursor
+        let click = |h: &mut egui_kittest::Harness, button: egui::PointerButton| {
+            let a = egui::pos2(500.0, 400.0);
+            h.input_mut().events.push(egui::Event::PointerMoved(a));
+            h.step();
+            h.input_mut().events.push(egui::Event::PointerButton { pos: a, button, pressed: true, modifiers: alt });
+            h.step();
+            h.input_mut().events.push(egui::Event::PointerButton { pos: a, button, pressed: false, modifiers: alt });
+            h.run_steps(2);
+        };
+        click(&mut harness, egui::PointerButton::Primary);
+        assert_eq!(color_out.borrow().to_uppercase(), "#E03131", "Alt+click samples color under pointer");
+        assert_eq!(out.get().2, 1, "no ink drawn by click");
+
+        // 4. [ steps the size thinner
         harness.input_mut().events.push(egui::Event::Key { key: egui::Key::OpenBracket, physical_key: Some(egui::Key::OpenBracket), pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
         harness.run_steps(2);
         assert!(out.get().0 < 7.0, "a step thinner: {}", out.get().0);

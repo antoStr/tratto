@@ -170,6 +170,11 @@ impl Board {
         }
     }
 
+    /// Whether any elements are currently gliding.
+    pub fn has_glides(&self) -> bool {
+        !self.glides.is_empty()
+    }
+
     /// How far each gliding element is shown from its real place (board units); finished glides
     /// are forgotten. Empty when nothing glides.
     pub fn glide_offsets(&mut self) -> HashMap<String, (f64, f64)> {
@@ -497,7 +502,7 @@ impl Board {
         }
     }
 
-    /// Like a Figma group, a folder's elements sit next to each other in the stack, right under
+    /// In a group, a folder's elements sit next to each other in the stack, right under
     /// its top element. Elements that were in between end up below the folder.
     fn restack(&mut self, group: &str) {
         let all = self.all().to_vec();

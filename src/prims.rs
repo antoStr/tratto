@@ -362,7 +362,7 @@ fn rgba(r: u8, g: u8, b: u8, a: f64) -> Color32 {
     Color32::from_rgba_unmultiplied(r, g, b, (a.clamp(0.0, 1.0) * 255.0).round() as u8)
 }
 
-/// The outline of a shape, in its local coordinates: corners rounded by its radius, as in Figma.
+/// The outline of a shape, in its local coordinates: corners rounded by its radius.
 pub fn shape_path(el: &El, s: &Shape) -> Path {
     let (w, h) = (el.w as f32, el.h as f32);
     match s.shape {
@@ -573,9 +573,9 @@ pub fn brush_prims(points: &[f32], size: f64, brush: Option<Brush>, hl: bool, co
 
 /// Same as `brush_prims`, with optional stylus tilt (`0.0..=1.0`).
 pub fn brush_prims_tilted(points: &[f32], size: f64, brush: Option<Brush>, hl: bool, color: Color32, origin: (f64, f64), pixel: Option<f64>, tilt: f32) -> Vec<Prim> {
-    use crate::brush::{GRAIN_TILE, Grain};
+    use crate::brush::Grain;
     use crate::ink::{brush_dabs_tilted, brush_paths_tilted};
-    let offset = [origin.0.rem_euclid(GRAIN_TILE as f64) as f32, origin.1.rem_euclid(GRAIN_TILE as f64) as f32];
+    let offset = [origin.0 as f32, origin.1 as f32];
     let pieces = |b: Brush| brush_paths_tilted(points, size, b, tilt).into_iter();
     match brush {
         None => vec![Prim::Fill { path: stroke_path(points, size, hl), color }],
@@ -599,7 +599,8 @@ pub fn smudge_prims(points: &[f32], colors: &[u32], size: f64, color: Color32, p
     let own = [u32::from_be_bytes([0, color.r(), color.g(), color.b()])];
     let colors = if colors.is_empty() { &own[..] } else { colors };
     let a = color.a();
-    let dabs = crate::ink::smudge_dabs(points, colors, size, pixel.unwrap_or(0.0) * 0.65);
+    let min_step = pixel.unwrap_or(0.0) * 1.5;
+    let dabs = crate::ink::smudge_dabs(points, colors, size, min_step);
     dabs.chunks(256)
         .map(|d| Prim::Dabs {
             dabs: d.iter().map(|x| x.0).collect(),
@@ -638,8 +639,9 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
             let colors = tints.as_deref().unwrap_or(&i.colors);
             // Thinner than a device pixel (far zoomed out): its centre line, much faster.
             if let Some(px) = env.pixel
-                && i.size <= px
+                && i.size < 2.0 * px
                 && points.len() > 3
+                && (i.brush != Some(Brush::Smudge) || i.colors.is_empty())
             {
                 let pts: Vec<f64> = points.chunks_exact(3).flat_map(|p| [p[0] as f64, p[1] as f64]).collect();
                 out.push(Prim::Stroke { path: Path::polyline(&pts), width: (if env.hairline { px } else { i.size }) as f32, color, round: false, dash: None });
@@ -783,7 +785,7 @@ pub fn prims_of(el: &El, env: &Env) -> Vec<Prim> {
             if l.arrow_start {
                 head_prims(l.head_start, from_start.0, from_start.1, x1, y1, l.stroke_width, color, &mut out);
             }
-            // FigJam's label: the text on a small white card in the middle of the line.
+            // Connector label: the text on a small white card in the middle of the line.
             if let Some(label) = l.label.as_ref().filter(|s| !s.trim().is_empty() && !editing) {
                 let (mx, my) = crate::geom::route_mid(l);
                 let size = label_size(l);

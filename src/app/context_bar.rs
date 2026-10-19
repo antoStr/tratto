@@ -1,4 +1,4 @@
-//! FigJam's contextual toolbar: the main settings of what is selected, in a dark bar floating
+//! Contextual toolbar: the main settings of what is selected, in a dark bar floating
 //! just above it, so most changes never need the side panel. It rises in on a spring each time
 //! the selection changes or a drag ends.
 
@@ -42,7 +42,7 @@ pub fn context_bar(ctx: &egui::Context, free: Rect, ed: &mut Editor) {
     });
     let sel = Rect::from_points(&corners);
     let k = ui::motion::appear(ctx, Id::new("ctx-bar"), true);
-    // Clear of the "+" handles FigJam puts around a selection.
+    // Clear of the "+" handles around a selection.
     let gap = 36.0;
     let h = ctx.data(|d| d.get_temp::<f32>(Id::new("ctx-bar-h"))).unwrap_or(40.0);
     let w = ctx.data(|d| d.get_temp::<f32>(Id::new("ctx-bar-w"))).unwrap_or(320.0);
@@ -63,7 +63,7 @@ pub fn context_bar(ctx: &egui::Context, free: Rect, ed: &mut Editor) {
     // Rising in from the selection's side.
     let (pivot, at) = if top + h <= sel.min.y { (egui::Align2::CENTER_TOP, pos2(sel.center().x, top + rise)) } else { (egui::Align2::CENTER_TOP, pos2(sel.center().x, top - rise)) };
     let light = ui::theme(ctx);
-    // The bar is dark in both themes, like Figma's menus: its widgets draw with the dark theme.
+    // The bar is dark in both themes: its widgets draw with the dark theme.
     let high_contrast = light.border == Theme::new(light.dark, light.brand, true).border;
     let dark = Theme::new(true, light.brand, high_contrast);
     // The app's own theme, for panels opened from the bar.
@@ -115,7 +115,7 @@ fn controls(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], t: &Theme) {
                     });
                 }
             }
-            // Several notes: sort them, as in FigJam.
+            // Several notes: sort them.
             if els.len() > 1 {
                 let r = ui::icon_button(ui, "list", "Ordina le note", None, vec2(B, B), 16.0, false, false);
                 egui::Popup::menu(&r).frame(ui::menu_frame(t)).show(|ui| ui::menu_body(ui, |ui| {
@@ -412,7 +412,7 @@ fn controls(ui: &mut Ui, ed: &mut Editor, els: &[Arc<El>], t: &Theme) {
                 ed.board.update(&ids, |el| crate::style::apply(el, &Change::Italic(!italic)));
             }
             if types.iter().all(|k| *k == "text" || *k == "sticky") {
-                // Lists and strikethrough, as in FigJam's text.
+                // Lists and strikethrough in text.
                 let body = |e: &El| e.text().map(|x| x.text.clone()).or_else(|| e.sticky().map(|s| s.text.clone())).unwrap_or_default();
                 for (numbered, name, label) in [(false, "list", "Elenco puntato"), (true, "list-ordered", "Elenco numerato")] {
                     let on = els.iter().all(|e| {

@@ -655,7 +655,7 @@ fn end_dirs(l: &Line) -> ((f64, f64), (f64, f64)) {
 }
 
 /// The corners of an elbow connector, in its own coordinates: out of each end along its side,
-/// at right angles, as FigJam draws them.
+/// at right angles.
 pub fn elbow_of(l: &Line) -> Vec<(f64, f64)> {
     let [x1, y1, x2, y2] = [0, 1, 2, 3].map(|i| l.points[i] as f64);
     if l.sides.is_none() {
@@ -864,7 +864,7 @@ fn sides_between(a: &El, b: &El) -> Option<(u8, u8)> {
     })
 }
 
-/// The middle of one side of an element (where FigJam's connectors attach), on its outline
+/// The middle of one side of an element (where connectors attach), on its outline
 /// (for a diamond or an ellipse too), pushed out by `gap`; and the way that side faces on the
 /// board, snapped to the nearest of up, right, down, left.
 pub fn side_anchor(el: &El, side: u8, gap: f64) -> (Pt, u8) {

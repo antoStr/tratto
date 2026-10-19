@@ -333,7 +333,7 @@ pub fn mix_colors(u: u32, v: u32, k: f64) -> u32 {
 /// a point, 0xRRGGBB), denser and stronger than the airbrush's so it smears what is under it.
 pub fn smudge_dabs(pts: &[f32], colors: &[u32], size: f64, min_step: f64) -> Vec<([f32; 4], u32)> {
     let mut out = Vec::new();
-    if size <= 0.0 || !size.is_finite() || pts.len() < 3 || colors.is_empty() {
+    if size <= 0.0 || !size.is_finite() || pts.len() < 3 {
         return out;
     }
     // Only the points that are numbers, each with its colour (the centre line skips the others).
@@ -345,16 +345,19 @@ pub fn smudge_dabs(pts: &[f32], colors: &[u32], size: f64, min_step: f64) -> Vec
             cols.push(colors.get(i).or(colors.last()).copied().unwrap_or(0));
         }
     }
-    let flow = |p: f32| if p < 0.0 { 0.72 } else { 0.3 + 0.55 * p.clamp(0.0, 1.0) as f64 };
+    let flow = |p: f32| if p < 0.0 { 0.38 } else { 0.15 + 0.32 * p.clamp(0.0, 1.0) as f64 };
     let c = centre_line(&flat, 0.85, |p, _, _| size / 2.0 * brush_width(Brush::Smudge, p, 0.0, 0.0, size));
     let a = centre_line(&flat, 0.85, |p, _, _| flow(p));
     if c.len() != cols.len() || a.len() != c.len() {
         return out;
     }
-    const STEP: f64 = 0.4;
+    const STEP: f64 = 0.14;
     let least = (size * 0.03).max(min_step);
     let strength = |a: f64, k: f64| if k <= 1.0 { a } else { 1.0 - (1.0 - a).powf(k) };
-    let mix = mix_colors;
+    let lab_cols: Vec<[f32; 3]> = cols.iter().map(|&c| {
+        let lab = to_oklab(c);
+        [lab[0] as f32, lab[1] as f32, lab[2] as f32]
+    }).collect();
     out.push(([c[0][0] as f32, c[0][1] as f32, c[0][2] as f32, strength(a[0][2], least / (c[0][2] * 2.0 * STEP).max(1e-9)) as f32], cols[0]));
     let mut since = 0.0;
     for i in 1..c.len() {
@@ -374,7 +377,19 @@ pub fn smudge_dabs(pts: &[f32], colors: &[u32], size: f64, min_step: f64) -> Vec
             let k = at / d.max(1e-9);
             let lerp = |u: f64, v: f64| u + (v - u) * k;
             let dab = [lerp(p0[0], p1[0]) as f32, lerp(p0[1], p1[1]) as f32, lerp(p0[2], p1[2]) as f32, strength(lerp(a[i - 1][2], a[i][2]), step / nominal) as f32];
-            out.push((dab, mix(cols[i - 1], cols[i], k)));
+            let dab_col = if cols[i - 1] == cols[i] {
+                cols[i - 1]
+            } else {
+                let c0 = lab_cols[i - 1];
+                let c1 = lab_cols[i];
+                let lab = [
+                    c0[0] + (c1[0] - c0[0]) * k as f32,
+                    c0[1] + (c1[1] - c0[1]) * k as f32,
+                    c0[2] + (c1[2] - c0[2]) * k as f32,
+                ];
+                from_oklab([lab[0] as f64, lab[1] as f64, lab[2] as f64])
+            };
+            out.push((dab, dab_col));
         }
     }
     out
@@ -536,7 +551,7 @@ fn smooth3(pts: &[[f64; 3]], size: f64) -> Vec<[f64; 3]> {
     out
 }
 
-/// The "1€ filter" (Casiez et al.) plus an optional Procreate-style StreamLine rope/spring
+/// The "1€ filter" (Casiez et al.) plus an optional StreamLine rope/spring
 /// stabilizer: heavy smoothing when the pen moves slowly, where tremor is visible, and smooth
 /// calligraphic pull when `streamline > 0`. Works in screen pixels.
 pub struct OneEuro {

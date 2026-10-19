@@ -322,6 +322,7 @@ pub struct Painter {
     /// Vertices and indices of the last frame: the next one reserves them at once instead of
     /// growing (and copying) a big buffer many times.
     pub last_len: (usize, usize),
+    pub last_grained_len: (usize, usize),
     /// Every element id seen so far, and when the new ones arrived: they pop in.
     known: std::collections::HashSet<String>,
     born: HashMap<String, f64>,
@@ -352,7 +353,7 @@ struct Seen {
 
 impl Painter {
     pub fn new(images: Images) -> Painter {
-        Painter { cache: HashMap::new(), erased: HashMap::new(), zoom_at: (0.0, 0.0), glyphs: HashMap::new(), fill: FillTessellator::new(), stroke: StrokeTessellator::new(), images, frame: 0, last_len: (0, 0), known: Default::default(), born: HashMap::new(), changing: HashMap::new(), builds: 0, last: None, loading: false }
+        Painter { cache: HashMap::new(), erased: HashMap::new(), zoom_at: (0.0, 0.0), glyphs: HashMap::new(), fill: FillTessellator::new(), stroke: StrokeTessellator::new(), images, frame: 0, last_len: (0, 0), last_grained_len: (0, 0), known: Default::default(), born: HashMap::new(), changing: HashMap::new(), builds: 0, last: None, loading: false }
     }
 
     /// Paints the elements that are on screen; returns whether any visible element is.
@@ -371,6 +372,9 @@ impl Painter {
         // Pencil and chalk strokes, through their grain: their own mesh, flushed in turn with
         // the coloured one so everything stays in stacking order.
         let mut grained = Mesh::default();
+        grained.vertices.reserve(self.last_grained_len.0);
+        grained.indices.reserve(self.last_grained_len.1);
+        let mut grained_len = (0, 0);
         let mut len = (0, 0);
         let mut on_screen = false;
         let now = crate::platform::now_ms();
@@ -378,7 +382,7 @@ impl Painter {
             self.zoom_at = (z, now);
         }
         let settled = now - self.zoom_at.1 > 150.0;
-        // Things added after the board opened (here or by someone else) pop in, like in FigJam.
+        // Things added after the board opened (here or by someone else) pop in.
         // Strokes and lines are left alone: they were already seen while being drawn.
         for el in els {
             if !self.known.contains(&el.id) {
@@ -429,7 +433,7 @@ impl Painter {
             }
             let zoom_bound = matches!(el.kind, Kind::Section { .. } | Kind::Comment { .. });
             let editing = f.editing == Some(el.id.as_str());
-            let key = Key { bucket, editing, cell: if editing { f.editing_cell } else { None }, zoom: if zoom_bound { z.to_bits() } else { 0 }, thin: el.ink().is_some_and(|i| i.size <= pixel), dark: f.dark_board };
+            let key = Key { bucket, editing, cell: if editing { f.editing_cell } else { None }, zoom: if zoom_bound { z.to_bits() } else { 0 }, thin: el.ink().is_some_and(|i| i.size < 2.0 * pixel), dark: f.dark_board };
             // A widget whose state changed (ticked, voted, counted) plays the change.
             if el.widget().is_some()
                 && let Some(e) = self.cache.get(&el.id)
@@ -488,10 +492,13 @@ impl Painter {
                         if grained.texture_id != tex {
                             flush(out, &mut grained);
                             grained = Mesh::with_texture(tex);
+                            grained.vertices.reserve(self.last_grained_len.0.saturating_sub(grained_len.0));
+                            grained.indices.reserve(self.last_grained_len.1.saturating_sub(grained_len.1));
                         }
                         let base = grained.vertices.len() as u32;
                         grained.vertices.extend(part.pos.iter().zip(&part.col).zip(&part.uv).map(|((&p, &c), &uv)| Vertex { pos: place(p), uv: pos2(uv[0], uv[1]), color: if fade < 1.0 { c.gamma_multiply(fade) } else { c } }));
                         grained.indices.extend(part.idx.iter().map(|i| i + base));
+                        grained_len = (grained_len.0 + part.pos.len(), grained_len.1 + part.idx.len());
                     }
                     (Some((key, alpha)), _) => {
                         flush(out, &mut grained);
@@ -523,6 +530,7 @@ impl Painter {
         flush(out, &mut mesh);
         flush(out, &mut grained);
         self.last_len = len;
+        self.last_grained_len = grained_len;
         // The software copy of an erased element is kept only while it is being erased: the
         // graphics card has the picture, and each copy can take tens of megabytes.
         for e in self.erased.values_mut() {
@@ -541,7 +549,16 @@ impl Painter {
         if !settled && self.erased.values().any(|e| e.zoom != z) {
             ctx.request_repaint_after(std::time::Duration::from_millis(160));
         }
-        self.last = Some((seen, out[start..].to_vec(), on_screen, els.to_vec()));
+        if let Some((last_seen, shapes, on, last_els)) = &mut self.last {
+            *last_seen = seen;
+            shapes.clear();
+            shapes.extend_from_slice(&out[start..]);
+            *on = on_screen;
+            last_els.clear();
+            last_els.extend_from_slice(els);
+        } else {
+            self.last = Some((seen, out[start..].to_vec(), on_screen, els.to_vec()));
+        }
         on_screen
     }
 
@@ -682,7 +699,7 @@ impl Painter {
                     });
                     parts.push(Part { image: Some((key, alpha)), pos: corners.to_vec(), ..Part::colored() });
                 }
-                Prim::Grain { path, color, grain, offset } => {
+                Prim::Grain { path, color, grain, offset: _ } => {
                     // Tessellated in the element's own coordinates, which also place the grain:
                     // it stays put on the stroke when the stroke moves or turns.
                     let lp = to_lyon(&path, |x, y| (x, y));
@@ -691,22 +708,27 @@ impl Painter {
                     let k = 1.0 / crate::brush::GRAIN_TILE;
                     let part = last_grain(&mut parts, grain);
                     let base = part.pos.len() as u32;
-                    part.pos.extend(buf.vertices.iter().map(|&[x, y]| {
-                        let (px, py) = tf(x, y);
-                        [px, py]
-                    }));
-                    part.uv.extend(buf.vertices.iter().map(|&[x, y]| [(x + offset[0]) * k, (y + offset[1]) * k]));
+                    part.pos.reserve(buf.vertices.len());
+                    part.uv.reserve(buf.vertices.len());
+                    for &[x, y] in &buf.vertices {
+                        let (wx, wy) = t.apply(x as f64, y as f64);
+                        part.pos.push([(wx - ox) as f32, (wy - oy) as f32]);
+                        part.uv.push([(wx as f32) * k, (wy as f32) * k]);
+                    }
                     part.col.extend(std::iter::repeat_n(color, buf.vertices.len()));
                     part.idx.extend(buf.indices.iter().map(|i| i + base));
                 }
                 Prim::Dabs { dabs, color, tints } => {
                     let part = last_colored(&mut parts);
-                    for (n, d) in dabs.iter().enumerate() {
-                        crate::brush::dab_mesh(
-                            d[0],
-                            d[1],
-                            d[2],
-                            tints.get(n).copied().unwrap_or(color).gamma_multiply(d[3]),
+                    let px = env.pixel.unwrap_or(1.0) as f32;
+                    let avg_r = dabs.first().map_or(0.0, |d| d[2]);
+                    let r_screen = avg_r / px;
+                    if r_screen < 1.0 && !dabs.is_empty() {
+                        crate::brush::dab_strip(
+                            &dabs,
+                            color,
+                            &tints,
+                            0.5 * px,
                             |x, y| {
                                 let (px, py) = tf(x, y);
                                 [px, py]
@@ -715,6 +737,38 @@ impl Painter {
                             &mut part.col,
                             &mut part.idx,
                         );
+                    } else if r_screen < 3.0 {
+                        for (n, d) in dabs.iter().enumerate() {
+                            crate::brush::dab_quad(
+                                d[0],
+                                d[1],
+                                d[2],
+                                tints.get(n).copied().unwrap_or(color).gamma_multiply(d[3]),
+                                |x, y| {
+                                    let (px, py) = tf(x, y);
+                                    [px, py]
+                                },
+                                &mut part.pos,
+                                &mut part.col,
+                                &mut part.idx,
+                            );
+                        }
+                    } else {
+                        for (n, d) in dabs.iter().enumerate() {
+                            crate::brush::dab_mesh(
+                                d[0],
+                                d[1],
+                                d[2],
+                                tints.get(n).copied().unwrap_or(color).gamma_multiply(d[3]),
+                                |x, y| {
+                                    let (px, py) = tf(x, y);
+                                    [px, py]
+                                },
+                                &mut part.pos,
+                                &mut part.col,
+                                &mut part.idx,
+                            );
+                        }
                     }
                 }
                 Prim::Shadow { x, y, w, h, radius, blur, dy, color } => {
@@ -837,12 +891,15 @@ pub fn brush_meshes(ctx: &egui::Context, prims: Vec<Prim>, scale: f32, place: im
             }
             Prim::Dabs { dabs, color, tints } => {
                 let (mut pos, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new());
-                for (n, d) in dabs.iter().enumerate() {
-                    crate::brush::dab_mesh(
-                        d[0],
-                        d[1],
-                        d[2],
-                        tints.get(n).copied().unwrap_or(color).gamma_multiply(d[3]),
+                let ppp = ctx.pixels_per_point();
+                let r_screen = dabs.first().map_or(0.0, |d| d[2]) * scale * ppp;
+                if r_screen < 1.0 && !dabs.is_empty() {
+                    let half_w = 0.5 / (scale * ppp).max(1e-3);
+                    crate::brush::dab_strip(
+                        &dabs,
+                        color,
+                        &tints,
+                        half_w,
                         |x, y| {
                             let p = place(x, y);
                             [p.x, p.y]
@@ -851,6 +908,38 @@ pub fn brush_meshes(ctx: &egui::Context, prims: Vec<Prim>, scale: f32, place: im
                         &mut col,
                         &mut idx,
                     );
+                } else if r_screen < 3.0 {
+                    for (n, d) in dabs.iter().enumerate() {
+                        crate::brush::dab_quad(
+                            d[0],
+                            d[1],
+                            d[2],
+                            tints.get(n).copied().unwrap_or(color).gamma_multiply(d[3]),
+                            |x, y| {
+                                let p = place(x, y);
+                                [p.x, p.y]
+                            },
+                            &mut pos,
+                            &mut col,
+                            &mut idx,
+                        );
+                    }
+                } else {
+                    for (n, d) in dabs.iter().enumerate() {
+                        crate::brush::dab_mesh(
+                            d[0],
+                            d[1],
+                            d[2],
+                            tints.get(n).copied().unwrap_or(color).gamma_multiply(d[3]),
+                            |x, y| {
+                                let p = place(x, y);
+                                [p.x, p.y]
+                            },
+                            &mut pos,
+                            &mut col,
+                            &mut idx,
+                        );
+                    }
                 }
                 let mut m = Mesh::default();
                 m.vertices = pos.iter().zip(&col).map(|(p, &c)| Vertex { pos: pos2(p[0], p[1]), uv: WHITE_UV, color: c }).collect();
@@ -1050,6 +1139,73 @@ mod tests {
             p.paint(&ctx, &mut out, &els, &f);
         }
         println!("paint, still  {:6.3} ms", t.elapsed().as_secs_f64() * 50.0);
+    }
+
+    #[test]
+    fn chalk_grain_uv_is_world_anchored() {
+        use crate::model::{Brush, El, Ink, Kind};
+        let mut painter = Painter::new(Images::new(None));
+        let env = Env::default();
+
+        // Stroke 1: element origin at (50.0, 80.0), local point at (10.0, 20.0) -> world position (60.0, 100.0)
+        let mut el1 = El::new(Kind::Ink(Ink {
+            colors: Vec::new(),
+            points: vec![10.0, 20.0, -1.0, 30.0, 40.0, -1.0],
+            color: "#1E1E1E".into(),
+            size: 10.0,
+            brush: Some(Brush::Chalk),
+        }));
+        (el1.x, el1.y, el1.w, el1.h) = (50.0, 80.0, 50.0, 50.0);
+
+        // Stroke 2: element origin at (0.0, 0.0), local point directly at (60.0, 100.0) -> world position (60.0, 100.0)
+        let mut el2 = El::new(Kind::Ink(Ink {
+            colors: Vec::new(),
+            points: vec![60.0, 100.0, -1.0, 80.0, 120.0, -1.0],
+            color: "#1E1E1E".into(),
+            size: 10.0,
+            brush: Some(Brush::Chalk),
+        }));
+        (el2.x, el2.y, el2.w, el2.h) = (0.0, 0.0, 100.0, 150.0);
+
+        let built1 = painter.build(&el1, &env, 0.25);
+        let built2 = painter.build(&el2, &env, 0.25);
+
+        let p1 = built1.parts.iter().find(|p| p.grain == Some(crate::brush::Grain::Chalk)).unwrap();
+        let p2 = built2.parts.iter().find(|p| p.grain == Some(crate::brush::Grain::Chalk)).unwrap();
+
+        // Both parts should have the exact same UV coordinates for corresponding world points
+        assert_eq!(p1.uv.len(), p2.uv.len());
+        for (uv1, uv2) in p1.uv.iter().zip(&p2.uv) {
+            assert!((uv1[0] - uv2[0]).abs() < 1e-4, "u matches: {} vs {}", uv1[0], uv2[0]);
+            assert!((uv1[1] - uv2[1]).abs() < 1e-4, "v matches: {} vs {}", uv1[1], uv2[1]);
+        }
+    }
+
+    #[test]
+    fn screen_space_lod_switches_to_strip_and_quad_at_low_resolutions() {
+        let ctx = egui::Context::default();
+        let make_prim = || Prim::Dabs {
+            dabs: vec![[0.0, 0.0, 2.0, 1.0], [10.0, 0.0, 2.0, 1.0]],
+            color: Color32::RED,
+            tints: Vec::new(),
+        };
+        // At scale = 0.1 (zoom-out): r_screen = 2.0 * 0.1 * 1.0 = 0.2 < 1.0 => dab_strip (4 vertices, 6 indices for 2 dabs)
+        let meshes_strip = brush_meshes(&ctx, vec![make_prim()], 0.1, |x, y| pos2(x, y));
+        assert_eq!(meshes_strip.len(), 1);
+        assert_eq!(meshes_strip[0].vertices.len(), 4);
+        assert_eq!(meshes_strip[0].indices.len(), 6);
+
+        // At scale = 1.0: r_screen = 2.0 * 1.0 * 1.0 = 2.0 => dab_quad (2 * 4 = 8 vertices, 2 * 6 = 12 indices)
+        let meshes_quad = brush_meshes(&ctx, vec![make_prim()], 1.0, |x, y| pos2(x, y));
+        assert_eq!(meshes_quad.len(), 1);
+        assert_eq!(meshes_quad[0].vertices.len(), 8);
+        assert_eq!(meshes_quad[0].indices.len(), 12);
+
+        // At scale = 4.0: r_screen = 2.0 * 4.0 * 1.0 = 8.0 >= 3.0 => dab_mesh (2 * 29 = 58 vertices, 2 * 126 = 252 indices)
+        let meshes_mesh = brush_meshes(&ctx, vec![make_prim()], 4.0, |x, y| pos2(x, y));
+        assert_eq!(meshes_mesh.len(), 1);
+        assert_eq!(meshes_mesh[0].vertices.len(), 58);
+        assert_eq!(meshes_mesh[0].indices.len(), 252);
     }
 
     #[test]
@@ -1289,9 +1445,9 @@ pub mod picture {
         }).collect()
     }
 
-    /// Tables, code and widgets, to look at: `TRATTO_SHOT=out.png cargo test figjam_picture`.
+    /// Tables, code and widgets, to look at: `TRATTO_SHOT=out.png cargo test elements_picture`.
     #[test]
-    fn figjam_picture() {
+    fn elements_picture() {
         use crate::model::*;
         let Ok(path) = std::env::var("TRATTO_SHOT") else { return };
         let mut els = Vec::new();

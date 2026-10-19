@@ -57,7 +57,7 @@ for name, (upright, italic, regular) in FONTS.items():
         it = fetch(italic)
         build(it, regular, f"{name}-italic.ttf")
         build(it, BOLD, f"{name}-bolditalic.ttf")
-# Interface: Figma's 450 (regular) and 550 (medium) weights of Inter.
+# Interface: 450 (regular) and 550 (medium) weights of Inter.
 inter = fetch(FONTS["sans"][0])
 build(inter, 450, "ui.ttf")
 build(inter, 550, "ui-medium.ttf")

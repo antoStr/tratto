@@ -21,7 +21,7 @@ pub const GRAIN_TILE: f32 = 96.0;
 
 /// Rings of a soft dab from the centre out: (distance as a share of the radius, strength), a
 /// bell that fades to nothing at the rim.
-pub const DAB_RINGS: [(f32, f32); 3] = [(0.0, 1.0), (0.45, 0.62), (1.0, 0.0)];
+pub const DAB_RINGS: [(f32, f32); 3] = [(0.0, 1.0), (0.50, 0.50), (1.0, 0.0)];
 /// Sides of each ring.
 pub const DAB_SIDES: usize = 14;
 
@@ -152,6 +152,85 @@ pub fn dab_mesh(x: f32, y: f32, r: f32, color: Color32, place: impl Fn(f32, f32)
     }
 }
 
+/// A 4-vertex quad for a dab when viewed at low screen-space resolution (1.0 <= R_screen < 3.0 px).
+/// Generates 4 vertices and 6 indices (2 triangles) instead of 29 vertices and 126 indices.
+pub fn dab_quad(
+    x: f32,
+    y: f32,
+    r: f32,
+    color: Color32,
+    place: impl Fn(f32, f32) -> [f32; 2],
+    pos: &mut Vec<[f32; 2]>,
+    col: &mut Vec<Color32>,
+    idx: &mut Vec<u32>,
+) {
+    let base = pos.len() as u32;
+    let c = color.gamma_multiply(0.48);
+    let s = r * 0.88;
+    pos.extend([
+        place(x - s, y - s),
+        place(x + s, y - s),
+        place(x + s, y + s),
+        place(x - s, y + s),
+    ]);
+    col.extend([c, c, c, c]);
+    idx.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+/// A simplified thin line ribbon connecting consecutive dabs when screen radius R_screen < 1.0 px.
+pub fn dab_strip(
+    dabs: &[[f32; 4]],
+    color: Color32,
+    tints: &[Color32],
+    half_width: f32,
+    place: impl Fn(f32, f32) -> [f32; 2],
+    pos: &mut Vec<[f32; 2]>,
+    col: &mut Vec<Color32>,
+    idx: &mut Vec<u32>,
+) {
+    if dabs.is_empty() {
+        return;
+    }
+    if dabs.len() == 1 {
+        let d = dabs[0];
+        let c = tints.first().copied().unwrap_or(color).gamma_multiply(d[3]);
+        let r = half_width.max(d[2]);
+        dab_quad(d[0], d[1], r, c, place, pos, col, idx);
+        return;
+    }
+    for i in 1..dabs.len() {
+        let (d0, d1) = (dabs[i - 1], dabs[i]);
+        let (dx, dy) = (d1[0] - d0[0], d1[1] - d0[1]);
+        let dist = dx.hypot(dy);
+        let c0 = tints.get(i - 1).copied().unwrap_or(color).gamma_multiply(d0[3]);
+        let c1 = tints.get(i).copied().unwrap_or(color).gamma_multiply(d1[3]);
+        let hw = half_width.max(0.5 * (d0[2] + d1[2]));
+        if dist < 1e-4 {
+            let base = pos.len() as u32;
+            pos.extend([
+                place(d0[0] - hw, d0[1] - hw),
+                place(d0[0] + hw, d0[1] - hw),
+                place(d0[0] + hw, d0[1] + hw),
+                place(d0[0] - hw, d0[1] + hw),
+            ]);
+            col.extend([c0, c0, c0, c0]);
+            idx.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+            continue;
+        }
+        let (nx, ny) = (-dy / dist * hw, dx / dist * hw);
+        let base = pos.len() as u32;
+        pos.extend([
+            place(d0[0] - nx, d0[1] - ny),
+            place(d0[0] + nx, d0[1] + ny),
+            place(d1[0] + nx, d1[1] + ny),
+            place(d1[0] - nx, d1[1] - ny),
+        ]);
+        col.extend([c0, c0, c1, c1]);
+        idx.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+}
+
+
 /// A soft dab for software drawing: a radial gradient fading as the rings do, in `color` (its
 /// own alpha too) times `alpha`. Kept apart: a faint dab's colour, made premultiplied and back,
 /// would come out a few shades off, and many of them show it.
@@ -235,5 +314,24 @@ mod tests {
             let inside = (1..GRAIN_SIZE).map(|x| step(x - 1, x)).sum::<f64>() / (GRAIN_SIZE - 1) as f64;
             assert!(step(GRAIN_SIZE - 1, 0) < inside * 1.6, "{g:?}: seam {} vs {inside}", step(GRAIN_SIZE - 1, 0));
         }
+    }
+
+    #[test]
+    fn dab_quad_produces_four_vertices_and_two_triangles() {
+        let (mut pos, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new());
+        dab_quad(10.0, 20.0, 2.5, Color32::RED, |x, y| [x, y], &mut pos, &mut col, &mut idx);
+        assert_eq!(pos.len(), 4);
+        assert_eq!(col.len(), 4);
+        assert_eq!(idx.len(), 6);
+        assert_eq!(idx, vec![0, 1, 2, 0, 2, 3]);
+    }
+
+    #[test]
+    fn dab_strip_connects_consecutive_dabs() {
+        let (mut pos, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new());
+        let dabs = vec![[0.0, 0.0, 1.0, 1.0], [10.0, 0.0, 1.0, 1.0], [20.0, 0.0, 1.0, 1.0]];
+        dab_strip(&dabs, Color32::BLUE, &[], 0.5, |x, y| [x, y], &mut pos, &mut col, &mut idx);
+        assert_eq!(pos.len(), 8);
+        assert_eq!(idx.len(), 12);
     }
 }

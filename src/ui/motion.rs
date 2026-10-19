@@ -1,4 +1,4 @@
-//! Motion in the manner of Figma and Apple: springs that carry on from wherever they are when
+//! Motion system: springs that carry on from wherever they are when
 //! the target changes (so nothing jumps when you change your mind half-way), quick quiet exits,
 //! small rises for things that appear and a slight give when a button is pressed. With "Riduci
 //! il movimento" (Settings ▸ Accessibilità) things only fade: nothing slides, grows or bounces.

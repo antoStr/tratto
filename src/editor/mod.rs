@@ -43,7 +43,7 @@ pub enum Tool {
     Table,
 }
 
-/// Selection handles. `Add*` are FigJam's "+" beside a shape or sticky: click for a connected
+/// Selection handles. `Add*` are the "+" beside a shape or sticky: click for a connected
 /// copy, drag for a connector.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Handle {
@@ -205,6 +205,8 @@ pub(crate) struct Draw {
     pub(crate) quick_shape_snapped: bool,
     /// Board centre used for symmetry axes during this stroke.
     pub(crate) sym_center: Pt,
+    /// The pressure sensitivity setting (Settings ▸ Penna ▸ Sensibilità).
+    pub(crate) sensitivity: crate::prefs::Sensitivity,
     /// The pressure is raised to this power (Settings ▸ Penna ▸ Sensibilità).
     gamma: f64,
     /// The brush pen without pressure: how fast it moves (screen points per ms, smoothed) and
@@ -215,6 +217,7 @@ pub(crate) struct Draw {
     raw: Option<Pos2>,
     /// When the pen touched down (ms).
     down_ms: Option<f64>,
+    #[allow(dead_code)]
     pointer: u64,
     /// Tells this stroke's pieces apart from the previous one's, for the others.
     sid: u64,
@@ -229,6 +232,7 @@ pub(crate) struct Draw {
     /// The sfumino: the colour each point carries (one a point, 0xRRGGBB), and what it picks
     /// them up from.
     pub(crate) colors: Vec<u32>,
+    pub(crate) scratch_rel: Vec<f32>,
     smear: Option<Box<Smear>>,
 }
 
@@ -287,13 +291,13 @@ impl Smear {
     }
 
     /// The colour the sfumino carries at the next point: what it had, with some of what is under
-    /// it there (more the farther it went: it drags colours about a width), mixed as the eye
-    /// sees colours (OKLab).
-    fn carry(&mut self, p: Pt, size: f64) -> u32 {
+    /// it there, modulated by brush strength and drag distance in OKLab.
+    pub(crate) fn carry(&mut self, p: Pt, size: f64, strength: f64) -> u32 {
         let under = self.sample(p, size / 2.0);
+        let pull = size * (0.4 + 2.4 * strength.clamp(0.05, 1.0).powf(1.2));
         let c = match (self.carried, self.last) {
             (Some(c), Some(l)) => {
-                let k = 1.0 - (-(p.x - l.x).hypot(p.y - l.y) / (size * 1.1).max(1e-6)).exp();
+                let k = 1.0 - (-(p.x - l.x).hypot(p.y - l.y) / pull.max(1e-6)).exp();
                 ink::mix_lab(c, under, k)
             }
             _ => under,
@@ -329,9 +333,9 @@ pub(crate) enum Gesture {
     Laser,
     Ruler { s0: Pos2, x: f64, y: f64 },
     RulerRotate,
-    /// Alt and a drag with a pen, the highlighter or the eraser: its size (left button) or its
-    /// opacity (right button) follow the pointer. Alt+click without a drag picks a colour.
-    BrushAdjust { s0: Pos2, size0: f64, opacity0: f64, opacity: bool, moved: bool },
+    /// Alt and a drag with a pen, the highlighter or the eraser: its size (X axis) and opacity/strength
+    /// (Y axis) follow the pointer. Alt+click without a drag picks a colour.
+    BrushAdjust { s0: Pos2, size0: f64, opacity0: f64, moved: bool },
 }
 
 pub struct Editor {
@@ -380,7 +384,7 @@ pub struct Editor {
     pub(crate) hover_handle: Option<Handle>,
     /// The pointer is on a column line of the selected table.
     pub(crate) hover_col: bool,
-    /// Shape or note under the pointer whose "+" show without selecting it, as in FigJam.
+    /// Shape or note under the pointer whose "+" show without selecting it.
     pub(crate) hover_adds: Option<String>,
     pub(crate) space: bool,
     pub(crate) eraser_at: Option<Pos2>,
@@ -415,7 +419,7 @@ pub struct Editor {
     pub(crate) seen_emotes: HashMap<u64, u64>,
 }
 
-/// FigJam's emotes: a quick feeling, floating up from the cursor for everyone, then gone.
+/// Floating emotes: a quick feeling, floating up from the cursor for everyone, then gone.
 pub const EMOTES: [&str; 8] = ["❤️", "👍", "😂", "🎉", "👏", "🔥", "😮", "💯"];
 
 /// How long the E key is held before the emote wheel opens (a quick press picks the eraser).
@@ -510,7 +514,7 @@ impl Editor {
 
     /* ---------- sorting notes ---------- */
 
-    /// FigJam's "Sort": the selected notes in columns, one per colour (or per author), from
+    /// "Sort": the selected notes in columns, one per colour (or per author), from
     /// where the selection starts; within a column in their reading order.
     pub fn sort_stickies(&mut self, by_author: bool) {
         let mut notes: Vec<Arc<El>> = self.selected().into_iter().filter(|e| e.sticky().is_some() && editable(e)).collect();
@@ -810,7 +814,7 @@ impl Editor {
             list.extend([at(Handle::AddN, c.x, b.y - d), at(Handle::AddE, b.right() + d, c.y), at(Handle::AddS, c.x, b.bottom() + d), at(Handle::AddW, b.x - d, c.y)]);
         }
         if let Some(e) = one.filter(|e| e.table().is_some()) {
-            // FigJam's "+" to grow a table: a row under it, a column beside it.
+            // The "+" to grow a table: a row under it, a column beside it.
             let d = 18.0 / z;
             let _ = e;
             list.push(at(Handle::AddRow, c.x, b.bottom() + d));
@@ -1192,6 +1196,7 @@ impl Editor {
             last_move_ms: now(),
             quick_shape_snapped: false,
             sym_center,
+            sensitivity: self.prefs.sensitivity,
             gamma: self.prefs.sensitivity.gamma(),
             speed: None,
             last_raw: None,
@@ -1203,6 +1208,7 @@ impl Editor {
             pieces_cam: (0, 0, 0, 0, 0),
             pieces_pts: usize::MAX,
             colors: Vec::new(),
+            scratch_rel: Vec::new(),
             smear,
         })));
     }
@@ -1254,17 +1260,17 @@ impl Editor {
             }
             if g.force_varied || (f - 0.5).abs() > 0.025 {
                 // Real hardware pressure from Windows Ink, Wintab, or PointerEvents: map across
-                // the full 0.02..=1.0 range through the user's sensitivity curve.
-                let raw_p = (f as f64).clamp(0.02, 1.0).powf(g.gamma);
+                // the full range through the user's calibrated sensitivity curve.
+                let raw_p = crate::prefs::calibrate_pressure(f, g.sensitivity);
                 // Eased over about 12 ms, and never faster than full in 40 ms: a driver's odd
-                // spike leaves no blot. The first touch eases in over 30 ms, a fine start.
+                // spike leaves no blot. The first touch eases in over 24 ms, responsive on deliberate contact.
                 let ease = 1.0 - (-dt / 12.0).exp();
                 let p = match g.pressure {
-                    None => raw_p * 0.35,
+                    None => raw_p * 0.42,
                     Some(prev) => {
                         let step = ((raw_p - prev) * ease).clamp(-dt / 40.0, dt / 40.0);
                         let p = prev + step;
-                        if since_down < 30.0 { p.min(raw_p * (0.35 + 0.65 * since_down / 30.0)) } else { p }
+                        if since_down < 24.0 { p.min(raw_p * (0.42 + 0.58 * since_down / 24.0)) } else { p }
                     }
                 };
                 g.pressure = Some(p);
@@ -1320,7 +1326,7 @@ impl Editor {
             return;
         }
         // With pressure, the end thins away as the pen lifts (over the last few points, as
-        // long as the stroke is a few widths long): the tail Procreate gives its ink.
+        // long as the stroke is a few widths long): natural ink tapering.
         if g.use_pressure && !g.hl && !g.quick_shape_snapped {
             let n = g.pts.len() / 3;
             let length: f64 = (1..n).map(|i| (g.pts[i * 3] - g.pts[i * 3 - 3]).hypot(g.pts[i * 3 + 1] - g.pts[i * 3 - 2])).sum();
@@ -1344,7 +1350,7 @@ impl Editor {
         if let Kind::Ink(i) = &mut el.kind {
             i.colors = colors.clone();
         }
-        // QuickShape keeps the stroke, with its brush, in its perfect shape (as in Procreate); the
+        // QuickShape keeps the stroke, with its brush, in its perfect shape; the
         // setting "ink to shapes" makes shapes of what is drawn.
         if !g.hl && self.prefs.ink_to_shape && g.snap.is_none() && sym == crate::prefs::Symmetry::Off {
             let flat: Vec<f32> = thin.iter().map(|&v| v as f32).collect();
@@ -1803,7 +1809,7 @@ impl Editor {
     /// decision. The copy is ready to be written in.
     pub fn add_beside(&mut self, el: &El, side: Handle) {
         let z = self.cam.z;
-        // Notes, as in FigJam: a new note right beside, no arrow (unless chosen in the settings);
+        // Notes: a new note right beside, no arrow (unless chosen in the settings);
         // shapes are diagrams: further away, joined by an arrow.
         let arrow = el.sticky().is_none() || self.prefs.sticky_arrows;
         let gap = if arrow { (80.0 / z).max(el.w.min(el.h) * 0.5) } else { el.w.min(el.h) * 0.1 };
@@ -2737,7 +2743,7 @@ impl Editor {
         let n = if back { i.checked_sub(1) } else { Some(i + 1) };
         match n {
             Some(n) if n < rows * cols => self.editing_cell = Some((n / cols, n % cols)),
-            // Tab in the last cell adds a row, like FigJam.
+            // Tab in the last cell adds a row.
             Some(_) if !back => {
                 self.board.update(&[id], |el| {
                     if let Kind::Table(t) = &mut el.kind {
@@ -2832,9 +2838,13 @@ impl Editor {
 fn smear_points(g: &mut Draw) {
     let Some(smear) = g.smear.as_mut() else { return };
     let n = g.pts.len() / 3;
+    let strength = g.opacity;
     while g.colors.len() < n {
         let i = g.colors.len();
-        g.colors.push(smear.carry(pt(g.pts[i * 3], g.pts[i * 3 + 1]), g.size));
+        let pressure = g.pts[i * 3 + 2];
+        let p_factor = if pressure < 0.0 { 1.0 } else { 0.45 + 0.55 * pressure.clamp(0.0, 1.0) };
+        let str_eff = (strength * p_factor).clamp(0.05, 1.0);
+        g.colors.push(smear.carry(pt(g.pts[i * 3], g.pts[i * 3 + 1]), g.size, str_eff));
     }
 }
 
@@ -3087,6 +3097,35 @@ mod tests {
         }
     }
 
+    /// Verifies that low smudge strength blurs locally and drops carried color much faster than high strength.
+    #[test]
+    fn smudge_strength_modulates_drag_distance() {
+        let mut ed = editor();
+        ed.size = (800.0, 600.0);
+        let fill = |id: &str, x: f64, color: &str| {
+            let mut e = El::new(Kind::Shape(Shape { fill: color.into(), stroke: "transparent".into(), stroke_width: 0.0, ..Default::default() }));
+            (e.id, e.x, e.y, e.w, e.h) = (id.into(), x, 0.0, 200.0, 200.0);
+            e
+        };
+        ed.board.put([fill("r", 0.0, "#E03131"), fill("b", 200.0, "#1971C2")]);
+        ed.tool = Tool::Pen;
+        ed.prefs.pens[0] = crate::prefs::Pen { brush: Brush::Smudge, size: 20.0, opacity: 0.1, ..Default::default() };
+        ed.start_draw(pos2(40.0, 100.0), false, PointerKind::Mouse, 0);
+        for i in 0..=64 {
+            ed.add_draw_point(pos2(40.0 + i as f32 * 5.0, 100.0), i as f64 * 8.0, None);
+        }
+        let Some(Gesture::Draw(g)) = ed.gesture.take() else { panic!("drawing") };
+        ed.commit_draw(g);
+        let ink = ed.board.all().iter().find_map(|e| e.ink().cloned()).expect("a stroke");
+        let rgb = |c: u32| ((c >> 16) as u8, (c >> 8) as u8, c as u8);
+        let at = |x: f32| {
+            let i = ink.points.chunks_exact(3).position(|p| p[0] + 40.0 >= x).unwrap_or(0);
+            rgb(ink.colors[i])
+        };
+        let (r_weak, _, b_weak) = at(215.0);
+        assert!(b_weak > r_weak, "at low strength, blue dominates quickly: r={r_weak}, b={b_weak}");
+    }
+
     /// The eyedropper sees what is drawn: a shape's fill, the board where nothing is, and a
     /// see-through stroke mixed with what is under it; the pen in use takes it.
     #[test]
@@ -3105,6 +3144,32 @@ mod tests {
         ed.pick_color(pt(20.0, 20.0));
         assert_eq!(ed.prefs.pens[ed.pen].color, "#E03131");
         assert!(!ed.eyedropper);
+    }
+
+    #[test]
+    fn alt_2d_drag_and_brush_feel_dynamics() {
+        let mut ed = editor();
+        ed.tool = Tool::Pen;
+        ed.prefs.pens[0] = crate::prefs::Pen { size: 4.0, opacity: 0.5, ..Default::default() };
+        let (s0, o0) = ed.brush_feel().unwrap();
+        assert_eq!((s0, o0), (4.0, 0.5));
+
+        // 2D drag formula: dx adjusts size, dy adjusts opacity
+        let dx = 120.0;
+        let dy = -125.0; // moving UP by 125 px adds 0.5 opacity
+        let new_size = s0 * 2f64.powf(dx / 120.0);
+        let new_opacity = o0 - dy / 250.0;
+        ed.set_brush_feel(Some(new_size), Some(new_opacity));
+
+        let (s_after, o_after) = ed.brush_feel().unwrap();
+        assert_eq!(s_after, 8.0);
+        assert_eq!(o_after, 1.0);
+
+        // Smudge brush forza adjustment
+        ed.prefs.pens[0].brush = Brush::Smudge;
+        ed.set_brush_feel(None, Some(0.75));
+        let (_, forza) = ed.brush_feel().unwrap();
+        assert_eq!(forza, 0.75);
     }
 
     #[test]
@@ -3199,7 +3264,7 @@ mod tests {
         ed.board.put([note.clone(), node("s", 0.0, 600.0)]);
         let lines = |ed: &mut Editor| ed.board.all().iter().filter(|e| e.is_line()).count();
         ed.add_beside(&note, Handle::AddE);
-        assert_eq!(lines(&mut ed), 0, "as in FigJam: just another note");
+        assert_eq!(lines(&mut ed), 0, "just another note");
         let new = ed.board.get(&ed.selection[0]).unwrap().clone();
         assert!(new.sticky().is_some() && new.x > 200.0 && new.x < 260.0, "right beside it: {}", new.x);
         let shape = ed.board.get("s").unwrap().clone();

@@ -1,4 +1,4 @@
-//! FigJam-style widgets: a poll, a checklist and a counter. One layout drives both the drawing
+//! Interactive widgets: a poll, a checklist and a counter. One layout drives both the drawing
 //! and the clickable parts, so what you see is exactly what you can press.
 
 use egui::Color32;

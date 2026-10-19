@@ -57,7 +57,7 @@ pub fn face_id(name: &str) -> Option<usize> {
     FILES.iter().position(|(n, _)| *n == name)
 }
 
-/// Inter at Figma's medium weight, used for section titles.
+/// Inter at medium weight, used for section titles.
 pub fn ui_medium() -> usize {
     face_id("ui-medium").unwrap()
 }
@@ -425,7 +425,7 @@ pub fn section_title_box(el: &El, zoom: f64) -> TitleBox {
     let pad = 8.0 / zoom;
     let text = el.name.as_deref().map(str::trim).filter(|t| !t.is_empty()).unwrap_or("Sezione").to_string();
     let h = 22.0 / zoom;
-    // FigJam's section icon comes first, then the name.
+    // The section icon comes first, then the name.
     let icon = h + 4.0 / zoom;
     let w = (measure(ui_medium(), &text, size) + pad * 2.0 + size * 0.25).min((el.w - icon).max(pad * 4.0));
     TitleBox { x: el.x + icon, y: el.y - h - 4.0 / zoom, w, h, size, pad, text }
@@ -589,7 +589,7 @@ pub fn first_link(text: &str) -> Option<String> {
 mod link_tests {
     #[test]
     fn web_addresses_in_text_are_found_and_nothing_else() {
-        assert_eq!(super::first_link("vedi https://figma.com/file/x, poi"), Some("https://figma.com/file/x".into()));
+        assert_eq!(super::first_link("vedi https://example.com/file/x, poi"), Some("https://example.com/file/x".into()));
         assert_eq!(super::first_link("(www.esempio.it)."), Some("https://www.esempio.it".into()));
         assert_eq!(super::first_link("javascript:alert(1) file:///etc/passwd"), None);
         assert_eq!(super::first_link("solo testo"), None);

@@ -29,7 +29,7 @@ fn shape(k: ShapeKind, x: f64, y: f64, w: f64, h: f64, fill: &str, stroke: &str,
     el(Kind::Shape(Shape { shape: k, fill: fill.into(), stroke: stroke.into(), stroke_width: width, radius, ..Default::default() }), x, y, w, h)
 }
 
-/// Figma-style white card.
+/// Standard white card.
 fn card(x: f64, y: f64, w: f64, h: f64) -> El {
     shape(ShapeKind::Rect, x, y, w, h, "#FFFFFF", "#E6E6E6", 1.0, 12.0)
 }

@@ -271,7 +271,7 @@ impl Home {
             let section = if out.inner || (end && self.picked == 1) { 1u8 } else { 0 };
             ctx.data_mut(|d| d.insert_temp(section_id, section));
         });
-        // Only a hairline between the sidebar and the list, as in Figma.
+        // Only a hairline between the sidebar and the list.
         if let Some(side) = side {
             let sr = side.response.rect;
             ctx.layer_painter(egui::LayerId::background()).vline(sr.max.x - 0.5, sr.y_range(), Stroke::new(1.0, t.border));
@@ -403,7 +403,7 @@ impl Home {
         let over = ui.rect_contains_pointer(rect);
         let thumb_rect = Rect::from_min_size(rect.min, vec2(card_w, thumb_h));
         let thumb = ui.interact(thumb_rect, Id::new(("open", &b.id)), Sense::click());
-        // Figma's file browser: a firmer outline and a faint veil, nothing that lifts or glows.
+        // A firmer outline and a faint veil, nothing that lifts or glows.
         let k = ui::motion::hover(&ctx, thumb.id.with("h"), thumb.hovered());
         let down = ui::motion::hover(&ctx, thumb.id.with("down"), thumb.is_pointer_button_down_on());
         ui.painter().rect_filled(thumb_rect, 8.0, t.bg2);
@@ -490,7 +490,7 @@ impl Home {
     }
 }
 
-/// A rounded search box with its magnifier, like Figma's.
+/// A rounded search box with its magnifier.
 fn search_field(ui: &mut Ui, query: &mut String, t: &ui::Theme, width: f32) {
     let s = ui::sizes(ui.ctx());
     let (rect, _) = ui.allocate_exact_size(vec2(width, ui::ctl(28.0)), Sense::hover());

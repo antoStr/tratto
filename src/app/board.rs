@@ -63,6 +63,7 @@ pub struct BoardUi {
     pub seen_size: Option<(f64, f64)>,
     /// Rows being dragged in the layers panel.
     pub layer_drag: Option<super::panels::LayerDrag>,
+    pub shapes: Vec<egui::Shape>,
 }
 
 impl Default for BoardUi {
@@ -94,6 +95,7 @@ impl Default for BoardUi {
             zen_near: 0.0,
             seen_size: None,
             layer_drag: None,
+            shapes: Vec::new(),
         }
     }
 }
@@ -476,7 +478,7 @@ impl BoardScreen {
         // Name and colours as chosen (in the profile, the share dialog or the settings).
         self.update_identity();
 
-        // Desktop tab bar, dark in both themes like Figma's (not in a guest's browser): the way
+        // Desktop tab bar, dark in both themes (not in a guest's browser): the way
         // home, the settings, and the board's name. Zen mode hides it with everything else.
         #[cfg(not(target_arch = "wasm32"))]
         if !self.editor.prefs.zen {
@@ -514,6 +516,19 @@ impl BoardScreen {
                         if ui::tip(r, "Modalità zen", Some("Alt+Z")).clicked() {
                             self.editor.toggle_zen();
                         }
+                        // Quick theme toggle (Sun/Moon)
+                        let is_dark = t.dark;
+                        let theme_icon = if is_dark { "sun" } else { "moon" };
+                        let theme_label = if is_dark { "Passa al tema chiaro" } else { "Passa al tema scuro" };
+                        let r_theme = ui.allocate_response(vec2(36.0, 40.0), Sense::click());
+                        let theme_pill = Rect::from_center_size(r_theme.rect.center(), vec2(28.0, 28.0));
+                        ui::hover_fill(ui, r_theme.id, theme_pill, r_theme.hovered(), 8.0, t.chrome2);
+                        ui::icon(ui, theme_icon, theme_pill.center(), 16.0, t.chrome_text);
+                        ui::focus_ring(ui, &r_theme, theme_pill);
+                        r_theme.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, theme_label));
+                        if ui::tip(r_theme, theme_label, None).clicked() {
+                            self.editor.prefs.theme = if is_dark { crate::prefs::Theme::Light } else { crate::prefs::Theme::Dark };
+                        }
                     });
                 });
             });
@@ -535,7 +550,7 @@ impl BoardScreen {
         let ctx = ui.ctx().clone();
         let rect = ui.max_rect();
         let mut action_from_panel = None;
-        // Figma UI3: the panels are cards floating over the board, which runs underneath them.
+        // The panels are cards floating over the board, which runs underneath them.
         // Zen mode takes the whole screen on a computer, and gives the window back after.
         #[cfg(not(target_arch = "wasm32"))]
         if self.editor.prefs.zen != self.ui.zen_seen {
@@ -571,6 +586,11 @@ impl BoardScreen {
             }
         });
         panel_card(&ctx, "right-panel", right_rect, kr, 1.0, t, |ui| super::panels::right(ui, self, toasts));
+        if kr > 0.001 {
+            ctx.data_mut(|d| d.insert_temp(Id::new("right-panel-rect"), right_rect));
+        } else {
+            ctx.data_mut(|d| d.remove::<Rect>(Id::new("right-panel-rect")));
+        }
         // What floats over the board centres on the part the panels leave free.
         let stage = rect;
         let rect = if is_mobile {
@@ -619,24 +639,28 @@ impl BoardScreen {
 
         // The board.
         let painter = ui.painter_at(stage);
-        let mut shapes = Vec::new();
+        self.ui.shapes.clear();
         let ppp = ctx.pixels_per_point();
-        crate::paint::background(&mut shapes, stage, &ed.cam, &ed.board.meta(), ppp);
+        crate::paint::background(&mut self.ui.shapes, stage, &ed.cam, &ed.board.meta(), ppp);
         let els = ed.paint_list();
         // What lies entirely under a panel is not drawn: the panels are opaque.
         let seen = rect.expand(GAP);
         let (a, b) = (ed.cam.to_world((seen.min.x - stage.min.x) as f64, (seen.min.y - stage.min.y) as f64), ed.cam.to_world((seen.max.x - stage.min.x) as f64, (seen.max.y - stage.min.y) as f64));
         let view = crate::geom::BBox { x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y };
-        let glides = ed.board.glide_offsets();
-        if !glides.is_empty() {
-            ctx.request_repaint();
-        }
-        let editing = ed.editing.clone();
-        let frame = Frame { cam: ed.cam, origin: stage.min, view, pixels_per_point: ppp, editing: editing.as_deref(), editing_cell: ed.editing_cell, glides: (!glides.is_empty()).then_some(&glides), dark_board: crate::model::is_dark(&ed.board.meta().background) };
-        let on_screen = ed.painter.paint(&ctx, &mut shapes, &els, &frame);
+        let glides = if ed.board.has_glides() {
+            let g = ed.board.glide_offsets();
+            if !g.is_empty() {
+                ctx.request_repaint();
+            }
+            Some(g)
+        } else {
+            None
+        };
+        let frame = Frame { cam: ed.cam, origin: stage.min, view, pixels_per_point: ppp, editing: ed.editing.as_deref(), editing_cell: ed.editing_cell, glides: glides.as_ref(), dark_board: crate::model::is_dark(&ed.board.meta().background) };
+        let on_screen = ed.painter.paint(&ctx, &mut self.ui.shapes, &els, &frame);
         let any_visible = els.iter().any(|e| !e.hidden);
         ed.lost = any_visible && !on_screen;
-        painter.extend(shapes);
+        painter.extend(self.ui.shapes.drain(..));
         ed.paint_overlay(&painter, t.dark);
         if ed.gesture.is_some() || !ed.laser.is_empty() || ed.presence.peers.iter().any(|(_, s)| s["laser"].is_array()) {
             ctx.request_repaint();
@@ -986,7 +1010,7 @@ impl BoardScreen {
             let out = edit.layouter(&mut layouter).show(ui);
             if out.response.changed() {
                 changed = true;
-                // Lists carry on with Enter (and end on an empty item), as in FigJam.
+                // Lists carry on with Enter (and end on an empty item).
                 if !single
                     && !is_table
                     && code.is_none()
@@ -1090,7 +1114,7 @@ impl BoardScreen {
         |k| self.editor.painter.images.pixmap(k)
     }
 }
-/// A Figma UI3 panel: a rounded card floating over the board, sliding in from its side
+/// A panel: a rounded card floating over the board, sliding in from its side
 /// (`side` -1 left, 1 right) as `k` goes from 0 to 1.
 fn panel_card(ctx: &egui::Context, id: &str, rect: Rect, k: f32, side: f32, t: &Theme, add: impl FnOnce(&mut egui::Ui)) {
     if k <= 0.01 {

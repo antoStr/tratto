@@ -57,8 +57,8 @@ pub const SHAPES: [(ShapeTool, &str, Option<&str>); 29] = [
     (ShapeTool::Kind(ShapeKind::Cloud), "Nuvola", None),
 ];
 
-/// The paths a connector can take, as FigJam offers them.
-/// The shapes in the shape tool's row, as in FigJam's; the others are in the shapes panel.
+/// The paths a connector can take.
+/// The shapes in the shape tool's row; the others are in the shapes panel.
 const QUICK_SHAPES: [ShapeTool; 8] = [
     ShapeTool::Kind(ShapeKind::Rect),
     ShapeTool::Kind(ShapeKind::Ellipse),
@@ -89,7 +89,7 @@ fn connector_icon(ui: &Ui, route: Option<crate::model::Route>, c: Pos2, color: C
         }
         Some(Route::Curved) => {
             let (a, b) = (c + vec2(-7.0, 8.0), c + vec2(7.0, -7.0));
-            p.add(egui::Shape::CubicBezier(egui::epaint::CubicBezierShape::from_points_stroke([a, a + vec2(9.0, 0.0), b + vec2(-9.0, 0.0), b], false, Color32::TRANSPARENT, st)));
+            p.add(egui::Shape::CubicBezier(egui::epaint::CubicBezierShape::from_points_stroke([a, a + vec2(5.0, 0.0), b + vec2(-5.0, 0.0), b], false, Color32::TRANSPARENT, st)));
             head(b, vec2(1.0, 0.0));
         }
         Some(Route::Straight) => {
@@ -398,10 +398,10 @@ pub fn insert_drag(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     ctx.request_repaint();
 }
 
-/// FigJam's "+": code, widgets, pictures and templates, in a light card of big tiles. A tile
+/// More tools "+": code, widgets, pictures and templates, in a light card of big tiles. A tile
 /// clicked adds in the middle of the view; dragged, it goes where it is let go.
 fn more_tools(ui: &mut Ui, ed: &mut Editor, t: &Theme, top: bool) {
-    // FigJam's round "+" at the end of the toolbar.
+    // The round "+" at the end of the toolbar.
     let (rect, r) = ui.allocate_exact_size(vec2(btn(), btn()), Sense::click());
     let h = ui::motion::hover(ui.ctx(), r.id.with("h"), r.hovered() || egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&r)));
     ui.painter().circle_filled(rect.center(), 15.0 * bar(), ui::blend(t.bg2, t.press, h));
@@ -490,7 +490,7 @@ pub fn brush_icon_name(b: Brush) -> &'static str {
     }
 }
 
-/// One marker of FigJam's drawer: pen, highlighter or washi tape drawn as the real thing, in the
+/// One marker of the drawer: pen, highlighter or washi tape drawn as the real thing, in the
 /// colour it will draw with. It peeks out of the toolbar, rises a little under the pointer and
 /// stands up when chosen, on a spring.
 fn drawer_slot(ui: &mut Ui, ed: &mut Editor, t: &Theme, tool: Tool) -> egui::Response {
@@ -525,7 +525,7 @@ fn drawer_slot(ui: &mut Ui, ed: &mut Editor, t: &Theme, tool: Tool) -> egui::Res
     ui::tip(resp, label, Some(kbd))
 }
 
-/// A marker standing in the drawer, as FigJam draws it: a white barrel, a grey cone and the tip in
+/// A marker standing in the drawer: a white barrel, a grey cone and the tip in
 /// the colour it draws with (a highlighter: a wide cap and a slanted chisel).
 fn marker(p: &egui::Painter, x: f32, top: f32, c: Color32, t: &Theme, w: f32, chisel: bool) {
     let (body, edge, cone) = if t.dark { (Color32::from_gray(0x58), Color32::from_gray(0x70), Color32::from_gray(0x48)) } else { (Color32::from_gray(0xFC), Color32::from_gray(0xCF), Color32::from_gray(0xE4)) };
@@ -725,7 +725,7 @@ const DRAWING: [(Tool, &str, &str, &str); 5] = [
     (Tool::Lasso, "lasso", "Lazo", "Q"),
 ];
 
-/// FigJam's pens: one marker in the toolbar, the one in hand (the pen while another tool is).
+/// Drawer pens: one marker in the toolbar, the one in hand (the pen while another tool is).
 /// The toolbar keeps the buttons it was given: the other drawing tools are in the options.
 fn draw_drawer(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
     let tool = if matches!(ed.tool, Tool::Highlighter | Tool::Tape) { ed.tool } else { Tool::Pen };
@@ -743,7 +743,7 @@ fn note_shape(p: &egui::Painter, c: Pos2, s: f32, a: f32, color: Color32, edge: 
     p.add(egui::Shape::convex_polygon(vec![r(h, h - f), r(h - f, h), r(h - f, h - f)], ui::mix(color, 0.84, Color32::BLACK), Stroke::NONE));
 }
 
-/// What the shapes panel lists, by group: FigJam's basic shapes, the flowchart's, the systems'.
+/// What the shapes panel lists, by group: basic shapes, the flowchart's, the systems'.
 const SHAPE_GROUPS: [(&str, &[ShapeTool]); 3] = [
     (
         "Base",
@@ -796,7 +796,7 @@ const SHAPE_GROUPS: [(&str, &[ShapeTool]); 3] = [
     ),
 ];
 
-/// FigJam's shapes panel ("Altre forme" in the shapes row): every shape, by group, with a search
+/// Shapes panel ("Altre forme" in the shapes row): every shape, by group, with a search
 /// box; a click picks the shape for the shape tool, a drag puts it on the board.
 pub fn shapes_panel(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     let open_id = Id::new("shapes-panel");
@@ -940,7 +940,7 @@ fn note_shadow(p: &egui::Painter, c: Pos2, s: f32, _a: f32) {
     p.add(egui::epaint::Shadow { offset: [0, 10], blur: 34, spread: 0, color: Color32::from_black_alpha(60) }.as_shape(r, 6.0));
 }
 
-/// FigJam's pad of sticky notes: a click picks the note tool; dragged, the top note peels off
+/// Pad of sticky notes: a click picks the note tool; dragged, the top note peels off
 /// and goes where it is let go, while the next one slides up into its place.
 fn sticky_stack(ui: &mut Ui, ed: &mut Editor, t: &Theme) {
     let ctx = ui.ctx().clone();
@@ -1175,7 +1175,7 @@ pub fn toolbar(ctx: &egui::Context, stage: Rect, ed: &mut Editor, st: &mut Board
     let away = (1.0 - dock) * 90.0 * if top { -1.0 } else { 1.0 };
     let resp = egui::Area::new(Id::new("toolbar")).anchor(anchor, [cx, dy + away + if top { stage.min.y } else { stage.max.y - ctx.content_rect().max.y }]).interactable(dock > 0.5).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.multiply_opacity(dock);
-        // FigJam's toolbar: a big friendly card.
+        // Toolbar: a big friendly card.
         let [contact, soft] = ui::card_shadows(&t);
         let under = ui.painter().add(egui::Shape::Noop);
         let card = egui::Frame::new().fill(t.bg).stroke(Stroke::new(1.0, t.border)).corner_radius(16).shadow(soft).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
@@ -1440,7 +1440,7 @@ fn tray(ctx: &egui::Context, bar: Rect, room: f32, top: bool, ed: &mut Editor, t
                         }
                     }
                     Tool::Shape | Tool::Line | Tool::Arrow => {
-                        // FigJam's row: the colour, the connectors, the shapes used most, and
+                        // The shapes row: the colour, the connectors, the shapes used most, and
                         // the rest in the shapes panel.
                         if tool == Tool::Shape {
                             color_pop(ui, "Riempimento", &mut p.shape_style.fill, true, false, top, t);
@@ -1808,10 +1808,15 @@ pub fn view_controls(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     // controls step aside (zooming stays at hand: Ctrl and the wheel, a pinch, the panel's menu).
     let bar = ctx.data(|d| d.get_temp::<Rect>(Id::new("bottom-bars")));
     let bin = ctx.data(|d| d.get_temp::<Rect>(Id::new("trash-pill-rect")));
+    let right_p = ctx.data(|d| d.get_temp::<Rect>(Id::new("right-panel-rect")));
     let size = ctx.data(|d| d.get_temp::<egui::Vec2>(Id::new("view-controls-size"))).unwrap_or(vec2(80.0, 36.0));
-    let corner = stage.max - vec2(16.0, 16.0);
+    let corner = if let Some(rp) = right_p {
+        pos2(rp.min.x - 16.0, stage.max.y - 16.0)
+    } else {
+        stage.max - vec2(16.0, 16.0)
+    };
     let mini = if ed.prefs.minimap { ctx.data(|d| d.get_temp::<Rect>(Id::new("minimap-rect"))) } else { None };
-    let obstacles: Vec<Rect> = [bar, bin, mini].into_iter().flatten().map(|r| r.expand(8.0)).collect();
+    let obstacles: Vec<Rect> = [bar, bin, mini, right_p].into_iter().flatten().map(|r| r.expand(8.0)).collect();
     let free = |p: Pos2| {
         let r = Rect::from_min_max(p - size, p);
         r.min.y >= stage.min.y + 8.0 && r.min.x >= stage.min.x + 8.0 && !obstacles.iter().any(|o| o.intersects(r))
@@ -1835,7 +1840,7 @@ pub fn view_controls(ctx: &egui::Context, stage: Rect, ed: &mut Editor) {
     let resp = egui::Area::new(Id::new("view-controls")).pivot(egui::Align2::RIGHT_BOTTOM).fixed_pos(pos2(x, y)).interactable(k > 0.5).order(egui::Order::Foreground).show(ctx, |ui| {
         ui.set_opacity(k.clamp(0.0, 1.0));
         if !ed.prefs.zoom_full {
-            // FigJam's: a round-ended pill with − and +; the percentage on hover, the rest of the
+            // Compact zoom controls: a round-ended pill with − and +; the percentage on hover, the rest of the
             // zoom (fit, 100%, the minimap) in the menu of a right click or a long press.
             ui::float_frame(&t).corner_radius(18).inner_margin(egui::Margin::same(2)).show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -2184,7 +2189,7 @@ pub fn minimap(ctx: &egui::Context, free: Rect, ed: &mut Editor, m: &mut Minimap
         }
         let over = ui.rect_contains_pointer(card);
         ui::tip(resp, "Minimappa", None);
-        // The close button shows while the pointer is over the map, like Figma's hover controls.
+        // The close button shows while the pointer is over the map.
         let close = Rect::from_center_size(map.right_top() + vec2(-13.0, 13.0), vec2(20.0, 20.0));
         let c = ui.interact(close, Id::new("minimap-close"), Sense::click());
         let a = ui::motion::hover(ctx, Id::new("minimap-close-show"), over || c.has_focus());

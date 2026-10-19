@@ -20,7 +20,7 @@ fn now() -> f64 {
 /// The longest timer: 99 hours, 59 minutes and 59 seconds.
 const MAX_MS: f64 = (99.0 * 3600.0 + 59.0 * 60.0 + 59.0) * 1000.0;
 
-/// The time a new timer starts at, as in FigJam.
+/// The time a new timer starts at by default.
 const DRAFT_MS: f64 = 3.0 * 60_000.0;
 
 /// `end`: when it reaches zero (shared clock), None while paused; `left`: ms left when paused.
@@ -80,7 +80,7 @@ fn stop_timer(ed: &mut Editor) {
     });
 }
 
-/// `mm:ss`, as FigJam shows it; `h:mm:ss` from an hour up.
+/// `mm:ss` display format; `h:mm:ss` from an hour up.
 fn clock(ms: f64) -> String {
     let s = (ms / 1000.0).ceil().max(0.0) as i64;
     if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{:02}:{:02}", s / 60, s % 60) }
@@ -150,8 +150,8 @@ fn shake(ctx: &egui::Context) -> f32 {
     5.0 * (-t / 0.28).exp() * (t * std::f32::consts::TAU * 9.0).sin()
 }
 
-/// The time's colour and opacity: red when it ran out, blinking slowly while paused (as in
-/// FigJam, so everyone notices it stopped).
+/// The time's colour and opacity: red when it ran out, blinking slowly while paused (so
+/// everyone notices it stopped).
 fn time_look(ctx: &egui::Context, tm: &Timer, t: &ui::Theme) -> Color32 {
     if tm.done() {
         return t.danger_text;
@@ -180,7 +180,7 @@ fn ring(p: &egui::Painter, c: egui::Pos2, r: f32, k: f32, color: Color32, track:
 }
 
 
-/// FigJam's timer chip by the share button: a little record (turning while music plays) and the
+/// Timer chip by the share button: a little record (turning while music plays) and the
 /// time, grey until a timer runs; it opens the panel of the timer, the music and the vote.
 pub fn timer_button(ui: &mut egui::Ui, ed: &mut Editor) {
     let t = ui::theme(ui.ctx());
@@ -193,7 +193,9 @@ pub fn timer_button(ui: &mut egui::Ui, ed: &mut Editor) {
     let h = ui::hit(ui.ctx(), ui::ctl(24.0));
     // On a phone, with no countdown going, just the record: the pill must fit beside the other.
     let compact = tm.is_none() && ui::narrow(ui.ctx());
-    let (rect, resp) = ui.allocate_exact_size(vec2(if compact { 28.0 } else { g.size().x + 40.0 }, h), egui::Sense::click());
+    let digit_w = if text.len() > 5 { 60.0 } else { 44.0 };
+    let pill_w = if compact { 28.0 } else { (g.size().x.max(digit_w) + 40.0).max(if text.len() > 5 { 100.0 } else { 84.0 }) };
+    let (rect, resp) = ui.allocate_exact_size(vec2(pill_w, h), egui::Sense::click());
     let dx = shake(ui.ctx());
     let r = rect.translate(vec2(dx, 0.0));
     let hv = ui::motion::hover(ui.ctx(), resp.id, resp.hovered());
@@ -295,7 +297,7 @@ fn volume_row(ui: &mut egui::Ui, ed: &mut Editor, _t: &ui::Theme) {
     });
 }
 
-/// A round button in the brand colour (play, pause): FigJam's.
+/// A round button in the brand colour (play, pause).
 fn round_button(ui: &mut egui::Ui, name: &str, label: &str, t: &ui::Theme) -> egui::Response {
     let (r, resp) = ui.allocate_exact_size(vec2(36.0, 36.0), egui::Sense::click());
     let h = ui::motion::hover(ui.ctx(), resp.id, resp.hovered());
@@ -454,29 +456,35 @@ fn chime_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
     ui::row(ui, 24.0, |ui| {
         ui.label(RichText::new("Suoneria a fine timer").font(ui::medium(ui::px(12.0))).color(t.text));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui::switch(ui, &mut p.timer_sound, "");
+            ui::switch_bare(ui, &mut p.timer_sound);
         });
     });
-    if !p.timer_sound {
+    let k = ui::motion::presence(ui.ctx(), Id::new("chime-accordion"), p.timer_sound);
+    if k <= 0.001 {
         return;
     }
-    // The sounds side by side (a list inside this panel: a menu of its own would close it);
-    // picked, each plays once.
-    let mut sound = p.timer_chime;
-    let options: Vec<(crate::prefs::TimerSound, &str)> = crate::prefs::TIMER_SOUNDS.iter().map(|s| (*s, s.short())).collect();
-    if ui::segmented(ui, &mut sound, &options, ui.available_width()) {
-        p.timer_chime = sound;
-        crate::audio::chime(sound, p.timer_volume);
-    }
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        if ui::small_icon_button(ui, "play", "Ascolta la suoneria", false).clicked() {
-            crate::audio::chime(p.timer_chime, p.timer_volume);
+    ui.scope(|ui| {
+        ui.set_opacity(k.clamp(0.0, 1.0));
+        let max_h = 76.0 * k.clamp(0.0, 1.0);
+        ui.set_max_height(max_h);
+        // The sounds side by side (a list inside this panel: a menu of its own would close it);
+        // picked, each plays once.
+        let mut sound = p.timer_chime;
+        let options: Vec<(crate::prefs::TimerSound, &str)> = crate::prefs::TIMER_SOUNDS.iter().map(|s| (*s, s.short())).collect();
+        if ui::segmented(ui, &mut sound, &options, ui.available_width()) {
+            p.timer_chime = sound;
+            crate::audio::chime(sound, p.timer_volume);
         }
-        let mut v = p.timer_volume as f64;
-        if ui::slider_inline(ui, "", &mut v, 0.05, 1.0, 0.05, false, |_| String::new(), ui.available_width()) {
-            p.timer_volume = v as f32;
-        }
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            if ui::small_icon_button(ui, "play", "Ascolta la suoneria", false).clicked() {
+                crate::audio::chime(p.timer_chime, p.timer_volume);
+            }
+            let mut v = p.timer_volume as f64;
+            if ui::slider_inline(ui, "", &mut v, 0.05, 1.0, 0.05, false, |_| String::new(), ui.available_width()) {
+                p.timer_volume = v as f32;
+            }
+        });
     });
 }
 
@@ -729,6 +737,19 @@ fn vote_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
             let used: u32 = ed.board.tally(Some(&ed.voter)).values().sum();
             ui.vertical_centered(|ui| {
                 ui.label(RichText::new(format!("Votazione in corso · ti restano {} voti su {per}", per.saturating_sub(used))).size(ui::px(12.0)).color(t.text2));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if can_run_vote(ui.ctx(), ed)
+                        && ui::button(ui, "Termina votazione", Btn::Secondary, Some("square"), false, true).clicked()
+                    {
+                        ed.board.end_voting();
+                        ui.ctx().data_mut(|d| d.remove::<bool>(Id::new("vote-results-hidden")));
+                    }
+                    if ui::button(ui, "Risultati", Btn::Secondary, Some("vote"), false, true).clicked() {
+                        ui.ctx().data_mut(|d| d.remove::<bool>(Id::new("vote-results-hidden")));
+                    }
+                });
             });
         }
         Some((_, true)) => {
@@ -752,7 +773,6 @@ fn vote_card(ui: &mut egui::Ui, ed: &mut Editor, t: &ui::Theme) {
                 ed.board.start_voting(per, &me);
                 ed.set_tool(Tool::Select);
                 setup = false;
-                egui::Popup::close_all(ui.ctx());
             }
         }
         None => {
@@ -1280,7 +1300,7 @@ pub fn cursor_chat(ctx: &egui::Context, ed: &mut Editor, st: &mut BoardUi) {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn times_are_typed_and_shown_as_in_figjam() {
+    fn times_are_typed_and_shown_correctly() {
         assert_eq!(super::clock(5.0 * 60_000.0), "05:00");
         assert_eq!(super::clock(61_001.0), "01:02", "a second just begun still counts");
         assert_eq!(super::clock(90.0 * 60_000.0), "1:30:00", "hours from an hour up");

@@ -37,11 +37,17 @@ impl Sensitivity {
     /// The pressure is raised to this power.
     pub fn gamma(self) -> f64 {
         match self {
-            Sensitivity::Light => 0.6,
-            Sensitivity::Normal => 1.0,
-            Sensitivity::Firm => 1.6,
+            Sensitivity::Light => 0.48,
+            Sensitivity::Normal => 0.68,
+            Sensitivity::Firm => 1.10,
         }
     }
+}
+
+/// Maps raw hardware force in [0.0, 1.0] to calibrated pressure [0.0, 1.0] according to sensitivity.
+pub fn calibrate_pressure(force: f32, sensitivity: Sensitivity) -> f64 {
+    let f = (force as f64).clamp(0.0, 1.0);
+    f.powf(sensitivity.gamma())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,11 +217,11 @@ pub struct Prefs {
     pub tape: Pen,
     pub eraser: Eraser,
     pub ink_to_shape: bool,
-    /// Holding the pen still at the end of a stroke snaps it to a geometric shape (Procreate QuickShape).
+    /// Holding the pen still at the end of a stroke snaps it to a geometric shape (QuickShape).
     pub quick_shape: bool,
     /// How much tremor is smoothed out of freehand strokes.
     pub ink_smoothing: Smoothing,
-    /// Procreate-style StreamLine rope stabilization (0.0 = off, 1.0 = max).
+    /// StreamLine rope stabilization (0.0 = off, 1.0 = max).
     pub streamline: f64,
     /// Live symmetry guides and mirrored strokes.
     pub symmetry: Symmetry,
@@ -244,7 +250,7 @@ pub struct Prefs {
     pub minimap: bool,
     /// Focus mode: both side panels hidden, only the toolbar on the board (Ctrl+\).
     pub focus: bool,
-    /// Interface text size, 1 = Figma's 11 px.
+    /// Interface text size, 1 = default 11 px.
     pub text_scale: f32,
     /// Background of new boards.
     pub new_board: BoardMeta,
@@ -285,11 +291,11 @@ pub struct Prefs {
     /// Volume of the timer chime (0–1).
     pub timer_volume: f32,
     /// The "+" beside a note also draws an arrow to the new one (as for shapes); off: just a
-    /// note beside it, as in FigJam.
+    /// note beside it.
     pub sticky_arrows: bool,
     /// The others' rulers shown on the board (off: only your own).
     pub peer_rulers: bool,
-    /// The zoom controls: FigJam's "− +" (the percentage and the minimap in its menu), or
+    /// The zoom controls: compact "− +" (the percentage and the minimap in its menu), or
     /// the full column with them in view.
     pub zoom_full: bool,
     /// New notes, code and widgets come with a shadow, this dark (0–1) and this soft (blur).
@@ -340,7 +346,7 @@ pub const TOOLBAR_ITEMS: [(&str, &str, u8); 22] = [
     ("more", "Altri strumenti", 3),
 ];
 
-/// FigJam's toolbar: the pens in one drawer, the connectors with the shapes, the chat and the
+/// Default toolbar: the pens in one drawer, the connectors with the shapes, the chat and the
 /// laser among the other tools. Shown one by one if wanted.
 pub const TOOLBAR_HIDDEN: [&str; 10] = ["pen", "highlighter", "tape", "eraser", "lasso", "ruler", "arrow", "line", "chat", "laser"];
 
@@ -371,11 +377,11 @@ pub fn toolbar_items(order: &[String]) -> Vec<String> {
     out
 }
 
-/// FigJam's violet.
+/// Default violet accent.
 pub const DEFAULT_ACCENT: &str = "#9747FF";
 
 /// The current default layout. 2: side panels and minimap closed (before, both panels and the
-/// minimap were open, which made the board feel crowded). 3: FigJam's violet in place of the
+/// minimap were open, which made the board feel crowded). 3: violet in place of the
 /// old default blue. 4: the minimap shown again (it has its own button in the toolbar).
 const LAYOUT: u32 = 4;
 
@@ -411,7 +417,7 @@ impl Default for Prefs {
             big_handles: false,
             accent: DEFAULT_ACCENT.into(),
             toolbar_pos: ToolbarPos::Bottom,
-            // FigJam's layout: the board, the toolbar and the dark bar over the selection; the
+            // Clean default layout: the board, the toolbar and the dark bar over the selection; the
             // side panels open from their buttons. The minimap shows (its button hides it).
             left_panel: false,
             right_panel: false,
@@ -496,7 +502,7 @@ impl Prefs {
         if p.layout < 3 && p.accent.eq_ignore_ascii_case("#0D99FF") {
             p.accent = DEFAULT_ACCENT.into();
         }
-        // The toolbar as it came becomes FigJam's; one arranged by hand stays as it was.
+        // The toolbar as it came becomes the default layout; one arranged by hand stays as it was.
         if p.layout < 3 && p.toolbar_hidden.is_empty() {
             p.toolbar_order = toolbar_default();
             p.toolbar_hidden = toolbar_hidden_default();
@@ -517,7 +523,7 @@ impl Prefs {
         serde_json::to_string(self).unwrap_or_default()
     }
 
-    /// The colour of the selection on the board: FigJam's blue with its violet, otherwise the
+    /// The colour of the selection on the board: default blue with violet accent, otherwise the
     /// colour chosen.
     pub fn selection_color(&self) -> egui::Color32 {
         if self.accent.eq_ignore_ascii_case(DEFAULT_ACCENT) { egui::Color32::from_rgb(0x0D, 0x99, 0xFF) } else { self.accent() }
@@ -556,7 +562,7 @@ mod tests {
         assert!(!Prefs::from_json(&hidden.to_json()).minimap, "the minimap closed afterwards stays closed");
         let reopened = Prefs { left_panel: true, ..old };
         assert!(Prefs::from_json(&reopened.to_json()).left_panel, "a panel opened afterwards stays open");
-        // The old default blue becomes FigJam's violet, once; a colour chosen stays.
+        // The old default blue becomes default violet, once; a colour chosen stays.
         let blue = Prefs::from_json(r##"{"accent":"#0D99FF","layout":2,"leftPanel":true}"##);
         assert_eq!((blue.accent.as_str(), blue.left_panel), (DEFAULT_ACCENT, true));
         let green = Prefs::from_json(r##"{"accent":"#14AE5C","layout":2}"##);
@@ -576,6 +582,35 @@ mod tests {
         assert!(at("laser") < at("pen") && at("pen") < at("select"));
         assert_eq!(at("highlighter"), at("pen") + 1);
         assert_eq!(items[0], "laser");
+    }
+
+    #[test]
+    fn pressure_calibration_is_progressive_and_monotonic() {
+        assert_eq!(Sensitivity::Light.gamma(), 0.48);
+        assert_eq!(Sensitivity::Normal.gamma(), 0.68);
+        assert_eq!(Sensitivity::Firm.gamma(), 1.10);
+
+        for s in [Sensitivity::Light, Sensitivity::Normal, Sensitivity::Firm] {
+            assert_eq!(calibrate_pressure(0.0, s), 0.0);
+            assert_eq!(calibrate_pressure(1.0, s), 1.0);
+            assert_eq!(calibrate_pressure(-0.5, s), 0.0);
+            assert_eq!(calibrate_pressure(1.5, s), 1.0);
+
+            let mut prev = 0.0;
+            for step in 1..=10 {
+                let f = step as f32 / 10.0;
+                let p = calibrate_pressure(f, s);
+                assert!(p > prev, "strictly monotonic for {s:?}");
+                prev = p;
+            }
+        }
+
+        // Light hand yields higher pressure at gentle forces
+        let p_light = calibrate_pressure(0.2, Sensitivity::Light);
+        let p_normal = calibrate_pressure(0.2, Sensitivity::Normal);
+        let p_firm = calibrate_pressure(0.2, Sensitivity::Firm);
+        assert!(p_light > p_normal && p_normal > p_firm);
+        assert!(p_light > 0.45, "light sensitivity responds immediately at gentle force");
     }
 
 }

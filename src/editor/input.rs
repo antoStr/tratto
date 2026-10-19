@@ -45,7 +45,7 @@ struct PendingUp {
 }
 
 /// A press this soon after letting go, near where it was let go, is the same stroke.
-const BOUNCE_MS: f64 = 45.0;
+const BOUNCE_MS: f64 = 75.0;
 const BOUNCE_PX: f32 = 64.0;
 
 fn kind_of(touch: u64) -> PointerKind {
@@ -446,14 +446,14 @@ impl Editor {
         if !ro && self.eyedropper {
             return self.pick_color(p);
         }
-        // Alt with a drawing tool: dragged, its size (left button) or opacity (right button);
-        // Alt+click with a pen or the highlighter picks a colour.
+        // Alt with a drawing tool: 2D drag adjusts size (horizontal) and opacity/strength (vertical);
+        // Alt+click with a pen or the highlighter picks a colour under the pointer.
         if !ro
             && m.alt
             && kind == PointerKind::Mouse
             && let Some((size0, opacity0)) = self.brush_feel()
         {
-            self.gesture = Some(Gesture::BrushAdjust { s0: s, size0, opacity0, opacity: button == PointerButton::Secondary, moved: false });
+            self.gesture = Some(Gesture::BrushAdjust { s0: s, size0, opacity0, moved: false });
             return;
         }
         // The pen's eraser end, and its barrel button (lasso; a tap opens the menu).
@@ -566,8 +566,8 @@ impl Editor {
                     }
                     if !ro {
                         self.start_move(p, s, m.alt);
-                        // A click (no drag) on what was already selected writes in it, as in
-                        // FigJam: in the cell under the pointer for a table.
+                        // A click (no drag) on what was already selected writes in it:
+                        // in the cell under the pointer for a table.
                         if was && !m.shift && !m.alt && self.selection.len() == 1 && writable(&hit) && !hit.is_line() && !hit.is_section() {
                             let cell = hit.table().and_then(|t| {
                                 let l = to_local(&hit, p.x, p.y);
@@ -824,14 +824,14 @@ impl Editor {
                 self.ruler.x = *x + (s.x - s0.x) as f64;
                 self.ruler.y = *y + (s.y - s0.y) as f64;
             }
-            Gesture::BrushAdjust { s0, size0, opacity0, opacity, moved } => {
+            Gesture::BrushAdjust { s0, size0, opacity0, moved } => {
                 let dx = (s.x - s0.x) as f64;
+                let dy = (s.y - s0.y) as f64;
                 *moved |= s.distance(*s0) > 4.0;
                 if *moved {
-                    // Right is more: the size doubles every 120 points, the opacity goes from
-                    // none to full over 300.
-                    let (size, op) = if *opacity { (None, Some(*opacity0 + dx / 300.0)) } else { (Some(*size0 * 2f64.powf(dx / 120.0)), None) };
-                    self.set_brush_feel(size, op);
+                    let size = *size0 * 2f64.powf(dx / 120.0);
+                    let opacity = *opacity0 - dy / 250.0;
+                    self.set_brush_feel(Some(size), Some(opacity));
                 }
             }
             Gesture::RulerRotate => {
@@ -899,8 +899,8 @@ impl Editor {
             Gesture::Erase { touched, .. } => self.finish_erase(touched),
             // Let the trail fade, then clear it for the others.
             Gesture::Laser => self.laser_clear = Some(now() + 950.0),
-            Gesture::BrushAdjust { s0, opacity, moved, .. } => {
-                if !moved && !opacity && matches!(self.tool, Tool::Pen | Tool::Highlighter) {
+            Gesture::BrushAdjust { s0, moved, .. } => {
+                if !moved && matches!(self.tool, Tool::Pen | Tool::Highlighter) {
                     let p = self.to_world(s0);
                     self.pick_color(p);
                 }
@@ -1088,7 +1088,7 @@ impl Editor {
             }
             return;
         }
-        // E: held, the emote wheel (FigJam's); a quick press still picks the eraser (on release).
+        // E: held, the emote wheel; a quick press still picks the eraser (on release).
         if key == Key::E && !m.shift && !m.ctrl && !m.command {
             let at = self.input.pointer_at.unwrap_or_else(|| pos2(self.origin.x + self.size.0 as f32 / 2.0, self.origin.y + self.size.1 as f32 / 2.0));
             self.emote_hold = Some((now(), at));

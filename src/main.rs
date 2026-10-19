@@ -1,4 +1,5 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+#![allow(dead_code, unused_variables)]
 
 mod app;
 mod assets;

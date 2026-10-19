@@ -110,7 +110,7 @@ pub struct Ink {
     pub colors: Vec<u32>,
 }
 
-/// What a pen draws like: a small brush library, as in Procreate.
+/// What a pen draws like: a small brush library.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Brush {
@@ -234,7 +234,7 @@ impl Default for Line {
     }
 }
 
-/// An arrow head, as FigJam offers them.
+/// An arrow head.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Head {
@@ -258,7 +258,7 @@ impl Head {
 /// The heads offered, with their names.
 pub const HEADS: [(Head, &str); 5] = [(Head::Triangle, "Triangolo"), (Head::Open, "Freccia aperta"), (Head::Circle, "Cerchio"), (Head::Diamond, "Rombo"), (Head::Bar, "Barra")];
 
-/// The path a connector takes between its ends, like FigJam's.
+/// The path a connector takes between its ends.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Route {
@@ -310,7 +310,7 @@ pub struct Sticky {
     pub author: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hide_author: bool,
-    /// Largest size of the text: it shrinks below it to fit (None: up to 28, as in FigJam).
+    /// Largest size of the text: it shrinks below it to fit (None: up to 28).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font_size: Option<f64>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -456,7 +456,7 @@ fn code_font_size() -> f64 {
     14.0
 }
 
-/// FigJam-style widgets: small interactive tools living on the board.
+/// Interactive widgets: small tools living on the board.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "widget", rename_all = "camelCase")]
 pub enum Widget {
@@ -781,13 +781,18 @@ pub const HIGHLIGHT_COLORS: [&str; 6] = ["#FFE066", "#8CE99A", "#74C0FC", "#FCC2
 pub const STICKY_COLORS: [&str; 7] = ["#FFF3A3", "#C9F2C7", "#C7E5FF", "#FFD1E3", "#E2D4FF", "#FFDDB8", "#E9E9E9"];
 pub const TAPE_COLORS: [&str; 8] = ["#FFB3C7", "#FFD8A8", "#FFEC99", "#B2F2BB", "#A5D8FF", "#D0BFFF", "#CED4DA", "#F8F9FA"];
 pub const SECTION_COLORS: [&str; 8] = ["#FFFFFF", "#F2F2F2", "#FFF8D6", "#E6F6E5", "#E3F1FF", "#FCE8F0", "#EFE9FF", "#FFEEDD"];
-pub const BACKGROUNDS: [(&str, &str); 6] = [
+pub const BACKGROUNDS: [(&str, &str); 11] = [
     ("Grigio chiaro", "#F5F5F5"),
     ("Bianco", "#FFFFFF"),
     ("Carta", "#FAF7F0"),
+    ("Sabbia", "#FAF3E0"),
+    ("Lavanda", "#EDE7F6"),
+    ("Salvia", "#E8F0E6"),
     ("Ardesia", "#26292E"),
     ("Lavagna verde", "#23392F"),
     ("Blu notte", "#1B2A41"),
+    ("Grafite", "#1E2229"),
+    ("Ossidiana", "#121417"),
 ];
 
 /// The font menu, in order: kind, name shown, group.

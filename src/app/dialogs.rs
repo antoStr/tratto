@@ -103,7 +103,7 @@ fn pressure_pad(ui: &mut egui::Ui, p: &Prefs) {
     if resp.dragged()
         && let Some(pos) = resp.interact_pointer_pos()
     {
-        let pressure = force.map_or(-1.0, |f| f.clamp(0.0, 1.0).powf(p.sensitivity.gamma() as f32));
+        let pressure = force.map_or(-1.0, |f| crate::prefs::calibrate_pressure(f, p.sensitivity) as f32);
         if pts.len() < 3 * 4000 {
             pts.extend([pos.x - rect.min.x, pos.y - rect.min.y, pressure]);
         }
@@ -502,8 +502,8 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
     (
         "Disegno",
         &[
-            ("Spessore della penna", "Alt + trascina  ·  [ e ]"),
-            ("Opacità della penna", "Alt + trascina col destro  ·  Maiusc+[ e ]"),
+            ("Spessore della penna", "Alt + trascina (orizzontale)  ·  [ e ]"),
+            ("Opacità della penna", "Alt + trascina (verticale)  ·  Maiusc+[ e ]"),
             ("Prendi un colore dalla lavagna", "Alt + clic"),
             ("Forma perfetta (QuickShape)", "tieni ferma la penna a fine tratto"),
         ],
@@ -640,7 +640,7 @@ fn toolbar_settings(ui: &mut egui::Ui, p: &mut Prefs) {
         let y = list.min.y + dy;
         let held = drag.is_some_and(|(from, _)| from == i);
         let row = if held {
-            let top = pointer_y.map_or(y, |py| (py - drag.unwrap().1).clamp(list.min.y - row_h * 0.5, list.max.y - row_h * 0.5));
+            let top = pointer_y.map_or(y, |py| (py - drag.unwrap().1).clamp(list.min.y, (list.max.y - row_h).max(list.min.y)));
             ui::motion::hold(ui.ctx(), drag_id.with(("y", id.as_str())), top - list.min.y);
             Rect::from_min_size(pos2(list.min.x, top), vec2(list.width(), row_h))
         } else {
@@ -698,11 +698,12 @@ fn toolbar_settings(ui: &mut egui::Ui, p: &mut Prefs) {
         let id = &items[i];
         let name = crate::prefs::TOOLBAR_ITEMS.iter().find(|x| x.0 == id).map_or("", |x| x.1);
         let layer = egui::LayerId::new(egui::Order::Tooltip, drag_id.with("lifted"));
-        let painter = ui.ctx().layer_painter(layer);
+        let painter = ui.ctx().layer_painter(layer).with_clip_rect(list.intersect(ui.clip_rect()));
         let r = row.shrink2(vec2(0.0, 2.0));
         painter.add(egui::epaint::Shadow { offset: [0, 6], blur: 18, spread: 0, color: Color32::from_black_alpha(40) }.as_shape(r, ui::RADIUS));
         painter.rect_filled(r, ui::RADIUS, t.bg);
         let mut child = ui.new_child(egui::UiBuilder::new().layer_id(layer).max_rect(row));
+        child.set_clip_rect(list.intersect(ui.clip_rect()));
         draw_toolbar_row(&mut child, row, id, name, p.toolbar_hidden.contains(id), t.selected, &t);
     }
     // Let go: it stays where it was shown.
